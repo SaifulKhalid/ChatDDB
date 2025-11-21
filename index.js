@@ -1,57 +1,103 @@
+/**
+ * WhatsApp AI Bot (Gemini + Utility Commands)
+ * Features:
+ * - /shuttle: Smart schedule (Weekday vs Weekend/Holiday)
+ * - /holiday: Upcoming holidays
+ * - General Text: Gemini AI Response
+ */
 
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
+const moment = require('moment-timezone');
 require('dotenv').config();
 
 const app = express();
 app.use(bodyParser.json());
 
-// CONSTANTS - You can also put these in a .env file
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'my_secure_custom_token_123';
-const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || 'YOUR_ACCESS_TOKEN_HERE'; 
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || 'YOUR_PHONE_ID_HERE'; 
-const VERSION = 'v17.0'; 
+// --- CONFIGURATION ---
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const VERSION = 'v17.0';
+const TIMEZONE = 'Asia/Dhaka'; // Hardcoded for Bangladesh
 
-// 0. Health Check Route
-app.get('/', (req, res) => {
-    res.status(200).send('Bot is running!');
-});
+// --- DATASETS ---
+const SHUTTLE_SCHEDULE = {
+    "regular": {
+        "townToCU": ["07:15", "07:40", "09:30*", "10:15*", "11:30*", "14:30", "15:30", "17:00", "20:30"],
+        "cuToTown": ["08:40*", "09:05*", "10:30*", "13:00", "14:00", "15:35", "16:40", "18:20", "21:45"]
+    },
+    "weekend": {
+        "townToCU": ["07:40", "15:30", "20:30"],
+        "cuToTown": ["09:05*", "16:40", "21:45"]
+    }
+};
 
-// 1. Webhook Verification (For Meta)
+const HOLIDAYS = [
+    { name: "আশুরা (১০ মহররম) *", date: "2025-07-06" },
+    { name: "বর্ষাকালীন ছুটি", date: "2025-07-27 to 2025-07-31" },
+    { name: "শুভ জন্মাষ্টমী", date: "2025-08-16" },
+    { name: "একদিনের ছুটি", date: "2025-08-20" },
+    { name: "আখেরী চাহার সোম্বা", date: "2025-09-05" },
+    { name: "দুর্গাপূজাসহ শরৎকালীন ছুটি", date: "2025-09-28 to 2025-10-02" },
+    { name: "ঈদ-ই-মিলাদুন্নবী (সা.) *", date: "2025-10-04" },
+    { name: "শহিদ বুদ্ধিজীবী দিবস", date: "2025-12-14" },
+    { name: "বিজয় দিবস", date: "2025-12-16" },
+    { name: "শীতকালীন ছুটি এবং বড়দিন", date: "2025-12-21 to 2025-12-25" }
+];
+
+// --- ROUTES ---
+
+// Health Check
+app.get('/', (req, res) => res.send('AI Bot is Active 🤖'));
+
+// Meta Webhook Verification
 app.get('/webhook', (req, res) => {
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
-
-    if (mode && token) {
-        if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-            console.log('WEBHOOK_VERIFIED');
-            res.status(200).send(challenge);
-        } else {
-            res.sendStatus(403);
-        }
+    if (req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === VERIFY_TOKEN) {
+        res.status(200).send(req.query['hub.challenge']);
+    } else {
+        res.sendStatus(403);
     }
 });
 
-// 2. Incoming Messages
+// Message Handler
 app.post('/webhook', async (req, res) => {
     const body = req.body;
 
     if (body.object === 'whatsapp_business_account') {
         if (body.entry && body.entry[0].changes && body.entry[0].changes[0].value.messages) {
-            const changes = body.entry[0].changes[0];
-            const value = changes.value;
-            const message = value.messages[0];
-
-            const from = message.from; 
-            const msgBody = message.text ? message.text.body : '';
+            const message = body.entry[0].changes[0].value.messages[0];
             
-            console.log(`Received: ${msgBody} from ${from}`);
+            // Only process text messages
+            if (message.type === 'text') {
+                const from = message.from;
+                const msgBody = message.text.body.trim();
+                const lowerMsg = msgBody.toLowerCase();
 
-            if (msgBody) {
-                // ECHO LOGIC: Respond with what they sent
-                await sendMessage(from, `You said: ${msgBody}`);
+                console.log(`Msg from ${from}: ${msgBody}`);
+
+                try {
+                    let reply = "";
+
+                    // --- COMMAND ROUTER ---
+                    if (lowerMsg.startsWith('/shuttle')) {
+                        reply = getShuttleResponse();
+                    } 
+                    else if (lowerMsg.startsWith('/holiday')) {
+                        reply = getHolidayResponse();
+                    } 
+                    else {
+                        // --- AI FALLBACK ---
+                        reply = await getGeminiResponse(msgBody);
+                    }
+
+                    await sendMessage(from, reply);
+
+                } catch (error) {
+                    console.error("Error processing message:", error);
+                }
             }
         }
         res.sendStatus(200);
@@ -60,7 +106,84 @@ app.post('/webhook', async (req, res) => {
     }
 });
 
-// Helper function to send messages
+// --- LOGIC FUNCTIONS ---
+
+function getShuttleResponse() {
+    const now = moment().tz(TIMEZONE);
+    const todayDate = now.format('YYYY-MM-DD');
+    const dayOfWeek = now.day(); // 0=Sun, 5=Fri, 6=Sat
+    
+    // Check if today is a holiday (Simple exact match)
+    const isHoliday = HOLIDAYS.some(h => {
+        if (h.date.includes('to')) return false; 
+        return h.date === todayDate;
+    });
+
+    // Determine type: Weekend (Fri=5, Sat=6) or Holiday
+    const isWeekend = dayOfWeek === 5 || dayOfWeek === 6 || isHoliday;
+    const scheduleType = isWeekend ? 'weekend' : 'regular';
+    const schedule = SHUTTLE_SCHEDULE[scheduleType];
+
+    // Format response
+    let text = `🚌 *CU Shuttle Schedule (${isWeekend ? "Weekend/Holiday" : "Regular"})*\n`;
+    text += `_Date: ${now.format('MMM Do, YYYY')}_\n\n`;
+    
+    text += `*Town ➔ CU:*\n${schedule.townToCU.join(', ')}\n\n`;
+    text += `*CU ➔ Town:*\n${schedule.cuToTown.join(', ')}`;
+    
+    if(isWeekend) text += `\n\n_Note: It's a Weekend or Holiday schedule today._`;
+
+    return text;
+}
+
+function getHolidayResponse() {
+    const today = moment().tz(TIMEZONE);
+    
+    // Filter holidays that are in the future or today
+    const upcoming = HOLIDAYS.filter(h => {
+        let dateToCheck = h.date;
+        if (h.date.includes('to')) {
+            // Logic for ranges: grab the END date
+            dateToCheck = h.date.split(' to ')[1]; 
+        }
+        return moment(dateToCheck).isSameOrAfter(today, 'day');
+    }).slice(0, 5); // Get next 5
+
+    if (upcoming.length === 0) return "No upcoming holidays found in the list.";
+
+    let text = "🎉 *Upcoming University Holidays*\n\n";
+    upcoming.forEach(h => {
+        text += `▫️ *${h.name}*\n   📅 ${h.date}\n`;
+    });
+
+    return text;
+}
+
+async function getGeminiResponse(prompt) {
+    try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+        
+        const payload = {
+            contents: [{
+                parts: [{ 
+                    text: `You are a helpful university assistant bot. Keep answers concise and formatted for WhatsApp. Context: ${prompt}` 
+                }]
+            }]
+        };
+
+        const response = await axios.post(url, payload);
+        
+        if (response.data && response.data.candidates && response.data.candidates[0].content) {
+            return response.data.candidates[0].content.parts[0].text;
+        } else {
+            return "My AI brain is a bit fuzzy right now. Please try again.";
+        }
+    } catch (error) {
+        console.error("Gemini API Error:", error.response ? error.response.data : error.message);
+        return "I'm having trouble connecting to the AI service.";
+    }
+}
+
 async function sendMessage(to, text) {
     try {
         await axios({
@@ -77,11 +200,11 @@ async function sendMessage(to, text) {
             }
         });
     } catch (error) {
-        console.error('Error sending:', error.response ? error.response.data : error.message);
+        console.error('WhatsApp Send Error:', error.response ? error.response.data : error.message);
     }
 }
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });
