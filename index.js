@@ -1,9 +1,9 @@
 /**
- * WhatsApp AI Bot (Gemini Pro + Utility Commands)
+ * WhatsApp AI Bot (Gemini 2.5 Flash + Utility Commands)
  * Features:
  * - /shuttle: Smart schedule (Weekday vs Weekend/Holiday)
  * - /holiday: Upcoming holidays
- * - General Text: Gemini Pro AI Response
+ * - General Text: Gemini 2.5 AI Response
  */
 
 const express = require('express');
@@ -144,10 +144,11 @@ function getHolidayResponse() {
     return text;
 }
 
-// UPDATED FUNCTION: Using standard 'gemini-pro'
+// UPDATED FUNCTION: Uses 'gemini-2.5-flash' (The 2025 Standard)
 async function getGeminiResponse(prompt) {
     try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`;
+        // Use gemini-2.5-flash which is the current active model
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
         
         const payload = {
             contents: [{
@@ -165,6 +166,8 @@ async function getGeminiResponse(prompt) {
             return "My AI brain is a bit fuzzy right now. Please try again.";
         }
     } catch (error) {
+        // If 2.5 fails, we log the specifics. 
+        // Fallback tip: If 2.5 fails, try 'gemini-1.5-flash-001'
         console.error("Gemini API Error:", error.response ? JSON.stringify(error.response.data, null, 2) : error.message);
         return "I'm having trouble connecting to the AI service.";
     }
