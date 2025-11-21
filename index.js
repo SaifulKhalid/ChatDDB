@@ -1,9 +1,9 @@
 /**
- * WhatsApp AI Bot (Gemini + Utility Commands)
+ * WhatsApp AI Bot (Gemini Pro + Utility Commands)
  * Features:
  * - /shuttle: Smart schedule (Weekday vs Weekend/Holiday)
  * - /holiday: Upcoming holidays
- * - General Text: Gemini AI Response
+ * - General Text: Gemini Pro AI Response
  */
 
 const express = require('express');
@@ -21,7 +21,7 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const VERSION = 'v17.0';
-const TIMEZONE = 'Asia/Dhaka'; // Hardcoded for Bangladesh
+const TIMEZONE = 'Asia/Dhaka'; 
 
 // --- DATASETS ---
 const SHUTTLE_SCHEDULE = {
@@ -50,10 +50,8 @@ const HOLIDAYS = [
 
 // --- ROUTES ---
 
-// Health Check
 app.get('/', (req, res) => res.send('AI Bot is Active 🤖'));
 
-// Meta Webhook Verification
 app.get('/webhook', (req, res) => {
     if (req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === VERIFY_TOKEN) {
         res.status(200).send(req.query['hub.challenge']);
@@ -62,7 +60,6 @@ app.get('/webhook', (req, res) => {
     }
 });
 
-// Message Handler
 app.post('/webhook', async (req, res) => {
     const body = req.body;
 
@@ -70,7 +67,6 @@ app.post('/webhook', async (req, res) => {
         if (body.entry && body.entry[0].changes && body.entry[0].changes[0].value.messages) {
             const message = body.entry[0].changes[0].value.messages[0];
             
-            // Only process text messages
             if (message.type === 'text') {
                 const from = message.from;
                 const msgBody = message.text.body.trim();
@@ -81,7 +77,6 @@ app.post('/webhook', async (req, res) => {
                 try {
                     let reply = "";
 
-                    // --- COMMAND ROUTER ---
                     if (lowerMsg.startsWith('/shuttle')) {
                         reply = getShuttleResponse();
                     } 
@@ -89,7 +84,7 @@ app.post('/webhook', async (req, res) => {
                         reply = getHolidayResponse();
                     } 
                     else {
-                        // --- AI FALLBACK ---
+                        // AI Logic
                         reply = await getGeminiResponse(msgBody);
                     }
 
@@ -111,43 +106,34 @@ app.post('/webhook', async (req, res) => {
 function getShuttleResponse() {
     const now = moment().tz(TIMEZONE);
     const todayDate = now.format('YYYY-MM-DD');
-    const dayOfWeek = now.day(); // 0=Sun, 5=Fri, 6=Sat
+    const dayOfWeek = now.day(); 
     
-    // Check if today is a holiday (Simple exact match)
     const isHoliday = HOLIDAYS.some(h => {
         if (h.date.includes('to')) return false; 
         return h.date === todayDate;
     });
 
-    // Determine type: Weekend (Fri=5, Sat=6) or Holiday
     const isWeekend = dayOfWeek === 5 || dayOfWeek === 6 || isHoliday;
     const scheduleType = isWeekend ? 'weekend' : 'regular';
     const schedule = SHUTTLE_SCHEDULE[scheduleType];
 
-    // Format response
     let text = `🚌 *CU Shuttle Schedule (${isWeekend ? "Weekend/Holiday" : "Regular"})*\n`;
     text += `_Date: ${now.format('MMM Do, YYYY')}_\n\n`;
-    
     text += `*Town ➔ CU:*\n${schedule.townToCU.join(', ')}\n\n`;
     text += `*CU ➔ Town:*\n${schedule.cuToTown.join(', ')}`;
-    
     if(isWeekend) text += `\n\n_Note: It's a Weekend or Holiday schedule today._`;
-
     return text;
 }
 
 function getHolidayResponse() {
     const today = moment().tz(TIMEZONE);
-    
-    // Filter holidays that are in the future or today
     const upcoming = HOLIDAYS.filter(h => {
         let dateToCheck = h.date;
         if (h.date.includes('to')) {
-            // Logic for ranges: grab the END date
             dateToCheck = h.date.split(' to ')[1]; 
         }
         return moment(dateToCheck).isSameOrAfter(today, 'day');
-    }).slice(0, 5); // Get next 5
+    }).slice(0, 5);
 
     if (upcoming.length === 0) return "No upcoming holidays found in the list.";
 
@@ -155,13 +141,13 @@ function getHolidayResponse() {
     upcoming.forEach(h => {
         text += `▫️ *${h.name}*\n   📅 ${h.date}\n`;
     });
-
     return text;
 }
 
+// UPDATED FUNCTION: Using standard 'gemini-pro'
 async function getGeminiResponse(prompt) {
     try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`;
         
         const payload = {
             contents: [{
@@ -179,7 +165,7 @@ async function getGeminiResponse(prompt) {
             return "My AI brain is a bit fuzzy right now. Please try again.";
         }
     } catch (error) {
-        console.error("Gemini API Error:", error.response ? error.response.data : error.message);
+        console.error("Gemini API Error:", error.response ? JSON.stringify(error.response.data, null, 2) : error.message);
         return "I'm having trouble connecting to the AI service.";
     }
 }
