@@ -1,0 +1,30 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "prototype-chatbot",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-07-01",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"assets": {
+		"directory": "./public"
+	},
+	"vars": {
+		"APP_NAME": "PrototypeChatBot",
+		"MAX_UPLOAD_BYTES": "20971520"
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "prototype-chatbot-db",
+			"database_id": "65fe4b6c-9c97-45ec-ac14-7c0ea014864f",
+			"migrations_dir": "src/db/migrations"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "BUCKET",
+			"bucket_name": "prototype-chatbot-bucket"
+		}
+	]
+}
