@@ -16,7 +16,12 @@
  * Static assets (frontend) are served from ./public via the `assets` binding.
  */
 import { streamChat, buildProviderMessages } from "./providers";
-import { extractPdfText, classifyAttachment } from "./pdf";
+import {
+  extractPdfText,
+  classifyAttachment,
+  chunkText,
+  buildContextFromChunks,
+} from "./pdf";
 import {
   MODELS,
   getModel,
@@ -28,10 +33,17 @@ import {
 } from "./types";
 
 export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     const { pathname } = url;
     const method = req.method.toUpperCase();
+
+    // Handle CORS preflight
+    if (method === "OPTIONS") {
+      return new Response(null, {
+        headers: corsHeaders(),
+      });
+    }
 
     try {
       // API routes
@@ -55,7 +67,7 @@ export default {
       }
 
       if (pathname === "/api/upload" && method === "POST") {
-        return uploadFile(req, env);
+        return uploadFile(req, env, ctx);
       }
 
       const fileMatch = pathname.match(/^\/api\/files\/(.+)$/);
@@ -80,10 +92,22 @@ export default {
 
 /* ----------------------------- Helpers ----------------------------- */
 
+function corsHeaders() {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Max-Age": "86400",
+  };
+}
+
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...corsHeaders(),
+    },
   });
 }
 
@@ -171,7 +195,10 @@ async function deleteConversation(id: string, env: Env): Promise<Response> {
     try {
       const atts = JSON.parse(row.attachments || "[]") as AttachmentMeta[];
       for (const a of atts) {
-        await env.BUCKET.delete(a.r2Key);
+        if (a.r2Key) await env.BUCKET.delete(a.r2Key).catch(() => {});
+        if (a.optimizedR2Key) await env.BUCKET.delete(a.optimizedR2Key).catch(() => {});
+        if (a.textR2Key) await env.BUCKET.delete(a.textR2Key).catch(() => {});
+        await env.DB.prepare("DELETE FROM document_chunks WHERE attachment_id = ?").bind(a.id).run().catch(() => {});
       }
     } catch {
       // ignore parse errors
@@ -182,9 +209,16 @@ async function deleteConversation(id: string, env: Env): Promise<Response> {
   return json({ ok: true });
 }
 
-/* ----------------------------- Upload ----------------------------- */
+/* ----------------------------- Upload (Optimized) ----------------------------- */
 
-async function uploadFile(req: Request, env: Env): Promise<Response> {
+/**
+ * Upload a file to R2.
+ *
+ * OPTIMIZATION: Returns immediately after storing the original file.
+ * PDF extraction and image optimization run as fire-and-forget background promises.
+ * The client can check the `processing` flag to know when ready.
+ */
+async function uploadFile(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const form = await req.formData();
   const file = form.get("file");
   if (!(file instanceof File)) {
@@ -202,16 +236,13 @@ async function uploadFile(req: Request, env: Env): Promise<Response> {
   const buf = await file.arrayBuffer();
   const r2Key = `uploads/${id}/${name.replace(/[^\w.\-]/g, "_")}`;
 
+  // Step 1: Store original file immediately (fast)
   await env.BUCKET.put(r2Key, buf, {
     httpMetadata: { contentType: type },
     customMetadata: { originalName: name, uploadedAt: new Date().toISOString() },
   });
 
-  let extractedText: string | undefined;
-  if (kind === "pdf") {
-    extractedText = await extractPdfText(buf);
-  }
-
+  // Step 2: Build initial attachment meta (return immediately, mark as processing)
   const meta: AttachmentMeta = {
     id,
     name,
@@ -219,9 +250,102 @@ async function uploadFile(req: Request, env: Env): Promise<Response> {
     size: file.size,
     r2Key,
     kind,
-    extractedText,
+    processing: kind === "pdf" || kind === "image",
   };
+
+  // Step 3: Fire background processing using ctx.waitUntil for reliability
+  const bgPromises: Promise<void>[] = [];
+  if (kind === "pdf") {
+    bgPromises.push(
+      processPdfInBackground(buf, id, r2Key, name, type, file.size, env)
+        .catch((err) => console.error("Background PDF processing failed:", err))
+    );
+  } else if (kind === "image") {
+    bgPromises.push(
+      processImageInBackground(buf, id, r2Key, name, type, file.size, env)
+        .catch((err) => console.error("Background image processing failed:", err))
+    );
+  }
+  // Use ctx.waitUntil to ensure background tasks complete even after response is sent
+  for (const p of bgPromises) {
+    ctx.waitUntil(p);
+  }
+
   return json({ attachment: meta }, 201);
+}
+
+/** Background PDF processing: extract text, chunk, store in R2 + D1. */
+async function processPdfInBackground(
+  buf: ArrayBuffer, id: string, r2Key: string, name: string, type: string, size: number, env: Env
+): Promise<void> {
+  const fullText = await extractPdfText(buf);
+
+  // Store extracted text as separate R2 object
+  const textR2Key = `documents/${id}/extracted.txt`;
+  await env.BUCKET.put(textR2Key, fullText, {
+    httpMetadata: { contentType: "text/plain" },
+    customMetadata: { originalName: name, source: r2Key, processedAt: new Date().toISOString() },
+  });
+
+  // Chunk the text and store chunks in D1
+  const chunks = chunkText(fullText, 4000);
+  if (chunks.length > 0) {
+    const stmt = env.DB.prepare(
+      "INSERT OR IGNORE INTO document_chunks (id, attachment_id, chunk_index, chunk_text, token_estimate) VALUES (?, ?, ?, ?, ?)"
+    );
+    for (let i = 0; i < chunks.length; i++) {
+      await stmt.bind(genId(), id, i, chunks[i].text, chunks[i].tokenEstimate).run();
+    }
+  }
+
+  // Build truncated context from first N chunks for immediate use
+  const contextText = buildContextFromChunks(chunks, 3);
+
+  // Store processed metadata marker in R2
+  const processedMeta: AttachmentMeta = {
+    id, name, type, size, r2Key, kind: "pdf",
+    textR2Key, extractedText: contextText, processing: false,
+  };
+  await env.BUCKET.put(`meta/${id}.json`, JSON.stringify(processedMeta), {
+    httpMetadata: { contentType: "application/json" },
+  });
+}
+
+/** Background image processing (placeholder — mark as done). */
+async function processImageInBackground(
+  buf: ArrayBuffer, id: string, r2Key: string, name: string, type: string, size: number, env: Env
+): Promise<void> {
+  const processedMeta: AttachmentMeta = {
+    id, name, type, size, r2Key, kind: "image", processing: false,
+  };
+  await env.BUCKET.put(`meta/${id}.json`, JSON.stringify(processedMeta), {
+    httpMetadata: { contentType: "application/json" },
+  });
+}
+
+/** Load processed metadata for an attachment from R2. */
+async function loadProcessedMeta(id: string, env: Env): Promise<AttachmentMeta | null> {
+  try {
+    const obj = await env.BUCKET.get(`meta/${id}.json`);
+    if (!obj) return null;
+    return JSON.parse(await obj.text()) as AttachmentMeta;
+  } catch {
+    return null;
+  }
+}
+
+/** Load document chunks for a given attachment from D1. */
+async function loadDocumentChunks(
+  attachmentId: string, env: Env, maxChunks = 5
+): Promise<{ text: string; tokenEstimate: number }[]> {
+  try {
+    const { results } = await env.DB.prepare(
+      "SELECT chunk_text, token_estimate FROM document_chunks WHERE attachment_id = ? ORDER BY chunk_index ASC LIMIT ?"
+    ).bind(attachmentId, maxChunks).all<{ chunk_text: string; token_estimate: number }>();
+    return (results ?? []).map((r) => ({ text: r.chunk_text, tokenEstimate: r.token_estimate }));
+  } catch {
+    return [];
+  }
 }
 
 async function serveFile(key: string, env: Env): Promise<Response> {
@@ -232,6 +356,9 @@ async function serveFile(key: string, env: Env): Promise<Response> {
   const headers = new Headers();
   obj.writeHttpMetadata(headers);
   headers.set("Cache-Control", "private, max-age=3600");
+  for (const [key, val] of Object.entries(corsHeaders())) {
+    headers.set(key, val);
+  }
   return new Response(obj.body, { headers });
 }
 
@@ -263,6 +390,39 @@ function parseMessageRow(row: ChatMessageRow): ChatMessage {
     model: row.model,
     created_at: row.created_at,
   };
+}
+
+/**
+ * Enrich attachments with processed data: chunk-based PDF context, optimized image keys.
+ * Runs in parallel across all attachments in all messages.
+ */
+async function enrichAttachmentsWithProcessedData(
+  messages: ChatMessage[], env: Env
+): Promise<ChatMessage[]> {
+  const enriched = messages.map(async (msg) => {
+    if (!msg.attachments || msg.attachments.length === 0) return msg;
+    const enrichedAtts = await Promise.all(
+      msg.attachments.map(async (att) => {
+        if (att.kind === "pdf") {
+          try {
+            const chunks = await loadDocumentChunks(att.id, env, 3);
+            if (chunks.length > 0) {
+              return { ...att, extractedText: chunks.map(c => c.text).join("\n\n") };
+            }
+          } catch { /* fall through */ }
+        }
+        if (att.kind === "image") {
+          const meta = await loadProcessedMeta(att.id, env);
+          if (meta && meta.optimizedR2Key) {
+            return { ...att, optimizedR2Key: meta.optimizedR2Key };
+          }
+        }
+        return att;
+      })
+    );
+    return { ...msg, attachments: enrichedAtts };
+  });
+  return Promise.all(enriched);
 }
 
 async function chat(req: Request, env: Env): Promise<Response> {
@@ -317,12 +477,15 @@ async function chat(req: Request, env: Env): Promise<Response> {
   const { results } = await env.DB.prepare(
     "SELECT id, conversation_id, role, content, attachments, model, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC"
   ).bind(conversationId).all<ChatMessageRow>();
-  const history = (results ?? []).map(parseMessageRow);
+  let history = (results ?? []).map(parseMessageRow);
+
+  // OPTIMIZATION: Enrich attachments with processed data (chunks, optimized images)
+  history = await enrichAttachmentsWithProcessedData(history, env);
 
   // Build provider messages with a system prompt
   const systemPrompt =
     "You are a helpful, friendly AI assistant. Answer clearly and concisely. " +
-    "When given images, describe and reason about them. When given PDFs, use the extracted text as context.";
+    "When given images, describe and reason about them. When given PDFs, use the provided text as context.";
   const providerMessages = await buildProviderMessages(
     [
       { role: "system", content: systemPrompt },
@@ -335,6 +498,7 @@ async function chat(req: Request, env: Env): Promise<Response> {
           name: a.name,
           type: a.type,
           extractedText: a.extractedText,
+          optimizedR2Key: a.optimizedR2Key,
         })),
       })),
     ],
@@ -386,6 +550,7 @@ async function chat(req: Request, env: Env): Promise<Response> {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
+      ...corsHeaders(),
     },
   });
 }

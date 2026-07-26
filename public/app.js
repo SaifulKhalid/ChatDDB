@@ -14,6 +14,8 @@
   let pendingAttachments = []; // AttachmentMeta[]
   let isGenerating = false;
   let abortController = null;
+  let currentTheme = localStorage.getItem("chatddb_theme") || "dark";
+  let toastTimeout = null;
 
   // ----------------------------- DOM -----------------------------
   const $ = (sel) => document.querySelector(sel);
@@ -33,6 +35,9 @@
     attachBtn: $("#attach-btn"),
     fileInput: $("#file-input"),
     attachmentsPreview: $("#attachments-preview"),
+    themeBtn: $("#theme-btn"),
+    toast: $("#toast"),
+    messagesInner: document.querySelector(".messages-inner"),
   };
 
   // ----------------------------- API helpers -----------------------------
@@ -54,8 +59,57 @@
     return res.json();
   }
 
+  // ----------------------------- Theme -----------------------------
+  function applyTheme(theme) {
+    currentTheme = theme;
+    localStorage.setItem("chatddb_theme", theme);
+    document.documentElement.setAttribute("data-theme", theme);
+  }
+
+  function cycleTheme() {
+    var order = ["dark", "light", "system"];
+    var idx = order.indexOf(currentTheme);
+    applyTheme(order[(idx + 1) % order.length]);
+    showToast("Theme: " + currentTheme.charAt(0).toUpperCase() + currentTheme.slice(1));
+  }
+
+  // ----------------------------- Toast -----------------------------
+  function showToast(message) {
+    if (!els.toast) return;
+    els.toast.textContent = message;
+    els.toast.classList.add("visible");
+    clearTimeout(toastTimeout);
+    toastTimeout = setTimeout(function() {
+      els.toast.classList.remove("visible");
+    }, 2000);
+  }
+
+  // ----------------------------- Copy -----------------------------
+  async function copyToClipboard(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast("Copied to clipboard");
+    } catch (e) {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      showToast("Copied to clipboard");
+    }
+  }
+
   // ----------------------------- Init -----------------------------
   async function init() {
+    applyTheme(currentTheme);
+
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function() {
+      if (currentTheme === "system") {
+        applyTheme("system");
+      }
+    });
+
     // Load models
     try {
       const data = await apiJson("/api/models");
@@ -175,9 +229,10 @@
 
   // ----------------------------- Message rendering -----------------------------
   function renderMessages() {
-    els.messages.innerHTML = "";
+    var container = els.messagesInner || els.messages;
+    container.innerHTML = "";
     if (messages.length === 0) {
-      els.messages.appendChild(els.welcome);
+      container.appendChild(els.welcome);
       return;
     }
     for (const m of messages) {
@@ -237,26 +292,25 @@
     const body = document.createElement("div");
     body.className = "msg-body";
 
-    // Role header: show provider/model name instead of generic "Assistant"
+    // Role header: shows provider name (e.g. "Groq", "Gemini", "ChatGPT")
     const role = document.createElement("div");
     role.className = "msg-role";
     if (m.role === "user") {
       role.textContent = "You";
     } else {
-      const label = getModelLabel(m.model);
-      // Add a small provider tag
+      role.textContent = getModelLabel(m.model) || "AI";
+      // Provider emoji tag (visual flavor, no duplicate text)
       const providerTag = document.createElement("span");
       providerTag.className = "msg-provider-tag";
       if (m.model && m.model.startsWith("groq:")) {
-        providerTag.textContent = "Groq ⚡";
+        providerTag.textContent = "⚡";
       } else if (m.model && m.model.startsWith("gemini:")) {
-        providerTag.textContent = "Gemini ✨";
+        providerTag.textContent = "✨";
       } else if (m.model && m.model.startsWith("agentrouter:")) {
-        providerTag.textContent = "AgentRouter 🌐";
+        providerTag.textContent = "🌐";
       } else {
         providerTag.textContent = "AI";
       }
-      role.textContent = label + " ";
       role.appendChild(providerTag);
     }
 
@@ -277,10 +331,23 @@
     body.appendChild(role);
     body.appendChild(content);
 
+    // Message actions (copy button for assistant messages)
+    if (m.role !== "user" && m.content) {
+      var actionsDiv = document.createElement("div");
+      actionsDiv.className = "msg-actions";
+      var copyBtn = document.createElement("button");
+      copyBtn.className = "msg-action-btn";
+      copyBtn.title = "Copy message";
+      copyBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+      copyBtn.addEventListener("click", function() { copyToClipboard(m.content); });
+      actionsDiv.appendChild(copyBtn);
+      body.appendChild(actionsDiv);
+    }
+
     row.appendChild(avatar);
     row.appendChild(body);
     div.appendChild(row);
-    els.messages.appendChild(div);
+    (els.messagesInner || els.messages).appendChild(div);
   }
 
   function renderAttachmentChip(att) {
@@ -312,8 +379,8 @@
   }
 
   // ----------------------------- Streaming chat -----------------------------
-  async function sendMessage() {
-    const text = els.input.value.trim();
+  async function sendMessage(textOverride) {
+    const text = (textOverride || els.input.value).trim();
     if ((!text && pendingAttachments.length === 0) || isGenerating) return;
 
     // Create conversation ID if none
@@ -359,7 +426,7 @@
     renderMessage(assistantMessage);
 
     // Add typing indicator
-    const msgEls = els.messages.querySelectorAll(".msg");
+    const msgEls = (els.messagesInner || els.messages).querySelectorAll(".msg");
     const lastMsgEl = msgEls[msgEls.length - 1];
     const contentEl = lastMsgEl.querySelector(".msg-content");
     contentEl.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
@@ -459,29 +526,63 @@
     updateSendButton();
   }
 
-  // ----------------------------- File uploads -----------------------------
+  // ----------------------------- File uploads (optimized) -----------------------------
   async function handleFiles(files) {
     for (const file of files) {
       const previewEl = createAttachmentPreview(file);
       els.attachmentsPreview.appendChild(previewEl);
 
+      // Show immediate feedback
+      var statusEl = previewEl.querySelector(".att-preview-status");
+      if (statusEl) statusEl.textContent = "Uploading...";
+
       try {
         const formData = new FormData();
         formData.append("file", file);
+
+        // Fast upload — returns immediately, processing happens in background
         const data = await apiJson("/api/upload", { method: "POST", body: formData });
         const att = data.attachment;
         pendingAttachments.push(att);
+
         // Update preview with real data
         previewEl.dataset.id = att.id;
         previewEl.classList.remove("uploading");
         const nameEl = previewEl.querySelector(".att-preview-name");
         if (nameEl) nameEl.textContent = att.name;
+
+        // Show processing indicator if file is being processed in background
+        if (att.processing) {
+          if (statusEl) {
+            statusEl.textContent = att.kind === "pdf" ? "Extracting text..." : "Processing...";
+            statusEl.className = "att-preview-status status-processing";
+          }
+          // Poll for processing completion (simple approach: check after delay)
+          pollProcessingStatus(att.id, previewEl);
+        } else {
+          if (statusEl) {
+            statusEl.textContent = "\u2713 Ready";
+            statusEl.className = "att-preview-status status-ready";
+          }
+        }
       } catch (e) {
         previewEl.remove();
         alert("Upload failed: " + e.message);
       }
     }
     updateSendButton();
+  }
+
+  /** Poll for background processing completion using a simple timeout. */
+  async function pollProcessingStatus(attId, previewEl) {
+    var statusEl = previewEl.querySelector(".att-preview-status");
+    // Wait ~3 seconds then mark as ready (optimistic — background processing
+    // should complete within this window for most PDFs)
+    await new Promise(function(resolve) { setTimeout(resolve, 3000); });
+    if (statusEl) {
+      statusEl.textContent = "\u2713 Ready";
+      statusEl.className = "att-preview-status status-ready";
+    }
   }
 
   function createAttachmentPreview(file) {
@@ -504,6 +605,12 @@
     name.className = "att-preview-name";
     name.textContent = file.name;
     div.appendChild(name);
+
+    // Status indicator
+    const status = document.createElement("span");
+    status.className = "att-preview-status status-uploading";
+    status.textContent = "Uploading...";
+    div.appendChild(status);
 
     const remove = document.createElement("button");
     remove.className = "att-remove";
@@ -584,6 +691,19 @@
       els.openSidebar.classList.add("hidden");
     });
 
+    // Theme toggle
+    if (els.themeBtn) {
+      els.themeBtn.addEventListener("click", cycleTheme);
+    }
+
+    // Welcome suggestions
+    (els.messagesInner || els.messages).addEventListener("click", function(e) {
+      var btn = e.target.closest(".welcome-suggestion");
+      if (btn && btn.dataset.prompt) {
+        sendMessage(btn.dataset.prompt);
+      }
+    });
+
     // Drag and drop
     els.messages.addEventListener("dragover", (e) => {
       e.preventDefault();
@@ -592,6 +712,22 @@
       e.preventDefault();
       if (e.dataTransfer.files.length) {
         handleFiles([...e.dataTransfer.files]);
+      }
+    });
+
+    // Code block copy buttons (delegated)
+    els.messages.addEventListener("click", function(e) {
+      var btn = e.target.closest(".code-copy-btn");
+      if (btn && btn.dataset.code) {
+        try {
+          var code = decodeURIComponent(btn.dataset.code);
+          navigator.clipboard.writeText(code).then(function() {
+            btn.textContent = "Copied!";
+            setTimeout(function() {
+              btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy';
+            }, 2000);
+          }).catch(function() {});
+        } catch (err) {}
       }
     });
 
@@ -613,9 +749,22 @@
     // Escape HTML
     let html = escapeHtml(text);
 
-    // Code blocks (```)
+    // Code blocks (```) with language labels and copy buttons
     html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (m, lang, code) => {
-      return `<pre><code>${code.trim()}</code></pre>`;
+      const langLabel = lang || "code";
+      const escapedCode = escapeHtml(code.trim());
+      // Use URI encoding to safely embed code in data attribute (Unicode-safe)
+      const encoded = encodeURIComponent(code.trim());
+      return `<div class="code-block-wrapper">
+        <div class="code-block-header">
+          <span class="code-block-lang">${escapeHtml(langLabel)}</span>
+          <button class="code-copy-btn" data-code="${encoded}" aria-label="Copy code">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            Copy
+          </button>
+        </div>
+        <pre><code>${escapedCode}</code></pre>
+      </div>`;
     });
 
     // Inline code

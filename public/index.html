@@ -36,13 +36,25 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
         </button>
         <h1 id="chat-title" class="chat-title">New chat</h1>
+        <div class="header-actions">
+          <button id="theme-btn" class="icon-btn" title="Toggle theme" aria-label="Toggle color theme">
+            <svg id="theme-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          </button>
+        </div>
       </header>
 
       <div id="messages" class="messages">
-        <div id="welcome" class="welcome">
-          <div class="welcome-icon">🤖</div>
-          <h2>How can I help you today?</h2>
-          <p>Ask anything, or upload an image or PDF to get started.</p>
+        <div class="messages-inner">
+          <div id="welcome" class="welcome">
+            <div class="welcome-icon">🤖</div>
+            <h2>How can I help you today?</h2>
+            <p>Ask anything, or upload an image or PDF to get started.</p>
+            <div class="welcome-suggestions">
+              <button class="welcome-suggestion" data-prompt="Explain quantum computing in simple terms">Explain quantum computing</button>
+              <button class="welcome-suggestion" data-prompt="Write a Python function to sort a list">Write Python code</button>
+              <button class="welcome-suggestion" data-prompt="What is the meaning of life?">Philosophical question</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -61,10 +73,13 @@
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
           </button>
         </div>
-        <p class="composer-hint">PrototypeChatBot can make mistakes. Powered by AgentRouter, Groq & Gemini.</p>
+        <p class="composer-hint">ChatDDB can make mistakes. Powered by Groq, Gemini &amp; AgentRouter.</p>
       </div>
     </main>
   </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
   <script src="/app.js"></script>
 </body>
 </html>

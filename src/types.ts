@@ -29,6 +29,21 @@ export interface AttachmentMeta {
   kind: "image" | "pdf" | "file";
   /** Extracted text for PDFs/documents, used as context for the model. */
   extractedText?: string;
+  /** Key for the optimized (resized/compressed) version of an image in R2. */
+  optimizedR2Key?: string;
+  /** Whether background processing is still in progress. */
+  processing?: boolean;
+  /** Key to the extracted text stored as a separate R2 object. */
+  textR2Key?: string;
+}
+
+export interface DocumentChunk {
+  id: string;
+  attachment_id: string;
+  chunk_index: number;
+  chunk_text: string;
+  token_estimate: number;
+  created_at: number;
 }
 
 export interface ChatMessage {
@@ -73,56 +88,37 @@ export interface ModelInfo {
 }
 
 export const MODELS: ModelInfo[] = [
-  // --- Groq (free tier, fastest inference) ---
-  {
-    id: "groq:llama-3.3-70b-versatile",
-    label: "Groq Llama 3.3 70B",
-    provider: "groq",
-    supportsVision: false,
-    supportsStreaming: true,
-  },
   {
     id: "groq:llama-3.1-8b-instant",
-    label: "Groq Llama 3.1 8B (Fast)",
+    label: "Groq",
     provider: "groq",
     supportsVision: false,
-    supportsStreaming: true,
-  },
-  {
-    id: "groq:llama-3.2-11b-vision-preview",
-    label: "Groq Llama 3.2 Vision",
-    provider: "groq",
-    supportsVision: true,
-    supportsStreaming: true,
-  },
-
-  // --- Gemini (free tier, Google AI) ---
-  {
-    id: "gemini:gemini-2.0-flash",
-    label: "Gemini 2.0 Flash",
-    provider: "gemini",
-    supportsVision: true,
     supportsStreaming: true,
   },
   {
     id: "gemini:gemini-2.5-flash",
-    label: "Gemini 2.5 Flash Pro",
+    label: "Gemini",
     provider: "gemini",
     supportsVision: true,
     supportsStreaming: true,
   },
-
-  // --- AgentRouter (gateway to ChatGPT & Claude) ---
   {
-    id: "agentrouter:gpt-5.5",
-    label: "AgentRouter ChatGPT",
+    id: "agentrouter:kimi-k3",
+    label: "Kimi",
     provider: "agentrouter",
     supportsVision: true,
     supportsStreaming: true,
   },
   {
-    id: "agentrouter:claude-opus-4-6",
-    label: "AgentRouter Claude",
+    id: "agentrouter:claude-opus-4-8",
+    label: "Claude",
+    provider: "agentrouter",
+    supportsVision: true,
+    supportsStreaming: true,
+  },
+  {
+    id: "agentrouter:gpt-5.6-sol",
+    label: "ChatGPT",
     provider: "agentrouter",
     supportsVision: true,
     supportsStreaming: true,
