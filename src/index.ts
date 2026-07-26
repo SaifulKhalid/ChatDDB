@@ -15,7 +15,7 @@
  *
  * Static assets (frontend) are served from web/out via the ASSETS binding.
  */
-import { streamChat, buildProviderMessages, type ProviderMessage } from "./providers";
+import { streamChat, buildProviderMessages, generateImage, arrayBufferToBase64, type ProviderMessage } from "./providers";
 import {
   extractPdfText,
   classifyAttachment,
@@ -92,6 +92,10 @@ export default {
 
       if (pathname === "/api/enhance" && method === "POST") {
         return enhancePrompt(req, env);
+      }
+
+      if (pathname === "/api/generate-image" && method === "POST") {
+        return handleGenerateImage(req, env);
       }
 
       // Fall through to static assets (frontend). If no asset matches, return 404 JSON.
@@ -760,6 +764,141 @@ async function adminUpdateModel(req: Request, env: Env): Promise<Response> {
     await env.DB.prepare(`UPDATE admin_models SET ${updates.join(", ")} WHERE model_id = ?`).bind(...values).run();
     return json({ ok: true });
   } catch (err) {
+    return json({ error: (err as Error).message }, 500);
+  }
+}
+
+/* ----------------------------- Image Generation ----------------------------- */
+
+/**
+ * POST /api/generate-image
+ * Generates an image using the selected model.
+ *
+ * Request body:
+ *   - prompt: string (required) - text description or editing instruction
+ *   - model?: string - model ID to use (defaults to first image gen model)
+ *   - conversationId: string (required) - conversation to persist messages in
+ *   - imageR2Key?: string - R2 key of a source image for img2img editing
+ *   - imageMimeType?: string - MIME type of the source image
+ *
+ * When imageR2Key is provided, the source image is fetched directly from R2
+ * and passed as an input_reference to the OpenRouter API for image-to-image editing.
+ */
+async function handleGenerateImage(req: Request, env: Env): Promise<Response> {
+  const body = await req.json().catch(() => ({})) as {
+    prompt?: string;
+    model?: string;
+    conversationId?: string;
+    /** R2 key of a source image for image-to-image editing (img2img). */
+    imageR2Key?: string;
+    /** MIME type of the source image (e.g. "image/png"). */
+    imageMimeType?: string;
+  };
+
+  const prompt = (body.prompt ?? "").trim();
+  if (!prompt) {
+    return json({ error: "prompt is required" }, 400);
+  }
+
+  const conversationId = body.conversationId;
+  if (!conversationId) {
+    return json({ error: "conversationId is required" }, 400);
+  }
+
+  const mergedModels = await getMergedModels(env);
+  const imageGenModels = mergedModels.filter((m) => m.supportsImageGen);
+  if (imageGenModels.length === 0) {
+    return json({ error: "No image generation models available" }, 400);
+  }
+
+  // Use requested model or the first available image gen model
+  let modelId = body.model;
+  if (modelId && !imageGenModels.some((m) => m.id === modelId)) {
+    return json({ error: `Image generation model "${modelId}" not found` }, 400);
+  }
+  if (!modelId) {
+    modelId = imageGenModels[0].id;
+  }
+
+  // If imageR2Key is provided, fetch the source image from R2 directly for img2img
+  // We use the R2 key directly (not attachment ID) to avoid race conditions with async metadata writes
+  let inputReferences: { type: string; image_url: { url: string } }[] | undefined;
+  if (body.imageR2Key) {
+    const obj = await env.BUCKET.get(body.imageR2Key);
+    if (obj) {
+      const buf = await obj.arrayBuffer();
+      const b64 = arrayBufferToBase64(buf);
+      const mimeType = body.imageMimeType || "image/png";
+      inputReferences = [
+        {
+          type: "image_url",
+          image_url: {
+            url: `data:${mimeType};base64,${b64}`,
+          },
+        },
+      ];
+    }
+    if (!inputReferences) {
+      return json({ error: "Source image not found in storage. It may still be uploading." }, 404);
+    }
+  }
+
+  // Ensure conversation exists
+  let conv = await env.DB.prepare(
+    "SELECT id, title, model FROM conversations WHERE id = ?"
+  ).bind(conversationId).first<Conversation>();
+  if (!conv) {
+    const now = Math.floor(Date.now() / 1000);
+    const title = prompt.slice(0, 40);
+    await env.DB.prepare(
+      "INSERT INTO conversations (id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+    ).bind(conversationId, title, modelId, now, now).run();
+    conv = { id: conversationId, title, model: modelId, created_at: now, updated_at: now };
+  }
+
+  try {
+    const images = await generateImage(modelId, prompt, env, inputReferences);
+
+    // Persist the user message
+    const now = Math.floor(Date.now() / 1000);
+    const userMsgId = genId();
+    await env.DB.prepare(
+      "INSERT INTO messages (id, conversation_id, role, content, attachments, created_at) VALUES (?, ?, 'user', ?, '[]', ?)"
+    ).bind(userMsgId, conversationId, prompt, now).run();
+
+    // Update conversation title
+    if (conv.title === "New chat" && prompt) {
+      await env.DB.prepare("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?")
+        .bind(prompt.slice(0, 50), now, conversationId).run();
+    }
+
+    // Build assistant content with embedded markdown images (data URIs for persistence)
+    const modelLabel = mergedModels.find((m) => m.id === modelId)?.label || modelId;
+    const isEditing = !!inputReferences;
+    const imageMarkdown = images
+      .map((img, i) => `![${isEditing ? "Edited" : "Generated"} Image ${i + 1}](data:${img.media_type};base64,${img.b64_json})`)
+      .join("\n\n");
+    const modeLabel = isEditing ? "Edited" : "Generated";
+    const assistantContent = `🎨 **${modeLabel} with ${modelLabel}**\n\n${imageMarkdown}\n\n*Prompt: ${prompt}*`;
+
+    // Persist the assistant message
+    const assistantMsgId = genId();
+    await env.DB.prepare(
+      "INSERT INTO messages (id, conversation_id, role, content, attachments, model, created_at) VALUES (?, ?, 'assistant', ?, '[]', ?, ?)"
+    ).bind(assistantMsgId, conversationId, assistantContent, modelId, now).run();
+
+    // Update conversation timestamp
+    await env.DB.prepare("UPDATE conversations SET updated_at = ? WHERE id = ?")
+      .bind(now, conversationId).run();
+
+    return json({
+      images,
+      model: modelId,
+      userMessageId: userMsgId,
+      assistantMessageId: assistantMsgId,
+    });
+  } catch (err) {
+    console.error("Image generation failed:", err);
     return json({ error: (err as Error).message }, 500);
   }
 }

@@ -70,6 +70,7 @@ const CAPABILITY_LABELS: Record<Capability, string> = {
   vision: "Image attached",
   "pdf-analysis": "Document attached",
   "long-context": "Long conversation",
+  "image-generation": "Image generation",
   fast: "",
   cheap: "",
   premium: "",

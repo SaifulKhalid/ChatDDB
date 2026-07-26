@@ -85,6 +85,7 @@ export type Capability =
   | "vision"
   | "pdf-analysis"
   | "long-context"
+  | "image-generation"
   | "fast"
   | "cheap"
   | "premium";
@@ -118,6 +119,7 @@ export interface ModelInfo {
   provider: "groq" | "gemini" | "agentrouter" | "openrouter" | "workers-ai";
   supportsVision: boolean;
   supportsStreaming: boolean;
+  supportsImageGen?: boolean;
 }
 
 export const MODELS: ModelInfo[] = [
@@ -185,7 +187,7 @@ export const MODELS: ModelInfo[] = [
     supportsVision: false,
     supportsStreaming: true,
   },
-  // --- OpenRouter (free models) ---
+  // --- OpenRouter (free chat models) ---
   {
     id: "openrouter:poolside/laguna-s-2.1:free",
     label: "Laguna S 2.1",
@@ -220,6 +222,31 @@ export const MODELS: ModelInfo[] = [
     provider: "openrouter",
     supportsVision: false,
     supportsStreaming: true,
+  },
+  // --- Image generation models (free tier) ---
+  {
+    id: "openrouter:black-forest-labs/flux-1-schnell:free",
+    label: "FLUX.1 Schnell",
+    provider: "openrouter",
+    supportsVision: false,
+    supportsStreaming: false,
+    supportsImageGen: true,
+  },
+  {
+    id: "openrouter:black-forest-labs/flux-pro:free",
+    label: "FLUX Pro",
+    provider: "openrouter",
+    supportsVision: false,
+    supportsStreaming: false,
+    supportsImageGen: true,
+  },
+  {
+    id: "workers-ai:@cf/black-forest-labs/flux-1-schnell",
+    label: "Image Gen (FLUX.1)",
+    provider: "workers-ai",
+    supportsVision: false,
+    supportsStreaming: false,
+    supportsImageGen: true,
   },
 ];
 

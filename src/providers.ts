@@ -136,6 +136,182 @@ export async function streamChat(
   }
 }
 
+/* ----------------------------- Image Generation (free tier) ----------------------------- */
+
+export interface ImageGenResult {
+  b64_json: string;
+  media_type: string;
+}
+
+/**
+ * Generate an image using the appropriate provider.
+ * Accepts optional inputReferences for image-to-image editing (img2img).
+ */
+export async function generateImage(
+  modelId: string,
+  prompt: string,
+  env: Env,
+  inputReferences?: { type: string; image_url: { url: string } }[]
+): Promise<ImageGenResult[]> {
+  const mergedModels = await getMergedModels(env);
+  const model = mergedModels.find((m) => m.id === modelId);
+  if (!model) throw new Error("Unknown model: " + modelId);
+  if (!model.supportsImageGen) throw new Error("Model does not support image generation: " + modelId);
+
+  switch (model.provider) {
+    case "openrouter":
+      return generateOpenRouterImage(prompt, modelId, env, inputReferences);
+    case "workers-ai":
+      return generateWorkersAIImage(prompt, modelId, env);
+    default:
+      throw new Error("Image generation not supported for provider: " + model.provider);
+  }
+}
+
+/**
+ * Generate image via OpenRouter's dedicated image API (free tier models).
+ * POST https://openrouter.ai/api/v1/images
+ *
+ * Supports:
+ * - Text-to-image (no inputReferences)
+ * - Image-to-image / editing / variations (with inputReferences)
+ */
+async function generateOpenRouterImage(
+  prompt: string,
+  modelId: string,
+  env: Env,
+  inputReferences?: { type: string; image_url: { url: string } }[]
+): Promise<ImageGenResult[]> {
+  const { model: apiModel } = parseModelId(modelId);
+  const url = "https://openrouter.ai/api/v1/images";
+
+  const payload: Record<string, unknown> = {
+    model: apiModel,
+    prompt,
+    n: 1,
+  };
+
+  // If input references are provided, pass them to enable img2img editing
+  if (inputReferences && inputReferences.length > 0) {
+    payload.input_references = inputReferences;
+  }
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + env.OPENROUTER_API_KEY,
+      "HTTP-Referer": "https://chatddb.pages.dev",
+      "X-Title": "ChatDDB",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    if (res.status === 429) {
+      throw new Error(
+        "OpenRouter image generation rate limit exceeded. Please wait and try again."
+      );
+    }
+    if (res.status === 402) {
+      throw new Error(
+        "OpenRouter: insufficient credits or this image model is not free with your provider."
+      );
+    }
+    throw new Error(
+      "OpenRouter image generation service unavailable (" +
+        res.status +
+        "): " + txt.slice(0, 200)
+    );
+  }
+
+  const data = (await res.json()) as { data?: { b64_json?: string; media_type?: string }[] };
+  if (!data.data || data.data.length === 0) {
+    throw new Error("OpenRouter image generation returned no images.");
+  }
+
+  return data.data.map((img) => ({
+    b64_json: img.b64_json || "",
+    media_type: img.media_type || "image/png",
+  }));
+}
+
+/**
+ * Generate image via Cloudflare Workers AI (free daily quota).
+ * Uses env.AI.run() with text-to-image models like @cf/black-forest-labs/flux-1-schnell.
+ */
+async function generateWorkersAIImage(
+  prompt: string,
+  modelId: string,
+  env: Env
+): Promise<ImageGenResult[]> {
+  const { model: apiModel } = parseModelId(modelId);
+
+  let response: ArrayBuffer | ReadableStream;
+  try {
+    // Workers AI image models return binary image data directly
+    const result = await env.AI.run(apiModel, { prompt });
+
+    if (result instanceof ReadableStream) {
+      // Collect the stream into an ArrayBuffer
+      const reader = result.getReader();
+      const chunks: Uint8Array[] = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      const total = chunks.reduce((acc, c) => acc + c.length, 0);
+      const merged = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) {
+        merged.set(chunk, offset);
+        offset += chunk.length;
+      }
+      response = merged.buffer as ArrayBuffer;
+    } else if (result instanceof ArrayBuffer) {
+      response = result;
+    } else if (result && typeof result === "object" && "image" in result) {
+      // Some models return { image: ArrayBuffer }
+      const buf = (result as { image: ArrayBuffer }).image;
+      if (buf instanceof ArrayBuffer) {
+        response = buf;
+      } else {
+        throw new Error("Unexpected Workers AI image response format");
+      }
+    } else {
+      throw new Error("Unexpected Workers AI image response type: " + typeof result);
+    }
+  } catch (err) {
+    const msg = (err as Error).message;
+    if (
+      msg.includes("429") ||
+      msg.includes("quota") ||
+      msg.includes("limit") ||
+      msg.includes("neuron")
+    ) {
+      throw new Error(
+        "Cloudflare Workers AI daily free quota (10,000 neurons) may be exhausted. " +
+          "Please wait until tomorrow or select a different model. " +
+          "Contact the developer if this persists."
+      );
+    }
+    throw new Error(
+      "Workers AI image generation failed: " + msg +
+        ". Please try again later or contact the developer."
+    );
+  }
+
+  const b64_json = arrayBufferToBase64(response);
+  return [
+    {
+      b64_json,
+      media_type: "image/png",
+    },
+  ];
+}
+
 /* ----------------------------- Groq (OpenAI-compatible) ----------------------------- */
 
 async function streamGroq(

@@ -38,6 +38,10 @@ interface ChatState {
   // Auto-selection info for 'Why this model?' display
   lastSelectionInfo: SelectionInfo | null;
 
+  // Image generation
+  isImageGenMode: boolean;
+  isGeneratingImage: boolean;
+
   // Actions
   loadModels: () => Promise<void>;
   setCurrentModel: (id: string) => void;
@@ -56,6 +60,10 @@ interface ChatState {
   appendToStream: (text: string) => void;
   finishStream: (fullText: string) => void;
   failStream: (error: string) => void;
+
+  // Image generation actions
+  setImageGenMode: (enabled: boolean) => void;
+  generateImage: (prompt: string) => Promise<void>;
 }
 
 /* ─── Store ─────────────────────────────────────────── */
@@ -78,6 +86,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   pendingAttachments: [],
   lastSelectionInfo: null,
+
+  isImageGenMode: false,
+  isGeneratingImage: false,
 
   // Actions
   loadModels: async () => {
@@ -160,6 +171,131 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => ({
       pendingAttachments: state.pendingAttachments.filter((a) => a.id !== id),
     }));
+  },
+
+  setImageGenMode: (enabled: boolean) => {
+    set({ isImageGenMode: enabled });
+  },
+
+  generateImage: async (prompt: string) => {
+    const { currentConversationId, messages, models, currentModelId, pendingAttachments } = get();
+    if (!prompt.trim() || get().isGeneratingImage) return;
+
+    // Find the first image generation model
+    const imageGenModels = models.filter((m) => m.supportsImageGen);
+    const imageModel = imageGenModels.find(
+      (m) => currentModelId === "auto" || m.id === currentModelId
+    ) || imageGenModels[0];
+
+    if (!imageModel) {
+      // Add error message if no models available
+      const convId = currentConversationId || crypto.randomUUID();
+      const errorMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        conversation_id: convId,
+        role: "assistant",
+        content: "⚠️ **Image generation not available**: No image generation models are available. Please check your model configuration.",
+        attachments: [],
+        model: null,
+        created_at: Math.floor(Date.now() / 1000),
+      };
+      set({ messages: [...messages, errorMsg] });
+      return;
+    }
+
+    set({ isGeneratingImage: true, isStreaming: true });
+
+    const convId = currentConversationId || crypto.randomUUID();
+    const modelName = imageModel.label || imageModel.id;
+
+    // Check if we have any image attachments for image-to-image editing
+    const imageAttachments = pendingAttachments.filter((a) => a.kind === "image");
+    const sourceImage = imageAttachments.length > 0 ? imageAttachments[0] : undefined;
+    const isEditing = !!sourceImage;
+
+    // Build user message with the attachments (they'll be displayed in chat)
+    const userMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      conversation_id: convId,
+      role: "user",
+      content: prompt,
+      attachments: isEditing ? pendingAttachments : [],
+      model: null,
+      created_at: Math.floor(Date.now() / 1000),
+    };
+
+    // Build assistant placeholder
+    const assistantMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      conversation_id: convId,
+      role: "assistant",
+      content: "",
+      attachments: [],
+      model: imageModel.id,
+      created_at: Math.floor(Date.now() / 1000),
+    };
+
+    const updatedMessages = [...messages, userMsg, assistantMsg];
+    set({
+      currentConversationId: convId,
+      messages: updatedMessages,
+      pendingAttachments: [], // Clear pending attachments after using them
+      streamedContent: "",
+    });
+
+    if (!currentConversationId) {
+      set({ activeConversationTitle: prompt.slice(0, 50) });
+    }
+
+    try {
+      // Call API to generate image (also persists both messages server-side)
+      // Pass r2Key and type directly to avoid race conditions with R2 metadata writes
+      const result = await api.generateImage({
+        prompt,
+        model: imageModel.id,
+        conversationId: convId,
+        imageR2Key: sourceImage?.r2Key,
+        imageMimeType: sourceImage?.type,
+      });
+
+      // Format images as markdown with embedded data URIs for persistence
+      const modeLabel = isEditing ? "Edited" : "Generated";
+      const imageMarkdown = result.images
+        .map((img, i) => `![${modeLabel} Image ${i + 1}](data:${img.media_type};base64,${img.b64_json})`)
+        .join("\n\n");
+
+      const content = `🎨 **${modeLabel} with ${modelName}**\n\n${imageMarkdown}\n\n*Prompt: ${prompt}*`;
+
+      // Update the assistant message with the markdown content (images embedded as data URIs)
+      const finalMessages = get().messages;
+      const updated = [...finalMessages];
+      const last = updated[updated.length - 1];
+      if (last && last.role === "assistant") {
+        updated[updated.length - 1] = { ...last, content };
+        set({
+          messages: updated,
+          isStreaming: false,
+          isGeneratingImage: false,
+        });
+      }
+    } catch (err) {
+      const finalMessages = get().messages;
+      const updated = [...finalMessages];
+      const last = updated[updated.length - 1];
+      if (last && last.role === "assistant") {
+        updated[updated.length - 1] = {
+          ...last,
+          content: `⚠️ **Image generation failed**: ${(err as Error).message}`,
+        };
+        set({
+          messages: updated,
+          isStreaming: false,
+          isGeneratingImage: false,
+        });
+      }
+    }
+
+    get().loadConversations();
   },
 
   deleteConversation: async (id: string) => {

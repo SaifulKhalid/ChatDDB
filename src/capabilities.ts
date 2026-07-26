@@ -21,8 +21,9 @@ export const PROVIDER_CONFIGS: ProviderConfig[] = [
     models: [
       "workers-ai:@cf/mistral/mistral-7b-instruct-v0.3",
       "workers-ai:@cf/meta/llama-3.2-11b-vision-instruct",
+      "workers-ai:@cf/black-forest-labs/flux-1-schnell",
     ],
-    capabilities: ["chat", "coding", "vision", "fast", "cheap"],
+    capabilities: ["chat", "coding", "vision", "fast", "cheap", "image-generation"],
   },
   {
     provider: "gemini",
@@ -46,5 +47,15 @@ export const PROVIDER_CONFIGS: ProviderConfig[] = [
     costTier: 3,
     models: ["agentrouter:gpt-5.6-sol", "agentrouter:claude-opus-4-8"],
     capabilities: ["chat", "coding", "reasoning", "math", "creative", "premium"],
+  },
+  {
+    provider: "openrouter",
+    priority: 5,
+    costTier: 1,
+    models: [
+      "openrouter:black-forest-labs/flux-1-schnell:free",
+      "openrouter:black-forest-labs/flux-pro:free",
+    ],
+    capabilities: ["image-generation", "cheap"],
   },
 ];

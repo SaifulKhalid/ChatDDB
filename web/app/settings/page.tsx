@@ -33,13 +33,14 @@ interface ModelInfo {
   supportsStreaming: boolean;
 }
 
-const PROVIDERS = ["groq", "gemini", "agentrouter", "openrouter"];
+const PROVIDERS = ["groq", "gemini", "agentrouter", "openrouter", "workers-ai"];
 
 const PROVIDER_COLORS: Record<string, string> = {
   groq: "bg-emerald-500/10 text-emerald-400",
   gemini: "bg-blue-500/10 text-blue-400",
   agentrouter: "bg-purple-500/10 text-purple-400",
   openrouter: "bg-amber-500/10 text-amber-400",
+  "workers-ai": "bg-cyan-500/10 text-cyan-400",
 };
 
 export default function SettingsPage() {

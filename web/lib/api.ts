@@ -23,6 +23,7 @@ export interface ModelInfo {
   provider: "groq" | "gemini" | "agentrouter" | "openrouter" | "workers-ai";
   supportsVision: boolean;
   supportsStreaming: boolean;
+  supportsImageGen?: boolean;
 }
 
 export interface AttachmentMeta {
@@ -61,6 +62,11 @@ export interface StreamEvent {
   model?: string;
   label?: string;
   reason?: string;
+}
+
+export interface ImageGenResult {
+  b64_json: string;
+  media_type: string;
 }
 
 /* ─── Helpers ───────────────────────────────────────── */
@@ -140,6 +146,23 @@ export async function uploadFile(
 
 export function getFileUrl(r2Key: string): string {
   return `${API_BASE}/api/files/${encodeURIComponent(r2Key)}`;
+}
+
+/* ─── Image Generation ─────────────────────────────── */
+
+export async function generateImage(options: {
+  prompt: string;
+  model?: string;
+  conversationId: string;
+  /** R2 key of a source image for image-to-image editing (img2img) */
+  imageR2Key?: string;
+  /** MIME type of the source image */
+  imageMimeType?: string;
+}): Promise<{ images: ImageGenResult[]; model: string; userMessageId: string; assistantMessageId: string }> {
+  return request("/api/generate-image", {
+    method: "POST",
+    body: JSON.stringify(options),
+  });
 }
 
 /* ─── Streaming Chat ────────────────────────────────── */

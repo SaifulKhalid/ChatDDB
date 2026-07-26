@@ -44,6 +44,24 @@ export function renderMarkdown(text: string, isStreaming = false): string {
   // Italic
   html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
 
+  // Images (must come before links to avoid conflict with ![alt](url))
+  html = html.replace(
+    /!\[([^\]]*)\]\(([^)]+)\)/g,
+    (_m: string, alt: string, src: string) => {
+      // For data URI images, render as img tag
+      const isDataUri = src.startsWith("data:");
+      return [
+        '<div class="my-3">',
+        `<img src="${escapeHtml(src)}" alt="${escapeHtml(alt || 'Image')}"`,
+        ' class="max-w-full h-auto rounded-xl border border-[var(--border-subtle)] shadow-md"',
+        isDataUri ? '' : ' loading="lazy"',
+        ' />',
+        alt ? `<div class="text-xs text-[var(--text-muted)] mt-1 text-center">${escapeHtml(alt)}</div>` : '',
+        '</div>',
+      ].join("");
+    }
+  );
+
   // Links
   html = html.replace(
     /\[([^\]]+)\]\(([^)]+)\)/g,

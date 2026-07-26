@@ -8,6 +8,7 @@ import {
   Sparkles,
   Loader2,
   ChevronDown,
+  ImageIcon,
 } from "lucide-react";
 import { useChatStore } from "@/stores/chat-store";
 import { uploadFile } from "@/lib/api";
@@ -26,6 +27,10 @@ export function Composer() {
     models,
     currentModelId,
     setCurrentModel,
+    isImageGenMode,
+    setImageGenMode,
+    generateImage,
+    isGeneratingImage,
   } = useChatStore();
 
   const [text, setText] = useState("");
@@ -82,6 +87,12 @@ export function Composer() {
   const handleSend = () => {
     if ((!text.trim() && pendingAttachments.length === 0) || isStreaming)
       return;
+    if (isImageGenMode) {
+      generateImage(text.trim());
+      setText("");
+      setImageGenMode(false);
+      return;
+    }
     sendMessage(text.trim());
     setText("");
   };
@@ -91,6 +102,10 @@ export function Composer() {
       e.preventDefault();
       handleSend();
     }
+  };
+
+  const handleImageGenClick = () => {
+    setImageGenMode(!isImageGenMode);
   };
 
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -140,7 +155,7 @@ export function Composer() {
     }
   }, [enhanceError]);
 
-  const canSend = (text.trim() || pendingAttachments.length > 0) && !isStreaming;
+  const canSend = (text.trim() || pendingAttachments.length > 0) && !isStreaming && !isGeneratingImage;
 
   return (
     <div className="relative pb-5 pt-2 px-4">
@@ -194,6 +209,17 @@ export function Composer() {
             className="hidden"
             accept="image/*,.pdf,.txt,.md,.doc,.docx"
           />
+
+          {/* Image generation mode indicator */}
+          {isImageGenMode && (
+            <div className="absolute -top-7 left-0 right-0 flex items-center gap-2 px-3">
+              <span className="text-[11px] font-medium text-[var(--accent-secondary)]">
+                {pendingAttachments.some(a => a.kind === "image")
+                  ? "🖌️ Image Editing Mode — Describe how to transform the attached image"
+                  : "🎨 Image Generation Mode — Describe what you want to create"}
+              </span>
+            </div>
+          )}
 
           {/* Textarea */}
           <textarea
@@ -309,22 +335,44 @@ export function Composer() {
             )}
           </div>
 
-          {/* Prompt enhancer (sparkle) */}
+          {/* Image generation toggle */}
           <button
-            onClick={handleEnhance}
-            disabled={enhancing || !text.trim()}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full
-              text-[var(--text-muted)] transition-colors
-              hover:bg-[var(--bg-hover)] hover:text-[var(--accent-primary)]
-              disabled:opacity-30 disabled:cursor-not-allowed"
-            title="Enhance prompt"
+            onClick={handleImageGenClick}
+            disabled={isStreaming}
+            className={cn(
+              "flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors",
+              isImageGenMode
+                ? "bg-[var(--accent-secondary)]/15 text-[var(--accent-secondary)]"
+                : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]",
+              "disabled:opacity-30 disabled:cursor-not-allowed"
+            )}
+            title={isImageGenMode ? "Switch to chat mode" : "Generate image"}
           >
-            {enhancing ? (
+            {isGeneratingImage ? (
               <Loader2 className="h-4 w-4 animate-spin" />
             ) : (
-              <Sparkles className="h-4 w-4" />
+              <ImageIcon className="h-4 w-4" />
             )}
           </button>
+
+          {/* Prompt enhancer (sparkle) */}
+          {!isImageGenMode && (
+            <button
+              onClick={handleEnhance}
+              disabled={enhancing || !text.trim()}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full
+                text-[var(--text-muted)] transition-colors
+                hover:bg-[var(--bg-hover)] hover:text-[var(--accent-primary)]
+                disabled:opacity-30 disabled:cursor-not-allowed"
+              title="Enhance prompt"
+            >
+              {enhancing ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Sparkles className="h-4 w-4" />
+              )}
+            </button>
+          )}
 
           {/* Send / Stop */}
           {isStreaming ? (
