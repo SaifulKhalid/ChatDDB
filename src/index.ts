@@ -15,7 +15,7 @@
  *
  * Static assets (frontend) are served from ./public via the `assets` binding.
  */
-import { streamChat, buildProviderMessages } from "./providers";
+import { streamChat, buildProviderMessages, type ProviderMessage } from "./providers";
 import {
   extractPdfText,
   classifyAttachment,
@@ -77,6 +77,10 @@ export default {
 
       if (pathname === "/api/chat" && method === "POST") {
         return chat(req, env);
+      }
+
+      if (pathname === "/api/enhance" && method === "POST") {
+        return enhancePrompt(req, env);
       }
 
       // Fall through to static assets (frontend). If no asset matches, return 404 JSON.
@@ -553,4 +557,57 @@ async function chat(req: Request, env: Env): Promise<Response> {
       ...corsHeaders(),
     },
   });
+}
+
+/* ----------------------------- Prompt Enhancer ----------------------------- */
+
+/**
+ * POST /api/enhance
+ * Enhances a user's prompt using the selected AI model.
+ * Body: { text: string, model?: string }
+ * Returns: { enhanced: string }
+ */
+async function enhancePrompt(req: Request, env: Env): Promise<Response> {
+  const body = await req.json().catch(() => ({})) as {
+    text?: string;
+    model?: string;
+  };
+
+  const text = (body.text ?? "").trim();
+  if (!text) {
+    return json({ error: "text is required" }, 400);
+  }
+
+  const modelId = body.model && getModel(body.model) ? body.model : MODELS[0].id;
+
+  const systemPrompt =
+    "You are a query enhancement assistant. Your task is to rephrase and improve the user's query " +
+    "to make it clearer, more specific, and better structured. Fix any spelling or grammar issues. " +
+    "Return ONLY the enhanced query text, nothing else. Do not add explanations, commentary, " +
+    "or any prefixes like 'Enhanced query:'. Just output the improved version.";
+
+  try {
+    const providerMessages: ProviderMessage[] = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: text },
+    ];
+
+    let enhanced = "";
+    enhanced = await streamChat(modelId, providerMessages, env, {
+      onChunk: (chunk) => {
+        enhanced += chunk;
+      },
+    });
+
+    // Fallback to original if AI returns empty
+    if (!enhanced.trim()) {
+      enhanced = text;
+    }
+
+    return json({ enhanced: enhanced.trim() });
+  } catch (err) {
+    console.error("Enhance failed:", err);
+    // Fallback: return original text
+    return json({ enhanced: text, warning: (err as Error).message });
+  }
 }

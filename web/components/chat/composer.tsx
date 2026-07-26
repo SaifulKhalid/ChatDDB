@@ -30,6 +30,8 @@ export function Composer() {
 
   const [text, setText] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [enhancing, setEnhancing] = useState(false);
+  const [enhanceError, setEnhanceError] = useState("");
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -107,6 +109,36 @@ export function Composer() {
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
+
+  const handleEnhance = async () => {
+    const currentText = text.trim();
+    if (!currentText || enhancing) return;
+    setEnhancing(true);
+    try {
+      const res = await fetch("/api/enhance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: currentText, model: currentModelId }),
+      });
+      if (!res.ok) throw new Error("Enhance failed");
+      const data = await res.json();
+      setText(data.enhanced);
+      textareaRef.current?.focus();
+    } catch (err) {
+      console.error("Enhance failed", err);
+      setEnhanceError("Enhance failed, using original");
+    } finally {
+      setEnhancing(false);
+    }
+  };
+
+  // Auto-clear enhance error toast
+  useEffect(() => {
+    if (enhanceError) {
+      const t = setTimeout(() => setEnhanceError(""), 2000);
+      return () => clearTimeout(t);
+    }
+  }, [enhanceError]);
 
   const canSend = (text.trim() || pendingAttachments.length > 0) && !isStreaming;
 
@@ -239,12 +271,19 @@ export function Composer() {
 
           {/* Prompt enhancer (sparkle) */}
           <button
+            onClick={handleEnhance}
+            disabled={enhancing || !text.trim()}
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full
               text-[var(--text-muted)] transition-colors
-              hover:bg-[var(--bg-hover)] hover:text-[var(--accent-primary)]"
+              hover:bg-[var(--bg-hover)] hover:text-[var(--accent-primary)]
+              disabled:opacity-30 disabled:cursor-not-allowed"
             title="Enhance prompt"
           >
-            <Sparkles className="h-4 w-4" />
+            {enhancing ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Sparkles className="h-4 w-4" />
+            )}
           </button>
 
           {/* Send / Stop */}
@@ -275,6 +314,18 @@ export function Composer() {
           )}
         </div>
       </div>
+
+      {/* Enhance error toast */}
+      {enhanceError && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50
+          px-4 py-2 rounded-full
+          bg-[var(--bg-card)] border border-[var(--border-subtle)]
+          text-sm text-[var(--text-secondary)]
+          shadow-lg backdrop-blur-sm
+          animate-fade-in">
+          {enhanceError}
+        </div>
+      )}
     </div>
   );
 }

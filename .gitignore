@@ -12,6 +12,10 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Next.js build artifacts
+web/.next/
+web/out/
+
 # Editor
 .vscode/
 .idea/

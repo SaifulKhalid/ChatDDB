@@ -38,6 +38,12 @@
     themeBtn: $("#theme-btn"),
     toast: $("#toast"),
     messagesInner: document.querySelector(".messages-inner"),
+    sparkleBtn: $("#sparkle-btn"),
+    userQueryPill: $("#user-query-pill"),
+    userQueryText: $("#user-query-text"),
+    composerModelBtn: $("#composer-model-btn"),
+    composerModelDropdown: $("#composer-model-dropdown"),
+    scrollBottomBtn: $("#scroll-bottom-btn"),
   };
 
   // ----------------------------- API helpers -----------------------------
@@ -82,6 +88,32 @@
     toastTimeout = setTimeout(function() {
       els.toast.classList.remove("visible");
     }, 2000);
+  }
+
+  // ----------------------------- Prompt Enhancer -----------------------------
+  async function enhancePrompt() {
+    var text = els.input.value.trim();
+    if (!text) return;
+    els.sparkleBtn.disabled = true;
+    els.sparkleBtn.innerHTML = '<svg class="spin" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
+    try {
+      var res = await fetch("/api/enhance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: text, model: currentModel }),
+      });
+      if (!res.ok) throw new Error("Enhance failed");
+      var data = await res.json();
+      els.input.value = data.enhanced;
+      els.input.focus();
+      autoResize();
+    } catch (e) {
+      console.error("Enhance failed", e);
+      showToast("Enhance failed, using original");
+    } finally {
+      els.sparkleBtn.disabled = false;
+      els.sparkleBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.5 5.5L19 10l-5.5 1.5L12 17l-1.5-5.5L5 10l5.5-1.5L12 3z"/><line x1="18" y1="16" x2="20" y2="20"/><line x1="8" y1="16" x2="6" y2="20"/></svg>';
+    }
   }
 
   // ----------------------------- Copy -----------------------------
@@ -694,6 +726,11 @@
     // Theme toggle
     if (els.themeBtn) {
       els.themeBtn.addEventListener("click", cycleTheme);
+    }
+
+    // Sparkle button (prompt enhancer)
+    if (els.sparkleBtn) {
+      els.sparkleBtn.addEventListener("click", enhancePrompt);
     }
 
     // Welcome suggestions
