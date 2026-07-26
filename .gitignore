@@ -16,6 +16,9 @@ Thumbs.db
 web/.next/
 web/out/
 
+# Vercel
+.vercel/
+
 # Editor
 .vscode/
 .idea/

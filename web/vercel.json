@@ -1,0 +1,10 @@
+{
+  "buildCommand": "next build",
+  "outputDirectory": "out",
+  "installCommand": "npm install",
+  "framework": null,
+  "cleanUrls": true,
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}
