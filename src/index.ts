@@ -13,7 +13,7 @@
  *   GET  /api/files/:key             -> serve file from R2 (for display)
  *   POST /api/chat                   -> stream a chat completion (SSE)
  *
- * Static assets (frontend) are served from ./public via the `assets` binding.
+ * Static assets (frontend) are served from web/out via the ASSETS binding.
  */
 import { streamChat, buildProviderMessages, type ProviderMessage } from "./providers";
 import {
@@ -24,13 +24,15 @@ import {
 } from "./pdf";
 import {
   MODELS,
-  getModel,
+  getMergedModels,
   type AttachmentMeta,
   type ChatMessage,
   type Conversation,
   type Env,
   type Role,
 } from "./types";
+import { selectAutoModel, selectFallbackModel } from "./auto-selector";
+import { healthTracker } from "./health-tracker";
 
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -50,7 +52,16 @@ export default {
       if (pathname === "/api/health") return json({ ok: true, name: env.APP_NAME });
 
       if (pathname === "/api/models" && method === "GET") {
-        return json({ models: MODELS });
+        const models = await getMergedModels(env);
+        return json({ models });
+      }
+
+      // Admin: manage custom models
+      if (pathname === "/api/admin/models") {
+        if (method === "GET") return adminListModels(env);
+        if (method === "POST") return adminAddModel(req, env);
+        if (method === "DELETE") return adminDeleteModel(req, env);
+        if (method === "PUT") return adminUpdateModel(req, env);
       }
 
       if (pathname === "/api/conversations") {
@@ -145,7 +156,8 @@ async function createConversation(req: Request, env: Env): Promise<Response> {
   const body = await req.json().catch(() => ({})) as { title?: string; model?: string };
   const id = genId();
   const title = body.title?.trim() || "New chat";
-  const model = body.model && getModel(body.model) ? body.model : MODELS[0].id;
+  const mergedModels = await getMergedModels(env);
+  const model = body.model && mergedModels.some((m) => m.id === body.model) ? body.model : mergedModels[0]?.id || MODELS[0].id;
   const now = Math.floor(Date.now() / 1000);
   await env.DB.prepare(
     "INSERT INTO conversations (id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
@@ -172,13 +184,14 @@ async function updateConversation(id: string, req: Request, env: Env): Promise<R
   const conv = await env.DB.prepare("SELECT id FROM conversations WHERE id = ?").bind(id).first();
   if (!conv) return json({ error: "Conversation not found" }, 404);
 
+  const mergedModels = await getMergedModels(env);
   const updates: string[] = [];
   const values: (string | number)[] = [];
   if (body.title !== undefined) {
     updates.push("title = ?");
     values.push(body.title);
   }
-  if (body.model !== undefined && getModel(body.model)) {
+  if (body.model !== undefined && (body.model === "auto" || mergedModels.some((m) => m.id === body.model))) {
     updates.push("model = ?");
     values.push(body.model);
   }
@@ -440,7 +453,17 @@ async function chat(req: Request, env: Env): Promise<Response> {
   const conversationId = body.conversationId;
   const message = (body.message ?? "").trim();
   const attachments = body.attachments ?? [];
-  const modelId = body.model && getModel(body.model) ? body.model : MODELS[0].id;
+  const mergedModels = await getMergedModels(env);
+  const isAutoMode = body.model === "auto";
+  let modelId: string;
+  if (isAutoMode) {
+    // Auto mode: select best model later (after loading history)
+    modelId = "auto";
+  } else if (body.model && mergedModels.some((m) => m.id === body.model)) {
+    modelId = body.model;
+  } else {
+    modelId = mergedModels[0]?.id || MODELS[0].id;
+  }
 
   if (!conversationId) return json({ error: "conversationId is required" }, 400);
   if (!message && attachments.length === 0) return json({ error: "message or attachment required" }, 400);
@@ -486,6 +509,13 @@ async function chat(req: Request, env: Env): Promise<Response> {
   // OPTIMIZATION: Enrich attachments with processed data (chunks, optimized images)
   history = await enrichAttachmentsWithProcessedData(history, env);
 
+  // Auto mode: intelligently select the best model based on request content
+  let autoSelection: { modelId: string; provider: string; reason: string } | undefined;
+  if (isAutoMode) {
+    autoSelection = selectAutoModel(message, attachments, history.length);
+    modelId = autoSelection.modelId;
+  }
+
   // Build provider messages with a system prompt
   const systemPrompt =
     "You are a helpful, friendly AI assistant. Answer clearly and concisely. " +
@@ -512,6 +542,7 @@ async function chat(req: Request, env: Env): Promise<Response> {
   // Stream response via SSE
   const assistantMsgId = genId();
   const encoder = new TextEncoder();
+  const startTime = Date.now();
   let fullText = "";
 
   const stream = new ReadableStream({
@@ -519,18 +550,95 @@ async function chat(req: Request, env: Env): Promise<Response> {
       const send = (obj: unknown) => {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
       };
-      try {
-        send({ type: "start", messageId: assistantMsgId });
-        fullText = await streamChat(modelId, providerMessages, env, {
+
+      const tryProvider = async (mId: string): Promise<string> => {
+        return streamChat(mId, providerMessages, env, {
           onChunk: (text) => send({ type: "delta", text }),
         });
+      };
+
+      try {
+        send({ type: "start", messageId: assistantMsgId });
+
+        // Emit auto-selection info if in auto mode
+        if (autoSelection) {
+          // Derive a user-friendly label from the model ID
+          const label = autoSelection.modelId.includes(":")
+            ? autoSelection.modelId.split(":").pop() || autoSelection.modelId
+            : autoSelection.modelId;
+          send({
+            type: "model_selection",
+            model: autoSelection.modelId,
+            label,
+            reason: autoSelection.reason,
+          });
+        }
+
+        // Helper to emit model_selection with same format
+        const emitModelSelection = (sel: typeof autoSelection) => {
+          if (!sel) return;
+          const label = sel.modelId.includes(":")
+            ? sel.modelId.split(":").pop() || sel.modelId
+            : sel.modelId;
+          send({
+            type: "model_selection",
+            model: sel.modelId,
+            label,
+            reason: sel.reason,
+          });
+        };
+
+        // Attempt primary provider, with auto-fallback chain
+        if (autoSelection) {
+          // Auto mode: try providers in priority order until one succeeds
+          let lastFailedProvider = "";
+          let succeeded = false;
+
+          while (!succeeded) {
+            try {
+              fullText = await tryProvider(modelId);
+              healthTracker.recordSuccess(
+                autoSelection.provider,
+                Date.now() - startTime
+              );
+              succeeded = true;
+            } catch (err) {
+              healthTracker.recordFailure(autoSelection.provider);
+              lastFailedProvider = autoSelection.provider;
+
+              const fallback = selectFallbackModel(
+                lastFailedProvider,
+                message,
+                attachments,
+                history.length
+              );
+
+              if (fallback) {
+                modelId = fallback.modelId;
+                autoSelection = fallback;
+                emitModelSelection(fallback);
+              } else {
+                // All compatible providers exhausted — throw friendly error
+                throw new Error(
+                  "All AI providers are currently unavailable. " +
+                    "Please try again later. If the issue persists, contact the developer."
+                );
+              }
+            }
+          }
+        } else {
+          // Manual mode: single attempt, no fallback
+          fullText = await tryProvider(modelId);
+        }
+
         send({ type: "done", text: fullText });
 
-        // Persist assistant message
+        // Persist assistant message with the actually selected model
+        const persistModel = autoSelection ? autoSelection.modelId : modelId;
         const ts = Math.floor(Date.now() / 1000);
         await env.DB.prepare(
           "INSERT INTO messages (id, conversation_id, role, content, attachments, model, created_at) VALUES (?, ?, 'assistant', ?, '[]', ?, ?)"
-        ).bind(assistantMsgId, conversationId, fullText, modelId, ts).run();
+        ).bind(assistantMsgId, conversationId, fullText, persistModel, ts).run();
         await env.DB.prepare("UPDATE conversations SET updated_at = ? WHERE id = ?")
           .bind(ts, conversationId).run();
       } catch (err) {
@@ -538,10 +646,11 @@ async function chat(req: Request, env: Env): Promise<Response> {
         send({ type: "error", error: msg });
         // Persist partial if any
         if (fullText) {
+          const persistModel = autoSelection ? autoSelection.modelId : modelId;
           const ts = Math.floor(Date.now() / 1000);
           await env.DB.prepare(
             "INSERT INTO messages (id, conversation_id, role, content, attachments, model, created_at) VALUES (?, ?, 'assistant', ?, '[]', ?, ?)"
-          ).bind(assistantMsgId, conversationId, fullText + `\n\n[error: ${msg}]`, modelId, ts).run();
+          ).bind(assistantMsgId, conversationId, fullText + `\n\n[error: ${msg}]`, persistModel, ts).run();
         }
       } finally {
         controller.close();
@@ -557,6 +666,102 @@ async function chat(req: Request, env: Env): Promise<Response> {
       ...corsHeaders(),
     },
   });
+}
+
+/* ----------------------------- Admin: Model Management ----------------------------- */
+
+async function adminListModels(env: Env): Promise<Response> {
+  try {
+    const { results } = await env.DB.prepare(
+      "SELECT row_id, model_id, label, provider, supports_vision, supports_streaming, created_at FROM admin_models ORDER BY provider, label"
+    ).all();
+    return json({ models: results ?? [] });
+  } catch (err) {
+    return json({ error: (err as Error).message }, 500);
+  }
+}
+
+async function adminAddModel(req: Request, env: Env): Promise<Response> {
+  const body = await req.json().catch(() => ({})) as {
+    model_id?: string;
+    label?: string;
+    provider?: string;
+    supports_vision?: boolean;
+    supports_streaming?: boolean;
+  };
+  const modelId = (body.model_id ?? "").trim();
+  const label = (body.label ?? "").trim();
+  const provider = (body.provider ?? "").trim();
+  if (!modelId || !label || !provider) {
+    return json({ error: "model_id, label, and provider are required" }, 400);
+  }
+  const validProviders = ["groq", "gemini", "agentrouter", "openrouter", "workers-ai"];
+  if (!validProviders.includes(provider)) {
+    return json({ error: `provider must be one of: ${validProviders.join(", ")}` }, 400);
+  }
+  const rowId = genId();
+  try {
+    await env.DB.prepare(
+      "INSERT INTO admin_models (row_id, model_id, label, provider, supports_vision, supports_streaming) VALUES (?, ?, ?, ?, ?, ?)"
+    ).bind(rowId, modelId, label, provider, body.supports_vision ? 1 : 0, body.supports_streaming !== false ? 1 : 0).run();
+    return json({ row_id: rowId, model_id: modelId, label, provider }, 201);
+  } catch (err) {
+    const msg = (err as Error).message;
+    if (msg.includes("UNIQUE")) {
+      return json({ error: `Model ID "${modelId}" already exists. Delete it first or use a different ID.` }, 409);
+    }
+    return json({ error: msg }, 500);
+  }
+}
+
+async function adminDeleteModel(req: Request, env: Env): Promise<Response> {
+  const body = await req.json().catch(() => ({})) as { model_id?: string };
+  const modelId = (body.model_id ?? "").trim();
+  if (!modelId) return json({ error: "model_id is required" }, 400);
+  try {
+    const result = await env.DB.prepare("DELETE FROM admin_models WHERE model_id = ?").bind(modelId).run();
+    if (result.meta.changes === 0) {
+      return json({ error: `Model "${modelId}" not found` }, 404);
+    }
+    return json({ ok: true });
+  } catch (err) {
+    return json({ error: (err as Error).message }, 500);
+  }
+}
+
+async function adminUpdateModel(req: Request, env: Env): Promise<Response> {
+  const body = await req.json().catch(() => ({})) as {
+    model_id?: string;
+    label?: string;
+    provider?: string;
+    supports_vision?: boolean;
+    supports_streaming?: boolean;
+  };
+  const modelId = (body.model_id ?? "").trim();
+  if (!modelId) return json({ error: "model_id is required" }, 400);
+  try {
+    const existing = await env.DB.prepare("SELECT row_id FROM admin_models WHERE model_id = ?").bind(modelId).first();
+    if (!existing) return json({ error: `Model "${modelId}" not found` }, 404);
+    const updates: string[] = [];
+    const values: (string | number)[] = [];
+    if (body.label !== undefined) { updates.push("label = ?"); values.push(body.label); }
+    if (body.provider !== undefined) {
+      const validProviders = ["groq", "gemini", "agentrouter", "openrouter", "workers-ai"];
+      if (!validProviders.includes(body.provider)) {
+        return json({ error: `provider must be one of: ${validProviders.join(", ")}` }, 400);
+      }
+      updates.push("provider = ?");
+      values.push(body.provider);
+    }
+    if (body.supports_vision !== undefined) { updates.push("supports_vision = ?"); values.push(body.supports_vision ? 1 : 0); }
+    if (body.supports_streaming !== undefined) { updates.push("supports_streaming = ?"); values.push(body.supports_streaming ? 1 : 0); }
+    if (updates.length === 0) return json({ ok: true });
+    values.push(modelId);
+    await env.DB.prepare(`UPDATE admin_models SET ${updates.join(", ")} WHERE model_id = ?`).bind(...values).run();
+    return json({ ok: true });
+  } catch (err) {
+    return json({ error: (err as Error).message }, 500);
+  }
 }
 
 /* ----------------------------- Prompt Enhancer ----------------------------- */
@@ -578,7 +783,8 @@ async function enhancePrompt(req: Request, env: Env): Promise<Response> {
     return json({ error: "text is required" }, 400);
   }
 
-  const modelId = body.model && getModel(body.model) ? body.model : MODELS[0].id;
+  const mergedModels = await getMergedModels(env);
+  const modelId = body.model && mergedModels.some((m) => m.id === body.model) ? body.model : mergedModels[0]?.id || MODELS[0].id;
 
   const systemPrompt =
     "You are a query enhancement assistant. Your task is to rephrase and improve the user's query " +

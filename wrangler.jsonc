@@ -7,7 +7,7 @@
 		"nodejs_compat"
 	],
 	"assets": {
-		"directory": "./public"
+		"directory": "./web/out"
 	},
 	"vars": {
 		"APP_NAME": "PrototypeChatBot",
@@ -21,6 +21,9 @@
 			"migrations_dir": "src/db/migrations"
 		}
 	],
+	"ai": {
+		"binding": "AI"
+	},
 	"r2_buckets": [
 		{
 			"binding": "BUCKET",

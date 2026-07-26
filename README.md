@@ -11,23 +11,25 @@ A ChatGPT-style chatbot running on **Cloudflare Workers**, powered by multiple A
 - ⚡ **Streaming responses** — real-time token streaming via Server-Sent Events (SSE)
 - 💬 **Conversation history** — persisted in Cloudflare D1 (SQLite)
 - 🗄️ **File storage** — uploads stored in Cloudflare R2
-- 🎨 **ChatGPT-like UI** — dark theme, sidebar, markdown rendering, drag-and-drop
+- 🎨 **Premium Next.js UI** — dark/light/system themes, sidebar, markdown rendering, drag-and-drop, animations
 - 🛑 **Stop generation** — abort streaming mid-response
 - 📋 **Paste images** — paste from clipboard directly into the composer
 
 ## Architecture
 
 ```
-Browser (public/index.html, styles.css, app.js)
+Browser (Next.js SPA — web/out/)
   ↕ fetch / SSE
 Cloudflare Worker (src/index.ts)
   • REST API (/api/*)
   • SSE streaming (/api/chat)
-  • Static asset serving (ASSETS binding)
+  • Static asset serving (ASSETS binding → web/out/)
 D1 (DB)         R2 (BUCKET)       AI Providers
-conversations    uploads/          • AgentRouter (GPT/Claude)
-messages                           • Groq (Llama models)
+conversations    uploads/          • AgentRouter (ChatGPT, Claude, Kimi)
+messages                           • Groq (Llama)
                                    • Gemini
+                                   • Workers AI (Mistral, Llama, Gemma)
+                                   • OpenRouter (free models)
 ```
 
 ## Available Models
@@ -36,13 +38,22 @@ Clients see only the **Label** — internal model IDs are never exposed to the U
 
 | Label | Provider | Vision | Internal Model |
 |---|---|---|---|
-| ChatGPT | AgentRouter | ✅ | gpt-5.5 |
-| Claude | AgentRouter | ✅ | claude-opus-4-6 |
-| Gemini | Gemini | ✅ | gemini-2.0-flash |
-| Gemini Pro | Gemini | ✅ | gemini-2.5-flash |
-| Llama | Groq | ❌ | llama-3.3-70b-versatile |
-| Llama Fast | Groq | ❌ | llama-3.1-8b-instant |
-| Llama Vision | Groq | ✅ | llama-4-scout-17b |
+| Label | Provider | Vision | Internal Model |
+|---|---|---|---|
+| Groq | Groq | ❌ | llama-3.1-8b-instant |
+| Gemini | Gemini | ✅ | gemini-2.5-flash |
+| Kimi | AgentRouter | ✅ | kimi-k3 |
+| Claude | AgentRouter | ✅ | claude-opus-4-8 |
+| ChatGPT | AgentRouter | ✅ | gpt-5.6-sol |
+| Workers AI (Mistral 7B) | Workers AI | ❌ | @cf/mistral/mistral-7b-instruct-v0.3 |
+| Workers AI (Vision) | Workers AI | ✅ | @cf/meta/llama-3.2-11b-vision-instruct |
+| Workers AI (Llama 3.3) | Workers AI | ❌ | @cf/meta/llama-3.3-70b-instruct-fp8-fast |
+| Workers AI (Gemma 2 27B) | Workers AI | ❌ | @hf/google/gemma-2-27b-it |
+| Laguna S 2.1 | OpenRouter | ❌ | poolside/laguna-s-2.1:free |
+| OpenRouter Free | OpenRouter | ❌ | openrouter/free |
+| Ling 3.0 Flash | OpenRouter | ❌ | inclusionai/ling-3.0-flash:free |
+| GPT-OSS 20B | OpenRouter | ❌ | openai/gpt-oss-20b:free |
+| Gemma 4 26B | OpenRouter | ❌ | google/gemma-4-26b-a4b-it:free |
 
 ## Prerequisites
 
@@ -144,9 +155,9 @@ Edit src/types.ts and add entries to the MODELS array. The provider routing in s
 - Runtime: Cloudflare Workers
 - Database: Cloudflare D1 (SQLite)
 - Storage: Cloudflare R2
-- AI: AgentRouter (OpenAI-compatible, ChatGPT & Claude), Groq API (Llama), Google Gemini API
+- AI: AgentRouter (OpenAI-compatible: ChatGPT, Claude, Kimi), Groq API (Llama), Google Gemini API, Workers AI (Cloudflare edge inference), OpenRouter (free models)
 - PDF: unpdf (Workers-compatible PDF text extraction)
-- Frontend: Vanilla HTML/CSS/JS (no build step)
+- Frontend: Next.js 15 + React 19 + Tailwind CSS + Framer Motion
 
 ## License
 

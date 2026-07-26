@@ -2,11 +2,14 @@
  * Shared type definitions for PrototypeChatBot.
  */
 
+import type { Ai } from "@cloudflare/workers-types";
+
 export interface Env {
   // Bindings
   DB: D1Database;
   BUCKET: R2Bucket;
   ASSETS: Fetcher;
+  AI: Ai;
 
   // Vars
   APP_NAME: string;
@@ -16,6 +19,7 @@ export interface Env {
   GROQ_API_KEY: string;
   GEMINI_API_KEY: string;
   AGENTROUTER_API_KEY: string;
+  OPENROUTER_API_KEY: string;
 }
 
 export type Role = "user" | "assistant" | "system";
@@ -72,6 +76,35 @@ export interface ProviderMessage {
   images?: { mimeType: string; data: string }[];
 }
 
+export type Capability =
+  | "chat"
+  | "coding"
+  | "reasoning"
+  | "math"
+  | "creative"
+  | "vision"
+  | "pdf-analysis"
+  | "long-context"
+  | "fast"
+  | "cheap"
+  | "premium";
+
+/** Configuration for auto-selection of a provider. */
+export interface ProviderConfig {
+  provider: string;
+  priority: number; // Lower = more preferred
+  costTier: 1 | 2 | 3; // 1=cheapest, 3=most expensive
+  models: string[];
+  capabilities: Capability[];
+}
+
+/** Result of auto model selection. */
+export interface ModelSelection {
+  modelId: string;
+  provider: string;
+  reason: string;
+}
+
 export interface ChatRequest {
   conversationId: string;
   message: string;
@@ -82,7 +115,7 @@ export interface ChatRequest {
 export interface ModelInfo {
   id: string;
   label: string;
-  provider: "groq" | "gemini" | "agentrouter";
+  provider: "groq" | "gemini" | "agentrouter" | "openrouter" | "workers-ai";
   supportsVision: boolean;
   supportsStreaming: boolean;
 }
@@ -123,10 +156,110 @@ export const MODELS: ModelInfo[] = [
     supportsVision: true,
     supportsStreaming: true,
   },
+  // Workers AI models (native Cloudflare edge inference — free daily quota)
+  {
+    id: "workers-ai:@cf/mistral/mistral-7b-instruct-v0.3",
+    label: "Workers AI (Mistral 7B)",
+    provider: "workers-ai",
+    supportsVision: false,
+    supportsStreaming: true,
+  },
+  {
+    id: "workers-ai:@cf/meta/llama-3.2-11b-vision-instruct",
+    label: "Workers AI (Vision)",
+    provider: "workers-ai",
+    supportsVision: true,
+    supportsStreaming: true,
+  },
+  {
+    id: "workers-ai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    label: "Workers AI (Llama 3.3)",
+    provider: "workers-ai",
+    supportsVision: false,
+    supportsStreaming: true,
+  },
+  {
+    id: "workers-ai:@hf/google/gemma-2-27b-it",
+    label: "Workers AI (Gemma 2 27B)",
+    provider: "workers-ai",
+    supportsVision: false,
+    supportsStreaming: true,
+  },
+  // --- OpenRouter (free models) ---
+  {
+    id: "openrouter:poolside/laguna-s-2.1:free",
+    label: "Laguna S 2.1",
+    provider: "openrouter",
+    supportsVision: false,
+    supportsStreaming: true,
+  },
+  {
+    id: "openrouter:openrouter/free",
+    label: "OpenRouter Free",
+    provider: "openrouter",
+    supportsVision: false,
+    supportsStreaming: true,
+  },
+  {
+    id: "openrouter:inclusionai/ling-3.0-flash:free",
+    label: "Ling 3.0 Flash",
+    provider: "openrouter",
+    supportsVision: false,
+    supportsStreaming: true,
+  },
+  {
+    id: "openrouter:openai/gpt-oss-20b:free",
+    label: "GPT-OSS 20B",
+    provider: "openrouter",
+    supportsVision: false,
+    supportsStreaming: true,
+  },
+  {
+    id: "openrouter:google/gemma-4-26b-a4b-it:free",
+    label: "Gemma 4 26B",
+    provider: "openrouter",
+    supportsVision: false,
+    supportsStreaming: true,
+  },
 ];
 
 export function getModel(id: string): ModelInfo | undefined {
   return MODELS.find((m) => m.id === id);
+}
+
+/**
+ * Merge hardcoded defaults with admin-defined models from D1.
+ * Must be awaited — queries the admin_models table.
+ */
+export async function getMergedModels(env: Env): Promise<ModelInfo[]> {
+  try {
+    const { results } = await env.DB.prepare(
+      "SELECT model_id, label, provider, supports_vision, supports_streaming FROM admin_models ORDER BY provider, label"
+    ).all<{ model_id: string; label: string; provider: string; supports_vision: number; supports_streaming: number }>();
+    if (results && results.length > 0) {
+      const adminModels: ModelInfo[] = results.map((r) => ({
+        id: r.model_id,
+        label: r.label,
+        provider: r.provider as ModelInfo["provider"],
+        supportsVision: r.supports_vision === 1,
+        supportsStreaming: r.supports_streaming === 1,
+      }));
+      // Merge: admin models override hardcoded ones with same id, new ones are added
+      const merged = [...MODELS];
+      for (const am of adminModels) {
+        const idx = merged.findIndex((m) => m.id === am.id);
+        if (idx !== -1) {
+          merged[idx] = am;
+        } else {
+          merged.push(am);
+        }
+      }
+      return merged;
+    }
+  } catch {
+    // If table doesn't exist or any error, fall back to hardcoded models
+  }
+  return MODELS;
 }
 
 export function parseModelId(id: string): { provider: string; model: string } {

@@ -22,25 +22,6 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <head>
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              (function() {
-                try {
-                  var theme = localStorage.getItem('chatddb-theme') || 'dark';
-                  if (theme === 'system') {
-                    var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-                    document.documentElement.classList.toggle('system-theme', !prefersDark);
-                  } else if (theme === 'light') {
-                    document.documentElement.classList.add('light');
-                  }
-                } catch(e) {}
-              })();
-            `,
-          }}
-        />
-      </head>
       <body className="h-screen overflow-hidden">{children}</body>
     </html>
   );

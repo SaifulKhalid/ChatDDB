@@ -6,7 +6,8 @@
  * and chunk-based PDF document context.
  */
 import type { Env, ModelInfo, ProviderMessage } from "./types";
-import { getModel, parseModelId } from "./types";
+export type { ProviderMessage };
+import { getMergedModels, parseModelId } from "./types";
 
 export interface StreamCallbacks {
   onChunk: (text: string) => void;
@@ -115,7 +116,8 @@ export async function streamChat(
   env: Env,
   cb: StreamCallbacks
 ): Promise<string> {
-  const model = getModel(modelId);
+  const mergedModels = await getMergedModels(env);
+  const model = mergedModels.find((m) => m.id === modelId);
   if (!model) throw new Error("Unknown model: " + modelId);
 
   switch (model.provider) {
@@ -125,6 +127,10 @@ export async function streamChat(
       return streamGemini(model, messages, env, cb);
     case "agentrouter":
       return streamAgentRouter(model, messages, env, cb);
+    case "openrouter":
+      return streamOpenRouter(model, messages, env, cb);
+    case "workers-ai":
+      return streamWorkersAI(model, messages, env, cb);
     default:
       throw new Error("Unsupported provider: " + model.provider);
   }
@@ -201,7 +207,7 @@ async function streamGroq(
   }, cb.onChunk);
 }
 
-/* ----------------------------- AgentRouter (OpenAI-compatible: ChatGPT, Claude, Kimi) ----------------------------- */
+/* ----------------------------- AgentRouter (OpenAI-compatible: ChatGPT, Kimi, Claude) ----------------------------- */
 
 async function streamAgentRouter(
   model: ModelInfo,
@@ -259,6 +265,84 @@ async function streamAgentRouter(
     }
     throw new Error(
       "AgentRouter service unavailable (" +
+        res.status +
+        "). Please contact the developer."
+    );
+  }
+
+  return readSSEStream(res.body, (data) => {
+    if (data === "[DONE]") return "";
+    try {
+      const json = JSON.parse(data);
+      const delta = json.choices?.[0]?.delta?.content ?? "";
+      return delta as string;
+    } catch {
+      return "";
+    }
+  }, cb.onChunk);
+}
+
+/* ----------------------------- OpenRouter (OpenAI-compatible, free tier) ----------------------------- */
+
+async function streamOpenRouter(
+  model: ModelInfo,
+  messages: ProviderMessage[],
+  env: Env,
+  cb: StreamCallbacks
+): Promise<string> {
+  const { model: apiModel } = parseModelId(model.id);
+  const url = "https://openrouter.ai/api/v1/chat/completions";
+
+  const payload = {
+    model: apiModel,
+    messages: messages.map((m) => {
+      if (m.images && m.images.length && model.supportsVision) {
+        return {
+          role: m.role,
+          content: [
+            { type: "text", text: m.content },
+            ...m.images.map((img) => ({
+              type: "image_url",
+              image_url: {
+                url: "data:" + img.mimeType + ";base64," + img.data,
+              },
+            })),
+          ],
+        };
+      }
+      return { role: m.role, content: m.content };
+    }),
+    stream: true,
+    temperature: 0.7,
+    max_tokens: 4096,
+  };
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + env.OPENROUTER_API_KEY,
+      "HTTP-Referer": "https://chatddb.pages.dev",
+      "X-Title": "ChatDDB",
+    },
+    body: JSON.stringify(payload),
+    signal: cb.signal,
+  });
+
+  if (!res.ok || !res.body) {
+    const txt = await res.text().catch(() => "");
+    if (res.status === 429) {
+      throw new Error(
+        "OpenRouter rate limit exceeded. Please wait a moment and try again."
+      );
+    }
+    if (res.status === 402) {
+      throw new Error(
+        "OpenRouter: insufficient credits or this model is not free with your provider."
+      );
+    }
+    throw new Error(
+      "OpenRouter service unavailable (" +
         res.status +
         "). Please contact the developer."
     );
@@ -369,6 +453,127 @@ interface GeminiPart {
 interface GeminiContent {
   role: string;
   parts: GeminiPart[];
+}
+
+/* ----------------------------- Workers AI (Cloudflare edge inference) ----------------------------- */
+
+async function streamWorkersAI(
+  model: ModelInfo,
+  messages: ProviderMessage[],
+  env: Env,
+  cb: StreamCallbacks
+): Promise<string> {
+  const { model: apiModel } = parseModelId(model.id);
+
+  // Build messages array for Workers AI (OpenAI-compatible message format)
+  const workersMessages = messages.map((m) => {
+    if (m.images && m.images.length && model.supportsVision) {
+      return {
+        role: m.role,
+        content: [
+          { type: "text", text: m.content },
+          ...m.images.map((img) => ({
+            type: "image_url",
+            image_url: {
+              url: "data:" + img.mimeType + ";base64," + img.data,
+            },
+          })),
+        ],
+      };
+    }
+    return { role: m.role, content: m.content };
+  });
+
+  let stream: ReadableStream;
+  try {
+    const result = await env.AI.run(apiModel, {
+      messages: workersMessages,
+      stream: true,
+    });
+
+    // Runtime guard: ensure we got a ReadableStream back (not a non-stream response)
+    if (!(result instanceof ReadableStream)) {
+      throw new Error(
+        "Workers AI did not return a stream. This model may not support streaming."
+      );
+    }
+    stream = result;
+  } catch (err) {
+    const msg = (err as Error).message;
+    if (
+      msg.includes("429") ||
+      msg.includes("quota") ||
+      msg.includes("limit") ||
+      msg.includes("neuron")
+    ) {
+      throw new Error(
+        "Cloudflare Workers AI daily free quota (10,000 neurons) may be exhausted. " +
+          "Please wait until tomorrow or select a different model. " +
+          "Contact the developer if this persists."
+      );
+    }
+    if (
+      msg.includes("not found") ||
+      msg.includes("model") ||
+      msg.includes("unavailable")
+    ) {
+      throw new Error(
+        "The selected Workers AI model is not available. " +
+          "Please try a different model. Contact the developer if this persists."
+      );
+    }
+    throw new Error(
+      "Cloudflare Workers AI service error: " + msg +
+        ". Please try again later or contact the developer."
+    );
+  }
+
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let full = "";
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    // Attempt to parse newline-delimited JSON from the buffer
+    let idx: number;
+    while ((idx = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, idx).trim();
+      buffer = buffer.slice(idx + 1);
+      if (!line) continue;
+
+      try {
+        const json = JSON.parse(line);
+        const delta = json.response || "";
+        if (delta) {
+          full += delta;
+          cb.onChunk(delta);
+        }
+      } catch {
+        // Partial JSON — keep buffering
+      }
+    }
+  }
+
+  // Flush remaining buffer
+  if (buffer.trim()) {
+    try {
+      const json = JSON.parse(buffer.trim());
+      const delta = json.response || "";
+      if (delta) {
+        full += delta;
+        cb.onChunk(delta);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return full;
 }
 
 /* ----------------------------- SSE reader ----------------------------- */

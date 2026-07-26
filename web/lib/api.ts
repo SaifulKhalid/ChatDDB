@@ -20,7 +20,7 @@ const API_BASE =
 export interface ModelInfo {
   id: string;
   label: string;
-  provider: "groq" | "gemini" | "agentrouter";
+  provider: "groq" | "gemini" | "agentrouter" | "openrouter" | "workers-ai";
   supportsVision: boolean;
   supportsStreaming: boolean;
 }
@@ -54,10 +54,13 @@ export interface Conversation {
 }
 
 export interface StreamEvent {
-  type: "start" | "delta" | "done" | "error";
+  type: "start" | "delta" | "done" | "error" | "model_selection";
   text?: string;
   messageId?: string;
   error?: string;
+  model?: string;
+  label?: string;
+  reason?: string;
 }
 
 /* ─── Helpers ───────────────────────────────────────── */
@@ -150,6 +153,7 @@ export function streamChat(
     onDelta: (text: string) => void;
     onDone: (text: string) => void;
     onError: (error: string) => void;
+    onModelSelection?: (modelId: string, label: string, reason: string) => void;
   },
   abortController?: AbortController
 ): AbortController {
@@ -206,6 +210,12 @@ export function streamChat(
               callbacks.onDone(evt.text || "");
             } else if (evt.type === "error") {
               callbacks.onError(evt.error || "Unknown error");
+            } else if (evt.type === "model_selection" && evt.model && callbacks.onModelSelection) {
+              callbacks.onModelSelection(
+                evt.model,
+                evt.label || evt.model,
+                evt.reason || ""
+              );
             }
           } catch {
             // skip parse errors

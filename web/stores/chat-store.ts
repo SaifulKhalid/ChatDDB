@@ -1,6 +1,15 @@
 import { create } from "zustand";
 import type { ChatMessage, Conversation, ModelInfo, AttachmentMeta } from "@/lib/api";
 import * as api from "@/lib/api";
+import { AUTO_MODEL_ID } from "@/lib/constants";
+
+/* ─── Selection Info ────────────────────────────────── */
+
+export interface SelectionInfo {
+  modelId: string;
+  label: string;
+  reason: string;
+}
 
 /* ─── Types ─────────────────────────────────────────── */
 
@@ -26,6 +35,9 @@ interface ChatState {
   // Pending attachments
   pendingAttachments: AttachmentMeta[];
 
+  // Auto-selection info for 'Why this model?' display
+  lastSelectionInfo: SelectionInfo | null;
+
   // Actions
   loadModels: () => Promise<void>;
   setCurrentModel: (id: string) => void;
@@ -37,6 +49,7 @@ interface ChatState {
 
   addPendingAttachment: (att: AttachmentMeta) => void;
   removePendingAttachment: (id: string) => void;
+  setSelectionInfo: (info: SelectionInfo | null) => void;
 
   sendMessage: (text: string) => Promise<void>;
   stopStreaming: () => void;
@@ -64,14 +77,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
   abortController: null,
 
   pendingAttachments: [],
+  lastSelectionInfo: null,
 
   // Actions
   loadModels: async () => {
     try {
       const models = await api.getModels();
       const saved = localStorage.getItem("chatddb-model") || "";
+      // Default new users to Auto mode; preserve existing preference
       const currentModelId =
-        models.find((m) => m.id === saved)?.id || models[0]?.id || "";
+        saved === AUTO_MODEL_ID
+          ? AUTO_MODEL_ID
+          : models.find((m) => m.id === saved)?.id || AUTO_MODEL_ID;
       set({ models, currentModelId, modelsLoaded: true });
     } catch (err) {
       console.error("Failed to load models", err);
@@ -106,11 +123,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         activeConversationTitle: conversation.title,
         messages,
       });
-      if (
-        conversation.model &&
-        get().models.some((m) => m.id === conversation.model)
-      ) {
-        set({ currentModelId: conversation.model });
+      if (conversation.model) {
+        if (conversation.model === AUTO_MODEL_ID) {
+          set({ currentModelId: AUTO_MODEL_ID });
+        } else if (
+          get().models.some((m) => m.id === conversation.model)
+        ) {
+          set({ currentModelId: conversation.model });
+        }
       }
     } catch (err) {
       console.error("Failed to load conversation", err);
@@ -124,6 +144,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: [],
       pendingAttachments: [],
     });
+  },
+
+  setSelectionInfo: (info: SelectionInfo | null) => {
+    set({ lastSelectionInfo: info });
   },
 
   addPendingAttachment: (att: AttachmentMeta) => {
@@ -200,6 +224,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ activeConversationTitle: text.slice(0, 50) });
     }
 
+    // Clear previous selection info for new messages
+    set({ lastSelectionInfo: null });
+
     const controller = api.streamChat(
       convId,
       text,
@@ -215,6 +242,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         },
         onError: (error) => {
           get().failStream(error);
+        },
+        onModelSelection: (modelId, label, reason) => {
+          get().setSelectionInfo({ modelId, label, reason });
         },
       }
     );

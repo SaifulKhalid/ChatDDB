@@ -36,3 +36,17 @@ CREATE TABLE IF NOT EXISTS document_chunks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_doc_chunks_attachment ON document_chunks(attachment_id, chunk_index ASC);
+
+-- Admin-defined models (editable from the settings dashboard)
+-- These are merged with hardcoded defaults at runtime.
+CREATE TABLE IF NOT EXISTS admin_models (
+  row_id TEXT PRIMARY KEY,
+  model_id TEXT NOT NULL UNIQUE,
+  label TEXT NOT NULL,
+  provider TEXT NOT NULL CHECK (provider IN ('groq', 'gemini', 'agentrouter', 'openrouter', 'workers-ai')),
+  supports_vision INTEGER NOT NULL DEFAULT 0,
+  supports_streaming INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_models_provider ON admin_models(provider);

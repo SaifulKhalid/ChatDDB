@@ -13,9 +13,9 @@ export function MessageList() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
 
-  // Filter out user messages — only show assistant responses
-  const displayMessages = messages.filter((m) => m.role === "assistant");
-  const isEmpty = messages.length === 0 || displayMessages.length === 0;
+  // Show all messages (user + assistant)
+  const displayMessages = messages;
+  const isEmpty = messages.length === 0;
 
   // Track scroll position to show/hide scroll-to-bottom button
   useEffect(() => {

@@ -12,7 +12,7 @@ import {
 import { useChatStore } from "@/stores/chat-store";
 import { uploadFile } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { getProviderEmoji } from "@/lib/constants";
+import { getProviderEmoji, AUTO_MODEL_ID } from "@/lib/constants";
 import type { AttachmentMeta } from "@/lib/api";
 
 export function Composer() {
@@ -222,10 +222,21 @@ export function Composer() {
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[var(--accent-success)] opacity-40" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-[var(--accent-success)]" />
               </span>
-              <span>{getProviderEmoji(currentModel?.provider || "")}</span>
-              <span className="max-w-[60px] truncate hidden sm:inline">
-                {currentModel?.label?.split(" ")[0] || "AI"}
-              </span>
+              {currentModelId === AUTO_MODEL_ID ? (
+                <>
+                  <span>✨</span>
+                  <span className="hidden sm:inline text-[var(--accent-primary)]">
+                    Auto
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span>{getProviderEmoji(currentModel?.provider || "")}</span>
+                  <span className="max-w-[60px] truncate hidden sm:inline">
+                    {currentModel?.label?.split(" ")[0] || "AI"}
+                  </span>
+                </>
+              )}
               <ChevronDown className="h-3 w-3 text-[var(--text-muted)]" />
             </button>
 
@@ -233,12 +244,41 @@ export function Composer() {
             {modelDropdownOpen && (
               <div
                 className="absolute bottom-full right-0 mb-2
-                  min-w-[200px] rounded-xl
+                  min-w-[220px] rounded-xl
                   bg-[var(--bg-card)] border border-[var(--border-subtle)]
                   shadow-xl shadow-black/20
                   py-1 z-50
                   animate-fade-in"
               >
+                {/* ✨ Auto (Recommended) */}
+                <button
+                  onClick={() => {
+                    setCurrentModel(AUTO_MODEL_ID);
+                    setModelDropdownOpen(false);
+                  }}
+                  className={cn(
+                    "w-full flex items-center gap-2 px-3 py-2.5 text-sm text-left transition-colors",
+                    currentModelId === AUTO_MODEL_ID
+                      ? "text-[var(--accent-primary)] bg-[var(--bg-hover)]"
+                      : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                  )}
+                >
+                  <span>✨</span>
+                  <span className="flex-1">
+                    <span className="font-medium">Auto</span>
+                    <span className="ml-1 text-[11px] text-[var(--accent-primary)] opacity-70">
+                      (Recommended)
+                    </span>
+                  </span>
+                  {currentModelId === AUTO_MODEL_ID && (
+                    <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent-primary)] shrink-0" />
+                  )}
+                </button>
+
+                {/* Separator */}
+                <div className="mx-3 my-1 h-px bg-[var(--border-subtle)]" />
+
+                {/* Individual models */}
                 {models.map((m) => (
                   <button
                     key={m.id}

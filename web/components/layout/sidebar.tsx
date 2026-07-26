@@ -216,14 +216,13 @@ export function Sidebar() {
                   <PanelRightOpen className="h-4 w-4" />
                 )}
               </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                title="Settings"
+              <a
+                href="/settings"
+                className="flex items-center justify-center w-8 h-8 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-card)] transition-all"
+                title="Model Management"
               >
                 <Settings className="h-4 w-4" />
-              </Button>
+              </a>
             </div>
           </div>
         </div>

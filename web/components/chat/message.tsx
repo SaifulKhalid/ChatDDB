@@ -5,9 +5,12 @@ import {
   Copy,
   Check,
   FileText,
+  Sparkles,
 } from "lucide-react";
 import { renderMarkdown } from "@/lib/markdown";
 import { getFileUrl } from "@/lib/api";
+import { useChatStore } from "@/stores/chat-store";
+import { getProviderEmoji } from "@/lib/constants";
 import type { ChatMessage as ChatMessageType } from "@/lib/api";
 
 interface MessageProps {
@@ -30,16 +33,34 @@ export function Message({ message, isStreaming, isFirst }: MessageProps) {
   const hasAttachments =
     message.attachments && message.attachments.length > 0;
 
-  // User messages not rendered as chat bubbles — text goes to header pill
+  // User messages — right-aligned with bubble background
   if (isUser) {
-    // Only show attachments if any, no message bubble
-    if (!hasAttachments) return null;
     return (
       <div className="px-4 message-enter">
-        <div className="flex flex-wrap gap-2 mb-4">
-          {message.attachments?.map((att) => (
-            <AttachmentChip key={att.id} att={att} />
-          ))}
+        <div className="mx-auto max-w-chat">
+          <div className="flex flex-col items-end">
+            {/* Attachments preview */}
+            {hasAttachments && (
+              <div className="flex flex-wrap gap-2 mb-3 justify-end">
+                {message.attachments?.map((att) => (
+                  <AttachmentChip key={att.id} att={att} />
+                ))}
+              </div>
+            )}
+            {/* Message text bubble */}
+            {message.content && (
+              <div
+                className="inline-block max-w-[80%] rounded-2xl px-4 py-2.5
+                  bg-[var(--accent-primary)]/10
+                  text-[15px] leading-relaxed text-[var(--text-primary)]"
+              >
+                {message.content}
+              </div>
+            )}
+            {!message.content && !hasAttachments && (
+              <div className="text-sm text-[var(--text-muted)] italic">(empty message)</div>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -92,6 +113,9 @@ export function Message({ message, isStreaming, isFirst }: MessageProps) {
           )}
         </div>
 
+        {/* "Why this model?" badge — shown for auto-selected assistant messages */}
+        <ModelSelectionBadge isStreaming={isStreaming} />
+
         {/* Hover copy action */}
         {!isStreaming && message.content && (
           <div className="mt-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -108,6 +132,42 @@ export function Message({ message, isStreaming, isFirst }: MessageProps) {
             </button>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** Badge that explains why Auto mode selected a particular model. */
+function ModelSelectionBadge({ isStreaming }: { isStreaming?: boolean }) {
+  const selectionInfo = useChatStore((s) => s.lastSelectionInfo);
+  const currentModelId = useChatStore((s) => s.currentModelId);
+
+  // Only show in auto mode, after selection is known, and when not streaming
+  if (
+    currentModelId !== "auto" ||
+    !selectionInfo ||
+    isStreaming
+  )
+    return null;
+
+  // Derive provider from model ID for emoji
+  const provider = selectionInfo.modelId.includes(":")
+    ? selectionInfo.modelId.split(":")[0]
+    : "";
+
+  return (
+    <div className="mt-3 flex items-start gap-2 px-1">
+      <Sparkles className="h-3.5 w-3.5 text-[var(--accent-primary)] mt-0.5 shrink-0" />
+      <div className="min-w-0">
+        <div className="text-xs font-medium text-[var(--text-secondary)]">
+          Auto selected{" "}
+          <span className="text-[var(--text-primary)]">
+            {getProviderEmoji(provider)} {selectionInfo.label}
+          </span>
+        </div>
+        <div className="text-[11px] text-[var(--text-muted)] mt-0.5 leading-relaxed">
+          {selectionInfo.reason}
+        </div>
       </div>
     </div>
   );
