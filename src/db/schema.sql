@@ -3,6 +3,7 @@
 
 CREATE TABLE IF NOT EXISTS conversations (
   id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL DEFAULT 'New chat',
   model TEXT NOT NULL DEFAULT 'groq:llama-3.3-70b-versatile',
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -10,6 +11,7 @@ CREATE TABLE IF NOT EXISTS conversations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
@@ -50,3 +52,24 @@ CREATE TABLE IF NOT EXISTS admin_models (
 );
 
 CREATE INDEX IF NOT EXISTS idx_admin_models_provider ON admin_models(provider);
+
+-- Admin email allowlist (simpler than Firebase custom claims)
+-- Users whose email is in this table have admin privileges.
+CREATE TABLE IF NOT EXISTS admin_emails (
+  email TEXT PRIMARY KEY,
+  added_by TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+-- User profiles for tracking usage
+CREATE TABLE IF NOT EXISTS user_profiles (
+  uid TEXT PRIMARY KEY,
+  email TEXT NOT NULL DEFAULT '',
+  display_name TEXT NOT NULL DEFAULT '',
+  photo_url TEXT NOT NULL DEFAULT '',
+  is_disabled INTEGER NOT NULL DEFAULT 0,
+  last_sign_in INTEGER,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_profiles_email ON user_profiles(email);

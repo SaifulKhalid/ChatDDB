@@ -14,6 +14,7 @@ export interface Env {
   // Vars
   APP_NAME: string;
   MAX_UPLOAD_BYTES: string;
+  FIREBASE_PROJECT_ID: string;
 
   // Secrets (set via `wrangler secret put`)
   GROQ_API_KEY: string;

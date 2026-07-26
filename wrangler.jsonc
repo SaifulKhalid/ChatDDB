@@ -11,7 +11,8 @@
 	},
 	"vars": {
 		"APP_NAME": "PrototypeChatBot",
-		"MAX_UPLOAD_BYTES": "20971520"
+		"MAX_UPLOAD_BYTES": "20971520",
+		"FIREBASE_PROJECT_ID": "chatddb"
 	},
 	"d1_databases": [
 		{

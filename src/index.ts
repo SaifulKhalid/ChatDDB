@@ -15,6 +15,7 @@
  *
  * Static assets (frontend) are served from web/out via the ASSETS binding.
  */
+import { jwtVerify, createRemoteJWKSet } from "jose";
 import { streamChat, buildProviderMessages, generateImage, arrayBufferToBase64, type ProviderMessage } from "./providers";
 import {
   extractPdfText,
@@ -34,29 +35,102 @@ import {
 import { selectAutoModel, selectFallbackModel } from "./auto-selector";
 import { healthTracker } from "./health-tracker";
 
+// ─── Firebase JWT Verification ───────────────────────
+
+const JWKS = createRemoteJWKSet(
+  new URL("https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com")
+);
+
+interface FirebaseUser {
+  uid: string;
+  email: string;
+  name: string;
+  picture: string;
+}
+
+/** Verify a Firebase ID token from the Authorization header. */
+async function verifyAuth(req: Request, env: Env): Promise<FirebaseUser | null> {
+  const auth = req.headers.get("Authorization");
+  if (!auth || !auth.startsWith("Bearer ")) return null;
+  const token = auth.slice(7);
+  try {
+    const { payload } = await jwtVerify(token, JWKS, {
+      issuer: `https://securetoken.google.com/${env.FIREBASE_PROJECT_ID}`,
+      audience: env.FIREBASE_PROJECT_ID,
+    });
+    return { uid: payload.sub as string, email: (payload.email as string) || "", name: (payload.name as string) || "", picture: (payload.picture as string) || "" };
+  } catch { return null; }
+}
+
+/** Require auth; returns 401 if not authenticated. */
+async function requireAuth(req: Request, env: Env): Promise<FirebaseUser | Response> {
+  const user = await verifyAuth(req, env);
+  if (!user) return json({ error: "Authentication required. Please sign in." }, 401);
+  return user;
+}
+
+/** Upsert user profile on every login. */
+async function upsertUserProfile(user: FirebaseUser, env: Env): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    `INSERT INTO user_profiles (uid, email, display_name, photo_url, last_sign_in, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(uid) DO UPDATE SET email=excluded.email, display_name=excluded.display_name, photo_url=excluded.photo_url, last_sign_in=excluded.last_sign_in`
+  ).bind(user.uid, user.email, user.name, user.picture, now, now).run();
+}
+
+/** Check if a user's email is in the admin allowlist. */
+async function isAdmin(user: FirebaseUser, env: Env): Promise<boolean> {
+  if (!user.email) return false;
+  const row = await env.DB.prepare("SELECT 1 FROM admin_emails WHERE email = ?").bind(user.email).first();
+  return row !== null;
+}
+
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     const { pathname } = url;
     const method = req.method.toUpperCase();
 
-    // Handle CORS preflight
     if (method === "OPTIONS") {
-      return new Response(null, {
-        headers: corsHeaders(),
-      });
+      return new Response(null, { headers: corsHeaders() });
     }
 
     try {
-      // API routes
+      // Public routes
       if (pathname === "/api/health") return json({ ok: true, name: env.APP_NAME });
 
-      if (pathname === "/api/models" && method === "GET") {
-        const models = await getMergedModels(env);
-        return json({ models });
+      // Auth routes (verify token, no session needed)
+      if (pathname === "/api/auth/login" && method === "POST") {
+        const user = await verifyAuth(req, env);
+        if (!user) return json({ error: "Invalid token" }, 401);
+        await upsertUserProfile(user, env);
+        return json({ user: { uid: user.uid, email: user.email, name: user.name, picture: user.picture } });
+      }
+      if (pathname === "/api/auth/me" && method === "GET") {
+        const user = await verifyAuth(req, env);
+        if (!user) return json({ error: "Not authenticated" }, 401);
+        await upsertUserProfile(user, env);
+        return json({ user: { ...user, isAdmin: await isAdmin(user, env) } });
       }
 
-      // Admin: manage custom models
+      // All remaining API routes require authentication
+      const authResult = await requireAuth(req, env);
+      if (authResult instanceof Response) return authResult;
+      const user: FirebaseUser = authResult;
+      ctx.waitUntil(upsertUserProfile(user, env));
+
+      // Admin-only routes
+      if (pathname.startsWith("/api/admin/")) {
+        if (!(await isAdmin(user, env))) return json({ error: "Admin access required." }, 403);
+      }
+
+      // Admin user management
+      const adminUserMatch = pathname.match(/^\/api\/admin\/users\/([^/]+)$/);
+      if (pathname === "/api/admin/users" && method === "GET") return adminListAllUsers(env);
+      if (adminUserMatch && method === "GET") return adminGetUserConversations(adminUserMatch[1], env);
+
+      // Admin model management
       if (pathname === "/api/admin/models") {
         if (method === "GET") return adminListModels(env);
         if (method === "POST") return adminAddModel(req, env);
@@ -64,44 +138,33 @@ export default {
         if (method === "PUT") return adminUpdateModel(req, env);
       }
 
+      // Authenticated user routes
+      if (pathname === "/api/models" && method === "GET") {
+        return json({ models: await getMergedModels(env) });
+      }
+
       if (pathname === "/api/conversations") {
-        if (method === "GET") return listConversations(env);
-        if (method === "POST") return createConversation(req, env);
+        if (method === "GET") return listConversations(user.uid, env);
+        if (method === "POST") return createConversation(req, user.uid, env);
       }
 
       const convMatch = pathname.match(/^\/api\/conversations\/([^/]+)$/);
       if (convMatch) {
         const id = convMatch[1];
-        if (method === "GET") return getConversation(id, env);
-        if (method === "PATCH") return updateConversation(id, req, env);
-        if (method === "DELETE") return deleteConversation(id, env);
+        if (method === "GET") return getConversation(id, user.uid, env);
+        if (method === "PATCH") return updateConversation(id, req, user.uid, env);
+        if (method === "DELETE") return deleteConversation(id, user.uid, env);
       }
 
-      if (pathname === "/api/upload" && method === "POST") {
-        return uploadFile(req, env, ctx);
-      }
-
+      if (pathname === "/api/upload" && method === "POST") return uploadFile(req, env, ctx);
       const fileMatch = pathname.match(/^\/api\/files\/(.+)$/);
-      if (fileMatch && method === "GET") {
-        return serveFile(fileMatch[1], env);
-      }
+      if (fileMatch && method === "GET") return serveFile(fileMatch[1], env);
 
-      if (pathname === "/api/chat" && method === "POST") {
-        return chat(req, env);
-      }
+      if (pathname === "/api/chat" && method === "POST") return chat(req, user, env);
+      if (pathname === "/api/enhance" && method === "POST") return enhancePrompt(req, env);
+      if (pathname === "/api/generate-image" && method === "POST") return handleGenerateImage(req, env);
 
-      if (pathname === "/api/enhance" && method === "POST") {
-        return enhancePrompt(req, env);
-      }
-
-      if (pathname === "/api/generate-image" && method === "POST") {
-        return handleGenerateImage(req, env);
-      }
-
-      // Fall through to static assets (frontend). If no asset matches, return 404 JSON.
-      return env.ASSETS
-        ? fetchAssetFallback(req, env)
-        : new Response("Not Found", { status: 404 });
+      return env.ASSETS ? fetchAssetFallback(req, env) : new Response("Not Found", { status: 404 });
     } catch (err) {
       console.error("API error", err);
       return json({ error: (err as Error).message }, 500);
@@ -149,14 +212,14 @@ function maxUploadBytes(env: Env): number {
 
 /* ----------------------------- Conversations ----------------------------- */
 
-async function listConversations(env: Env): Promise<Response> {
+async function listConversations(userId: string, env: Env): Promise<Response> {
   const { results } = await env.DB.prepare(
-    "SELECT id, title, model, created_at, updated_at FROM conversations ORDER BY updated_at DESC LIMIT 100"
-  ).all<Conversation>();
+    "SELECT id, title, model, created_at, updated_at FROM conversations WHERE user_id = ? ORDER BY updated_at DESC LIMIT 100"
+  ).bind(userId).all<Conversation>();
   return json({ conversations: results ?? [] });
 }
 
-async function createConversation(req: Request, env: Env): Promise<Response> {
+async function createConversation(req: Request, userId: string, env: Env): Promise<Response> {
   const body = await req.json().catch(() => ({})) as { title?: string; model?: string };
   const id = genId();
   const title = body.title?.trim() || "New chat";
@@ -164,15 +227,15 @@ async function createConversation(req: Request, env: Env): Promise<Response> {
   const model = body.model && mergedModels.some((m) => m.id === body.model) ? body.model : mergedModels[0]?.id || MODELS[0].id;
   const now = Math.floor(Date.now() / 1000);
   await env.DB.prepare(
-    "INSERT INTO conversations (id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
-  ).bind(id, title, model, now, now).run();
+    "INSERT INTO conversations (id, user_id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+  ).bind(id, userId, title, model, now, now).run();
   return json({ id, title, model, created_at: now, updated_at: now }, 201);
 }
 
-async function getConversation(id: string, env: Env): Promise<Response> {
+async function getConversation(id: string, userId: string, env: Env): Promise<Response> {
   const conv = await env.DB.prepare(
-    "SELECT id, title, model, created_at, updated_at FROM conversations WHERE id = ?"
-  ).bind(id).first<Conversation>();
+    "SELECT id, user_id, title, model, created_at, updated_at FROM conversations WHERE id = ? AND user_id = ?"
+  ).bind(id, userId).first<Conversation>();
   if (!conv) return json({ error: "Conversation not found" }, 404);
 
   const { results } = await env.DB.prepare(
@@ -183,21 +246,17 @@ async function getConversation(id: string, env: Env): Promise<Response> {
   return json({ conversation: conv, messages });
 }
 
-async function updateConversation(id: string, req: Request, env: Env): Promise<Response> {
+async function updateConversation(id: string, req: Request, userId: string, env: Env): Promise<Response> {
   const body = await req.json().catch(() => ({})) as { title?: string; model?: string };
-  const conv = await env.DB.prepare("SELECT id FROM conversations WHERE id = ?").bind(id).first();
+  const conv = await env.DB.prepare("SELECT id FROM conversations WHERE id = ? AND user_id = ?").bind(id, userId).first();
   if (!conv) return json({ error: "Conversation not found" }, 404);
 
   const mergedModels = await getMergedModels(env);
   const updates: string[] = [];
   const values: (string | number)[] = [];
-  if (body.title !== undefined) {
-    updates.push("title = ?");
-    values.push(body.title);
-  }
+  if (body.title !== undefined) { updates.push("title = ?"); values.push(body.title); }
   if (body.model !== undefined && (body.model === "auto" || mergedModels.some((m) => m.id === body.model))) {
-    updates.push("model = ?");
-    values.push(body.model);
+    updates.push("model = ?"); values.push(body.model);
   }
   if (updates.length === 0) return json({ ok: true });
   updates.push("updated_at = ?");
@@ -207,11 +266,11 @@ async function updateConversation(id: string, req: Request, env: Env): Promise<R
   return json({ ok: true });
 }
 
-async function deleteConversation(id: string, env: Env): Promise<Response> {
-  // Delete attachments from R2 first.
-  const { results } = await env.DB.prepare(
-    "SELECT attachments FROM messages WHERE conversation_id = ?"
-  ).bind(id).all<{ attachments: string }>();
+async function deleteConversation(id: string, userId: string, env: Env): Promise<Response> {
+  const conv = await env.DB.prepare("SELECT id FROM conversations WHERE id = ? AND user_id = ?").bind(id, userId).first();
+  if (!conv) return json({ error: "Conversation not found" }, 404);
+
+  const { results } = await env.DB.prepare("SELECT attachments FROM messages WHERE conversation_id = ?").bind(id).all<{ attachments: string }>();
   for (const row of results ?? []) {
     try {
       const atts = JSON.parse(row.attachments || "[]") as AttachmentMeta[];
@@ -221,9 +280,7 @@ async function deleteConversation(id: string, env: Env): Promise<Response> {
         if (a.textR2Key) await env.BUCKET.delete(a.textR2Key).catch(() => {});
         await env.DB.prepare("DELETE FROM document_chunks WHERE attachment_id = ?").bind(a.id).run().catch(() => {});
       }
-    } catch {
-      // ignore parse errors
-    }
+    } catch { /* ignore */ }
   }
   await env.DB.prepare("DELETE FROM messages WHERE conversation_id = ?").bind(id).run();
   await env.DB.prepare("DELETE FROM conversations WHERE id = ?").bind(id).run();
@@ -446,12 +503,9 @@ async function enrichAttachmentsWithProcessedData(
   return Promise.all(enriched);
 }
 
-async function chat(req: Request, env: Env): Promise<Response> {
+async function chat(req: Request, user: FirebaseUser, env: Env): Promise<Response> {
   const body = await req.json().catch(() => ({})) as {
-    conversationId?: string;
-    message?: string;
-    attachments?: AttachmentMeta[];
-    model?: string;
+    conversationId?: string; message?: string; attachments?: AttachmentMeta[]; model?: string;
   };
 
   const conversationId = body.conversationId;
@@ -460,28 +514,23 @@ async function chat(req: Request, env: Env): Promise<Response> {
   const mergedModels = await getMergedModels(env);
   const isAutoMode = body.model === "auto";
   let modelId: string;
-  if (isAutoMode) {
-    // Auto mode: select best model later (after loading history)
-    modelId = "auto";
-  } else if (body.model && mergedModels.some((m) => m.id === body.model)) {
-    modelId = body.model;
-  } else {
-    modelId = mergedModels[0]?.id || MODELS[0].id;
-  }
+  if (isAutoMode) { modelId = "auto"; }
+  else if (body.model && mergedModels.some((m) => m.id === body.model)) { modelId = body.model; }
+  else { modelId = mergedModels[0]?.id || MODELS[0].id; }
 
   if (!conversationId) return json({ error: "conversationId is required" }, 400);
   if (!message && attachments.length === 0) return json({ error: "message or attachment required" }, 400);
 
-  // Ensure conversation exists
+  // Ensure conversation exists (owned by this user)
   let conv = await env.DB.prepare(
-    "SELECT id, title, model FROM conversations WHERE id = ?"
-  ).bind(conversationId).first<Conversation>();
+    "SELECT id, title, model FROM conversations WHERE id = ? AND user_id = ?"
+  ).bind(conversationId, user.uid).first<Conversation>();
   if (!conv) {
     const now = Math.floor(Date.now() / 1000);
     const title = message ? message.slice(0, 40) : "New chat";
     await env.DB.prepare(
-      "INSERT INTO conversations (id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
-    ).bind(conversationId, title, modelId, now, now).run();
+      "INSERT INTO conversations (id, user_id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+    ).bind(conversationId, user.uid, title, modelId, now, now).run();
     conv = { id: conversationId, title, model: modelId, created_at: now, updated_at: now };
   }
 
@@ -763,6 +812,45 @@ async function adminUpdateModel(req: Request, env: Env): Promise<Response> {
     values.push(modelId);
     await env.DB.prepare(`UPDATE admin_models SET ${updates.join(", ")} WHERE model_id = ?`).bind(...values).run();
     return json({ ok: true });
+  } catch (err) {
+    return json({ error: (err as Error).message }, 500);
+  }
+}
+
+// ─── Admin: User Management ───────────────────────────
+
+async function adminListAllUsers(env: Env): Promise<Response> {
+  try {
+    const { results } = await env.DB.prepare(
+      "SELECT uid, email, display_name, photo_url, is_disabled, last_sign_in, created_at FROM user_profiles ORDER BY last_sign_in DESC NULLS LAST"
+    ).all();
+    return json({ users: results ?? [] });
+  } catch (err) {
+    return json({ error: (err as Error).message }, 500);
+  }
+}
+
+async function adminGetUserConversations(uid: string, env: Env): Promise<Response> {
+  try {
+    const user = await env.DB.prepare(
+      "SELECT uid, email, display_name, photo_url, is_disabled, last_sign_in, created_at FROM user_profiles WHERE uid = ?"
+    ).bind(uid).first();
+    if (!user) return json({ error: "User not found" }, 404);
+
+    const { results } = await env.DB.prepare(
+      "SELECT id, title, model, created_at, updated_at FROM conversations WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50"
+    ).bind(uid).all();
+
+    const conversationStats = await Promise.all(
+      (results ?? []).map(async (conv: any) => {
+        const row = await env.DB.prepare(
+          "SELECT COUNT(*) as count FROM messages WHERE conversation_id = ?"
+        ).bind(conv.id).first<{ count: number }>();
+        return { ...conv, message_count: (row as any)?.count || 0 };
+      })
+    );
+
+    return json({ user, conversations: conversationStats });
   } catch (err) {
     return json({ error: (err as Error).message }, 500);
   }

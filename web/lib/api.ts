@@ -69,28 +69,59 @@ export interface ImageGenResult {
   media_type: string;
 }
 
+/* ─── Auth token ────────────────────────────────────── */
+
+let _token: string | null = null;
+
+export function setAuthToken(token: string | null) {
+  _token = token;
+}
+
+export function getAuthToken(): string | null {
+  return _token;
+}
+
 /* ─── Helpers ───────────────────────────────────────── */
 
 async function request<T>(
   path: string,
   options?: RequestInit
 ): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (_token) {
+    headers["Authorization"] = `Bearer ${_token}`;
+  }
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    headers,
     ...options,
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    // Avoid dumping huge HTML (e.g. Next.js 404 page) into error messages
     const snippet = text.length > 200 ? text.slice(0, 200) + "…" : text;
     throw new Error(snippet || `HTTP ${res.status}`);
   }
-  // Guard against non-JSON responses
   const contentType = res.headers.get("content-type") || "";
   if (!contentType.includes("application/json")) {
     throw new Error(`Unexpected response (HTTP ${res.status})`);
   }
   return res.json();
+}
+
+async function fetchWithToken(path: string, options?: RequestInit): Promise<Response> {
+  const headers: Record<string, string> = {};
+  if (_token) {
+    headers["Authorization"] = `Bearer ${_token}`;
+  }
+  // Only set Content-Type for JSON bodies
+  if (options?.body && typeof options.body === "string") {
+    headers["Content-Type"] = "application/json";
+  }
+  return fetch(`${API_BASE}${path}`, {
+    headers,
+    ...options,
+  });
 }
 
 /* ─── API Methods ────────────────────────────────────── */
@@ -114,16 +145,15 @@ export async function getConversation(
 }
 
 export async function deleteConversation(id: string): Promise<void> {
-  await fetch(`${API_BASE}/api/conversations/${id}`, { method: "DELETE" });
+  await fetchWithToken(`/api/conversations/${id}`, { method: "DELETE" });
 }
 
 export async function updateConversation(
   id: string,
   data: { title?: string; model?: string }
 ): Promise<void> {
-  await fetch(`${API_BASE}/api/conversations/${id}`, {
+  await fetchWithToken(`/api/conversations/${id}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
 }
@@ -133,8 +163,11 @@ export async function uploadFile(
 ): Promise<{ attachment: AttachmentMeta }> {
   const form = new FormData();
   form.append("file", file);
+  const headers: Record<string, string> = {};
+  if (_token) headers["Authorization"] = `Bearer ${_token}`;
   const res = await fetch(`${API_BASE}/api/upload`, {
     method: "POST",
+    headers,
     body: form,
   });
   if (!res.ok) {
@@ -184,9 +217,11 @@ export function streamChat(
 
   (async () => {
     try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (_token) headers["Authorization"] = `Bearer ${_token}`;
       const res = await fetch(`${API_BASE}/api/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           conversationId,
           message,
