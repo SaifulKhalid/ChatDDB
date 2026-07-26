@@ -4,13 +4,8 @@ import { useState } from "react";
 import {
   Copy,
   Check,
-  RefreshCw,
-  ThumbsUp,
-  ThumbsDown,
-  Pencil,
   FileText,
 } from "lucide-react";
-import { Logo } from "@/components/ui/logo";
 import { renderMarkdown } from "@/lib/markdown";
 import { getFileUrl } from "@/lib/api";
 import type { ChatMessage as ChatMessageType } from "@/lib/api";
@@ -18,11 +13,12 @@ import type { ChatMessage as ChatMessageType } from "@/lib/api";
 interface MessageProps {
   message: ChatMessageType;
   isStreaming?: boolean;
+  isFirst?: boolean;
 }
 
-export function Message({ message, isStreaming }: MessageProps) {
-  const isUser = message.role === "user";
+export function Message({ message, isStreaming, isFirst }: MessageProps) {
   const [copied, setCopied] = useState(false);
+  const isUser = message.role === "user";
 
   const handleCopy = () => {
     navigator.clipboard.writeText(message.content);
@@ -30,40 +26,20 @@ export function Message({ message, isStreaming }: MessageProps) {
     setTimeout(() => setCopied(false), 1500);
   };
 
+  // Attachments preview (shown for user messages that are filtered out)
+  const hasAttachments =
+    message.attachments && message.attachments.length > 0;
+
+  // User messages not rendered as chat bubbles — text goes to header pill
   if (isUser) {
+    // Only show attachments if any, no message bubble
+    if (!hasAttachments) return null;
     return (
-      <div className="group flex justify-end px-4 message-enter">
-        <div className="flex max-w-[85%] flex-col items-end gap-1">
-          {/* Attachments */}
-          {message.attachments?.length > 0 && (
-            <div className="flex flex-wrap justify-end gap-2 mb-1">
-              {message.attachments.map((att) => (
-                <AttachmentChip key={att.id} att={att} />
-              ))}
-            </div>
-          )}
-          <div className="rounded-3xl rounded-br-md bg-[var(--bg-card)] px-4 py-2.5 text-[15px] leading-relaxed text-[var(--text-primary)] whitespace-pre-wrap break-words">
-            {message.content}
-          </div>
-          <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-            <button
-              onClick={handleCopy}
-              className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-              title="Copy"
-            >
-              {copied ? (
-                <Check className="h-3.5 w-3.5" />
-              ) : (
-                <Copy className="h-3.5 w-3.5" />
-              )}
-            </button>
-            <button
-              className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-              title="Edit"
-            >
-              <Pencil className="h-3.5 w-3.5" />
-            </button>
-          </div>
+      <div className="px-4 message-enter">
+        <div className="flex flex-wrap gap-2 mb-4">
+          {message.attachments?.map((att) => (
+            <AttachmentChip key={att.id} att={att} />
+          ))}
         </div>
       </div>
     );
@@ -74,66 +50,66 @@ export function Message({ message, isStreaming }: MessageProps) {
   const html = renderMarkdown(message.content || "", !!isStreaming);
 
   return (
-    <div className="group flex gap-3 px-4 message-enter">
-      <Logo size={28} className="mt-1 shrink-0" />
-      <div className="min-w-0 flex-1">
-        {isEmpty ? (
-          <div className="typing-indicator">
-            <span />
-            <span />
-            <span />
+    <div className="px-4 message-enter">
+      <div className="mx-auto max-w-chat">
+        {/* "Fast answer" section label for first assistant response */}
+        {isFirst && (
+          <div className="flex items-center gap-2 mb-4">
+            <div className="h-5 w-5 rounded-full bg-[var(--accent-primary)]/10 flex items-center justify-center">
+              <svg
+                width="10"
+                height="10"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="var(--accent-primary)"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            </div>
+            <span className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">
+              Fast answer
+            </span>
           </div>
-        ) : (
-          <div
-            className="prose-chat max-w-none text-[15px] leading-relaxed text-[var(--text-primary)]"
-            dangerouslySetInnerHTML={{ __html: html }}
-            onClick={handleCodeCopy}
-          />
         )}
 
-        {/* Hover actions */}
+        {/* Content */}
+        <div className="min-w-0">
+          {isEmpty ? (
+            <div className="typing-indicator">
+              <span />
+              <span />
+              <span />
+            </div>
+          ) : (
+            <div
+              className="text-[15px] leading-relaxed text-[var(--text-primary)] [&_p]:my-1.5 [&_p]:leading-relaxed"
+              dangerouslySetInnerHTML={{ __html: html }}
+              onClick={handleCodeCopy}
+            />
+          )}
+        </div>
+
+        {/* Hover copy action */}
         {!isStreaming && message.content && (
-          <div className="mt-2 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-            <ActionButton onClick={handleCopy} title="Copy">
+          <div className="mt-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <button
+              onClick={handleCopy}
+              title="Copy"
+              className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+            >
               {copied ? (
                 <Check className="h-3.5 w-3.5" />
               ) : (
                 <Copy className="h-3.5 w-3.5" />
               )}
-            </ActionButton>
-            <ActionButton title="Regenerate">
-              <RefreshCw className="h-3.5 w-3.5" />
-            </ActionButton>
-            <ActionButton title="Like">
-              <ThumbsUp className="h-3.5 w-3.5" />
-            </ActionButton>
-            <ActionButton title="Dislike">
-              <ThumbsDown className="h-3.5 w-3.5" />
-            </ActionButton>
+            </button>
           </div>
         )}
       </div>
     </div>
-  );
-}
-
-function ActionButton({
-  children,
-  onClick,
-  title,
-}: {
-  children: React.ReactNode;
-  onClick?: () => void;
-  title: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      title={title}
-      className="rounded p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-    >
-      {children}
-    </button>
   );
 }
 
