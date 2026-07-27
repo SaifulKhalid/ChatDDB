@@ -106,6 +106,34 @@ Open http://localhost:8787 in your browser.
 npm run deploy
 ```
 
+### 7. Warm up (prevent cold starts)
+
+Cloudflare Workers idle after a few seconds of inactivity, causing a cold
+start on the next request. Run the warmup script periodically to keep the
+worker responsive:
+
+```bash
+# Single run:
+npm run warmup https://your-worker.workers.dev
+
+# Or via environment variable:
+WORKER_URL=https://your-worker.workers.dev npm run warmup
+```
+
+**Cron setup (every 5 minutes):**
+
+```bash
+# Edit your crontab:
+crontab -e
+
+# Add this line (update the path and worker URL):
+*/5 * * * * cd /path/to/prototype-chatbot && WORKER_URL=https://your-worker.workers.dev node scripts/warmup.mjs >> /tmp/warmup.log 2>&1
+```
+
+The script pings `/api/health`, `/api/models`, and `/` with a 10-second
+timeout per endpoint, logs latency, and exits non-zero if all requests fail
+(useful for monitoring).
+
 ## API Reference
 
 | Method | Endpoint | Description |
