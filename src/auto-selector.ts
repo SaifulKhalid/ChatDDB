@@ -260,7 +260,14 @@ export function selectAutoImageModel(
 
   if (editing) {
     const editingCandidates = candidates.filter((m) => m.supportsImageEditing);
-    if (editingCandidates.length > 0) candidates = editingCandidates;
+    if (editingCandidates.length > 0) {
+      candidates = editingCandidates;
+    } else {
+      throw new Error(
+        "None of the available image generation models support image-to-image editing. " +
+        "Editing requires an OpenRouter FLUX model."
+      );
+    }
   }
 
   // Score by health (namespaced under ":image") and order
@@ -275,7 +282,7 @@ export function selectAutoImageModel(
     .sort((a, b) => a.score - b.score);
 
   const best = scored[0];
-  if (!best) throw new Error("No image generation models available");
+  if (!best) throw new Error("No image generation models available (all are unhealthy)");
 
   const reason = editing
     ? best.model.supportsImageEditing
