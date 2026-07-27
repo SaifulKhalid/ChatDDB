@@ -181,6 +181,9 @@ export default {
 
       if (pathname === "/api/upload" && method === "POST") return uploadFile(req, env, ctx);
 
+      // Temporary: test all free OpenRouter models
+      if (pathname === "/api/test-openrouter" && method === "GET") return testOpenRouterFreeModels(env);
+
       if (pathname === "/api/chat" && method === "POST") return chat(req, user, env);
       if (pathname === "/api/enhance" && method === "POST") return enhancePrompt(req, env);
       if (pathname === "/api/generate-image" && method === "POST") return handleGenerateImage(req, user, env);
@@ -586,7 +589,7 @@ async function chat(req: Request, user: FirebaseUser, env: Env): Promise<Respons
   // Auto mode: intelligently select the best model based on request content
   let autoSelection: { modelId: string; provider: string; reason: string } | undefined;
   if (isAutoMode) {
-    autoSelection = selectAutoModel(message, attachments, history.length);
+    autoSelection = selectAutoModel(message, attachments, history.length, mergedModels);
     modelId = autoSelection.modelId;
   }
 
@@ -684,7 +687,8 @@ async function chat(req: Request, user: FirebaseUser, env: Env): Promise<Respons
                 lastFailedProvider,
                 message,
                 attachments,
-                history.length
+                history.length,
+                mergedModels
               );
 
               if (fallback) {
@@ -1066,6 +1070,82 @@ async function handleGenerateImage(req: Request, user: FirebaseUser, env: Env): 
     console.error("Image generation failed:", err);
     return json({ error: (err as Error).message }, 500);
   }
+}
+
+/* ----------------------------- OpenRouter Free Model Tester (temporary) ----------------------------- */
+
+const OPENROUTER_FREE_MODELS = [
+  // Chat / coding
+  { id: "deepseek/deepseek-r1:free", label: "DeepSeek R1", type: "chat" },
+  { id: "deepseek/deepseek-chat-v3-0324:free", label: "DeepSeek Chat v3", type: "chat" },
+  { id: "meta-llama/llama-4-maverick:free", label: "Llama 4 Maverick", type: "chat" },
+  { id: "meta-llama/llama-4-scout:free", label: "Llama 4 Scout", type: "chat" },
+  { id: "meta-llama/llama-3.3-70b-instruct:free", label: "Llama 3.3 70B", type: "chat" },
+  { id: "meta-llama/llama-3.1-8b-instruct:free", label: "Llama 3.1 8B", type: "chat" },
+  { id: "qwen/qwen3-235b-a22b:free", label: "Qwen3 235B", type: "chat" },
+  { id: "qwen/qwen3-30b-a3b:free", label: "Qwen3 30B", type: "chat" },
+  { id: "zhipu-ai/glm-4-32b:free", label: "GLM-4 32B", type: "chat" },
+  { id: "google/gemma-3-27b-it:free", label: "Gemma 3 27B", type: "chat" },
+  { id: "mistralai/mistral-small-3.1-24b-instruct:free", label: "Mistral Small 3.1", type: "chat" },
+  { id: "nousresearch/hermes-3-llama-3.1-70b:free", label: "Hermes 3 70B", type: "chat" },
+  // Multimodal
+  { id: "google/gemma-4-26b-a4b-it:free", label: "Gemma 4 26B", type: "chat" },
+  { id: "google/gemma-4-31b-it:free", label: "Gemma 4 31B", type: "chat" },
+];
+
+async function testOpenRouterFreeModels(env: Env): Promise<Response> {
+  const results: { model: string; label: string; status: string; latency: string; response?: string; error?: string }[] = [];
+
+  for (const model of OPENROUTER_FREE_MODELS) {
+    const start = Date.now();
+    try {
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + env.OPENROUTER_API_KEY,
+        },
+        body: JSON.stringify({
+          model: model.id,
+          messages: [{ role: "user", content: "Reply with exactly one word: hello" }],
+          max_tokens: 20,
+        }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      const ms = Date.now() - start;
+      if (!res.ok) {
+        const err = await res.text().catch(() => "");
+        results.push({
+          model: model.id,
+          label: model.label,
+          status: "error",
+          latency: ms + "ms",
+          error: `HTTP ${res.status}: ${err.slice(0, 150)}`,
+        });
+      } else {
+        const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+        const content = data?.choices?.[0]?.message?.content || "(empty)";
+        results.push({
+          model: model.id,
+          label: model.label,
+          status: "ok",
+          latency: ms + "ms",
+          response: content.slice(0, 80),
+        });
+      }
+    } catch (err) {
+      const ms = Date.now() - start;
+      results.push({
+        model: model.id,
+        label: model.label,
+        status: "error",
+        latency: ms + "ms",
+        error: (err as Error).message.slice(0, 150),
+      });
+    }
+  }
+
+  return json({ results, timestamp: new Date().toISOString() });
 }
 
 /* ----------------------------- Prompt Enhancer ----------------------------- */

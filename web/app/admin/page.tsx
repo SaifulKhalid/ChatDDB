@@ -95,9 +95,16 @@ export default function AdminPage() {
   const [adminModels, setAdminModels] = useState<AdminModel[]>([]);
   const [newModelId, setNewModelId] = useState("");
   const [newModelLabel, setNewModelLabel] = useState("");
-  const [newModelProvider, setNewModelProvider] = useState("openrouter");
+  const [newModelProvider, setNewModelProvider] = useState("workers-ai");
   const [newModelVision, setNewModelVision] = useState(false);
   const [addingModel, setAddingModel] = useState(false);
+  // Edit state
+  const [editingModel, setEditingModel] = useState<AdminModel | null>(null);
+  const [editModelId, setEditModelId] = useState("");
+  const [editModelLabel, setEditModelLabel] = useState("");
+  const [editModelProvider, setEditModelProvider] = useState("workers-ai");
+  const [editModelVision, setEditModelVision] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
 
   // Admin email management (future: add/remove from DB via API)
   // Currently managed through database CLI
@@ -182,6 +189,41 @@ export default function AdminPage() {
       await loadModels();
     } catch (e: any) {
       setError(e.message || "Failed to delete model");
+    }
+  };
+
+  const startEditing = (m: AdminModel) => {
+    setEditingModel(m);
+    setEditModelId(m.model_id);
+    setEditModelLabel(m.label);
+    setEditModelProvider(m.provider);
+    setEditModelVision(m.supports_vision === 1);
+  };
+
+  const cancelEditing = () => {
+    setEditingModel(null);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editModelLabel.trim() || !token || !editingModel) return;
+    setSavingEdit(true);
+    try {
+      const body: Record<string, unknown> = {};
+      if (editModelLabel.trim() !== editingModel.label) body.label = editModelLabel.trim();
+      if (editModelProvider !== editingModel.provider) body.provider = editModelProvider;
+      if ((editModelVision ? 1 : 0) !== editingModel.supports_vision) body.supports_vision = editModelVision;
+      body.supports_streaming = true;
+      if (Object.keys(body).length === 0) { cancelEditing(); return; }
+      await adminApi("/api/admin/models", token, {
+        method: "PUT",
+        body: JSON.stringify({ model_id: editModelId, ...body }),
+      });
+      cancelEditing();
+      await loadModels();
+    } catch (e: any) {
+      setError(e.message || "Failed to update model");
+    } finally {
+      setSavingEdit(false);
     }
   };
 
@@ -453,27 +495,97 @@ export default function AdminPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {adminModels.map((m) => (
-                      <tr key={m.row_id} className="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
-                        <td className="px-4 py-3 font-mono text-xs text-white/70">{m.model_id}</td>
-                        <td className="px-4 py-3 font-medium">{m.label}</td>
-                        <td className="px-4 py-3">
-                          <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${PROVIDER_COLORS[m.provider] || "bg-white/5 text-white/60"}`}>
-                            {m.provider}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-center text-xs text-white/40">{m.supports_vision ? "✅" : "—"}</td>
-                        <td className="px-4 py-3 text-center text-xs text-white/40">{m.supports_streaming ? "✅" : "—"}</td>
-                        <td className="px-4 py-3 text-center">
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400">Custom</span>
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <button onClick={() => handleDeleteModel(m.model_id)} className="p-1 rounded text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-all" title="Delete model">
-                            <Trash2 size={14} />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                    {adminModels.map((m) =>
+                      editingModel?.row_id === m.row_id ? (
+                        /* ── Inline edit row ── */
+                        <tr key={m.row_id} className="border-b border-white/5 bg-emerald-500/5">
+                          <td className="px-4 py-3">
+                            <input
+                              className="w-full px-2 py-1 bg-white/10 border border-white/20 rounded text-xs font-mono outline-none focus:border-emerald-500/50"
+                              value={editModelId}
+                              onChange={(e) => setEditModelId(e.target.value)}
+                              disabled
+                            />
+                          </td>
+                          <td className="px-4 py-3">
+                            <input
+                              className="w-full px-2 py-1 bg-white/10 border border-white/20 rounded text-sm outline-none focus:border-emerald-500/50"
+                              value={editModelLabel}
+                              onChange={(e) => setEditModelLabel(e.target.value)}
+                              placeholder="Display name"
+                            />
+                          </td>
+                          <td className="px-4 py-3">
+                            <select
+                              className="w-full px-2 py-1 bg-white/10 border border-white/20 rounded text-xs outline-none focus:border-emerald-500/50"
+                              value={editModelProvider}
+                              onChange={(e) => setEditModelProvider(e.target.value)}
+                            >
+                              {PROVIDERS.map((p) => (
+                                <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <input
+                              type="checkbox"
+                              checked={editModelVision}
+                              onChange={(e) => setEditModelVision(e.target.checked)}
+                              className="accent-emerald-500"
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-center text-xs text-white/40">✅</td>
+                          <td className="px-4 py-3 text-center">
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400">Custom</span>
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <div className="flex items-center justify-center gap-1">
+                              <button
+                                onClick={handleSaveEdit}
+                                disabled={savingEdit || !editModelLabel.trim()}
+                                className="p-1 rounded text-emerald-400 hover:bg-emerald-500/20 transition-all disabled:opacity-30"
+                                title="Save"
+                              >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 6L9 17l-5-5"/></svg>
+                              </button>
+                              <button
+                                onClick={cancelEditing}
+                                className="p-1 rounded text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-all"
+                                title="Cancel"
+                              >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ) : (
+                        /* ── Normal row ── */
+                        <tr key={m.row_id} className="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                          <td className="px-4 py-3 font-mono text-xs text-white/70">{m.model_id}</td>
+                          <td className="px-4 py-3 font-medium">{m.label}</td>
+                          <td className="px-4 py-3">
+                            <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${PROVIDER_COLORS[m.provider] || "bg-white/5 text-white/60"}`}>
+                              {m.provider}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-center text-xs text-white/40">{m.supports_vision ? "✅" : "—"}</td>
+                          <td className="px-4 py-3 text-center text-xs text-white/40">{m.supports_streaming ? "✅" : "—"}</td>
+                          <td className="px-4 py-3 text-center">
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400">Custom</span>
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <div className="flex items-center justify-center gap-1">
+                              <button onClick={() => startEditing(m)} className="p-1 rounded text-white/30 hover:text-blue-400 hover:bg-blue-500/10 transition-all" title="Edit model">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                              </button>
+                              <button onClick={() => handleDeleteModel(m.model_id)} className="p-1 rounded text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-all" title="Delete model">
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    )}
                     {allModels.filter((m) => !adminModels.some((a) => a.model_id === m.id)).map((m) => (
                       <tr key={m.id} className="border-b border-white/5 text-white/60">
                         <td className="px-4 py-3 font-mono text-xs">{m.id}</td>

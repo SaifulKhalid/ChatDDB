@@ -9,7 +9,7 @@
 import { PROVIDER_CONFIGS } from "./capabilities";
 import { healthTracker } from "./health-tracker";
 import { MODELS } from "./types";
-import type { Capability, ModelInfo, ModelSelection, AttachmentMeta } from "./types";
+import type { Capability, ModelInfo, ModelSelection, AttachmentMeta, ProviderConfig } from "./types";
 
 /* ─── Intent Classification ─────────────────────────── */
 
@@ -167,13 +167,14 @@ function scoreProvider(
  * Falls back to the first model if no capability-specific match is needed.
  */
 function pickBestModel(
-  providerConfig: typeof PROVIDER_CONFIGS[0],
-  requiredCaps: Set<Capability>
+  providerConfig: ProviderConfig,
+  requiredCaps: Set<Capability>,
+  mergedModels: ModelInfo[] = MODELS
 ): string {
   // If vision is required but the default model doesn't support it, find one that does
   if (requiredCaps.has("vision")) {
     const visionModelId = providerConfig.models.find((mId) => {
-      const model = MODELS.find((m) => m.id === mId);
+      const model = mergedModels.find((m) => m.id === mId);
       return model?.supportsVision === true;
     });
     if (visionModelId) return visionModelId;
@@ -188,7 +189,8 @@ function pickBestModel(
 export function selectAutoModel(
   message: string,
   attachments: AttachmentMeta[],
-  historyLength: number
+  historyLength: number,
+  mergedModels?: ModelInfo[]
 ): ModelSelection {
   const requiredCaps = classifyRequest(message, attachments, historyLength);
 
@@ -200,7 +202,7 @@ export function selectAutoModel(
     .sort((a, b) => a.score - b.score);
 
   const best = scored[0];
-  const modelId = pickBestModel(best.pc, requiredCaps);
+  const modelId = pickBestModel(best.pc, requiredCaps, mergedModels);
   const reason = buildFriendlyReason(
     requiredCaps,
     best.pc.costTier
@@ -217,7 +219,8 @@ export function selectFallbackModel(
   failedProvider: string,
   message: string,
   attachments: AttachmentMeta[],
-  historyLength: number
+  historyLength: number,
+  mergedModels?: ModelInfo[]
 ): ModelSelection | null {
   const requiredCaps = classifyRequest(message, attachments, historyLength);
 
@@ -237,7 +240,7 @@ export function selectFallbackModel(
   if (scored.length === 0) return null;
 
   const best = scored[0];
-  const modelId = pickBestModel(best.pc, requiredCaps);
+  const modelId = pickBestModel(best.pc, requiredCaps, mergedModels);
   const reason = buildFallbackReason(best.pc.provider, failedProvider);
   return {
     modelId,

@@ -126,6 +126,7 @@ export interface ModelInfo {
 }
 
 export const MODELS: ModelInfo[] = [
+  // ── Chat Models (recommended order) ────────────────
   {
     id: "groq:llama-3.1-8b-instant",
     label: "Groq",
@@ -134,16 +135,30 @@ export const MODELS: ModelInfo[] = [
     supportsStreaming: true,
   },
   {
-    id: "gemini:gemini-2.5-flash",
-    label: "Gemini",
-    provider: "gemini",
+    id: "workers-ai:@cf/meta/llama-4-scout-17b-16e-instruct",
+    label: "Llama 4 Scout",
+    provider: "workers-ai",
     supportsVision: true,
     supportsStreaming: true,
   },
   {
-    id: "agentrouter:kimi-k3",
-    label: "Kimi",
-    provider: "agentrouter",
+    id: "workers-ai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    label: "Llama 3.3 70B",
+    provider: "workers-ai",
+    supportsVision: false,
+    supportsStreaming: true,
+  },
+  {
+    id: "workers-ai:@cf/qwen/qwen3-30b-a3b-fp8",
+    label: "Qwen3 30B",
+    provider: "workers-ai",
+    supportsVision: false,
+    supportsStreaming: true,
+  },
+  {
+    id: "gemini:gemini-2.5-flash",
+    label: "Gemini 2.5 Flash",
+    provider: "gemini",
     supportsVision: true,
     supportsStreaming: true,
   },
@@ -161,50 +176,7 @@ export const MODELS: ModelInfo[] = [
     supportsVision: true,
     supportsStreaming: true,
   },
-  // Workers AI models (native Cloudflare edge inference — free daily quota)
-  {
-    id: "workers-ai:@cf/mistral/mistral-7b-instruct-v0.3",
-    label: "Workers AI (Mistral 7B)",
-    provider: "workers-ai",
-    supportsVision: false,
-    supportsStreaming: true,
-  },
-  {
-    id: "workers-ai:@cf/meta/llama-3.2-11b-vision-instruct",
-    label: "Workers AI (Vision)",
-    provider: "workers-ai",
-    supportsVision: true,
-    supportsStreaming: true,
-  },
-  {
-    id: "workers-ai:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-    label: "Workers AI (Llama 3.3)",
-    provider: "workers-ai",
-    supportsVision: false,
-    supportsStreaming: true,
-  },
-  {
-    id: "workers-ai:@hf/google/gemma-2-27b-it",
-    label: "Workers AI (Gemma 2 27B)",
-    provider: "workers-ai",
-    supportsVision: false,
-    supportsStreaming: true,
-  },
-  // --- OpenRouter (free chat models) ---
-  {
-    id: "openrouter:poolside/laguna-s-2.1:free",
-    label: "Laguna S 2.1",
-    provider: "openrouter",
-    supportsVision: false,
-    supportsStreaming: true,
-  },
-  {
-    id: "openrouter:openrouter/free",
-    label: "OpenRouter Free",
-    provider: "openrouter",
-    supportsVision: false,
-    supportsStreaming: true,
-  },
+  // ── OpenRouter fallback (lowest priority) ──────────
   {
     id: "openrouter:inclusionai/ling-3.0-flash:free",
     label: "Ling 3.0 Flash",
@@ -212,42 +184,18 @@ export const MODELS: ModelInfo[] = [
     supportsVision: false,
     supportsStreaming: true,
   },
-  {
-    id: "openrouter:openai/gpt-oss-20b:free",
-    label: "GPT-OSS 20B",
-    provider: "openrouter",
-    supportsVision: false,
-    supportsStreaming: true,
-  },
-  {
-    id: "openrouter:google/gemma-4-26b-a4b-it:free",
-    label: "Gemma 4 26B",
-    provider: "openrouter",
-    supportsVision: false,
-    supportsStreaming: true,
-  },
-  // --- Image generation models (free tier) ---
-  {
-    id: "openrouter:black-forest-labs/flux-1-schnell:free",
-    label: "FLUX.1 Schnell",
-    provider: "openrouter",
-    supportsVision: false,
-    supportsStreaming: false,
-    supportsImageGen: true,
-    supportsImageEditing: true,
-  },
-  {
-    id: "openrouter:black-forest-labs/flux-pro:free",
-    label: "FLUX Pro",
-    provider: "openrouter",
-    supportsVision: false,
-    supportsStreaming: false,
-    supportsImageGen: true,
-    supportsImageEditing: true,
-  },
+  // ── Image Generation Models ────────────────────────
   {
     id: "workers-ai:@cf/black-forest-labs/flux-1-schnell",
-    label: "Image Gen (FLUX.1)",
+    label: "FLUX.1 Schnell",
+    provider: "workers-ai",
+    supportsVision: false,
+    supportsStreaming: false,
+    supportsImageGen: true,
+  },
+  {
+    id: "workers-ai:@cf/leonardo/lucid-origin",
+    label: "Leonardo Lucid",
     provider: "workers-ai",
     supportsVision: false,
     supportsStreaming: false,

@@ -52,9 +52,15 @@ export default function SettingsPage() {
   // Add form state
   const [newId, setNewId] = useState("");
   const [newLabel, setNewLabel] = useState("");
-  const [newProvider, setNewProvider] = useState("openrouter");
+  const [newProvider, setNewProvider] = useState("workers-ai");
   const [newVision, setNewVision] = useState(false);
   const [adding, setAdding] = useState(false);
+  // Edit state
+  const [editingModel, setEditingModel] = useState<AdminModel | null>(null);
+  const [editLabel, setEditLabel] = useState("");
+  const [editProvider, setEditProvider] = useState("workers-ai");
+  const [editVision, setEditVision] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -124,6 +130,45 @@ export default function SettingsPage() {
       await loadData();
     } catch (e: any) {
       alert("Failed to delete: " + e.message);
+    }
+  }
+
+  function startEditing(m: AdminModel) {
+    setEditingModel(m);
+    setEditLabel(m.label);
+    setEditProvider(m.provider);
+    setEditVision(m.supports_vision === 1);
+  }
+
+  function cancelEditing() {
+    setEditingModel(null);
+  }
+
+  async function handleSaveEdit() {
+    if (!editLabel.trim() || !editingModel) return;
+    setSavingEdit(true);
+    try {
+      const body: Record<string, unknown> = {};
+      if (editLabel.trim() !== editingModel.label) body.label = editLabel.trim();
+      if (editProvider !== editingModel.provider) body.provider = editProvider;
+      if ((editVision ? 1 : 0) !== editingModel.supports_vision) body.supports_vision = editVision;
+      body.supports_streaming = true;
+      if (Object.keys(body).length === 0) { cancelEditing(); return; }
+      const res = await fetch("/api/admin/models", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model_id: editingModel.model_id, ...body }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+      cancelEditing();
+      await loadData();
+    } catch (e: any) {
+      alert("Failed to update: " + e.message);
+    } finally {
+      setSavingEdit(false);
     }
   }
 
@@ -244,62 +289,83 @@ export default function SettingsPage() {
                 <tbody>
                   {allModels.map((m) => {
                     const isCustom = adminModelIds.has(m.id);
+                    const adm = adminModels.find((a) => a.model_id === m.id);
+                    const isEditing = editingModel?.row_id === adm?.row_id;
                     return (
                       <tr
                         key={m.id}
                         className={`border-b border-white/5 hover:bg-white/[0.02] transition-colors ${
                           isCustom ? "bg-emerald-500/[0.03]" : ""
-                        }`}
+                        } ${isEditing ? "bg-emerald-500/10" : ""}`}
                       >
-                        <td
-                          className="px-4 py-3 font-mono text-xs text-white/70 max-w-[280px] truncate"
-                          title={m.id}
-                        >
-                          {m.id}
-                        </td>
-                        <td className="px-4 py-3">{m.label}</td>
-                        <td className="px-4 py-3">
-                          <span
-                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
-                              PROVIDER_COLORS[m.provider] ||
-                              "bg-white/5 text-white/50"
-                            }`}
-                          >
-                            <Server size={12} />
-                            {m.provider}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3">
-                          {m.supportsVision ? (
-                            <span className="text-emerald-400 font-medium">
-                              ✓
-                            </span>
-                          ) : (
-                            <span className="text-white/30">—</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          {isCustom ? (
-                            <span className="text-emerald-400 text-xs">
-                              Custom
-                            </span>
-                          ) : (
-                            <span className="text-white/30 text-xs bg-white/5 px-1.5 py-0.5 rounded">
-                              Default
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          {isCustom && (
-                            <button
-                              onClick={() => handleDelete(m.id)}
-                              className="p-1.5 rounded text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-all"
-                              title="Delete"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          )}
-                        </td>
+                        {isEditing ? (
+                          <>
+                            <td className="px-4 py-3 font-mono text-xs text-white/70 max-w-[280px] truncate" title={m.id}>{m.id}</td>
+                            <td className="px-4 py-3">
+                              <input
+                                className="w-full px-2 py-1 bg-white/10 border border-white/20 rounded text-sm outline-none focus:border-emerald-500/50"
+                                value={editLabel}
+                                onChange={(e) => setEditLabel(e.target.value)}
+                              />
+                            </td>
+                            <td className="px-4 py-3">
+                              <select
+                                className="px-2 py-1 bg-white/10 border border-white/20 rounded text-xs outline-none focus:border-emerald-500/50"
+                                value={editProvider}
+                                onChange={(e) => setEditProvider(e.target.value)}
+                              >
+                                {PROVIDERS.map((p) => (
+                                  <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>
+                                ))}
+                              </select>
+                            </td>
+                            <td className="px-4 py-3">
+                              <input type="checkbox" checked={editVision} onChange={(e) => setEditVision(e.target.checked)} className="accent-emerald-500" />
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className="text-emerald-400 text-xs">Custom</span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-1">
+                                <button onClick={handleSaveEdit} disabled={savingEdit || !editLabel.trim()} className="p-1.5 rounded text-emerald-400 hover:bg-emerald-500/20 transition-all disabled:opacity-30" title="Save">
+                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 6L9 17l-5-5"/></svg>
+                                </button>
+                                <button onClick={cancelEditing} className="p-1.5 rounded text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-all" title="Cancel">
+                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                                </button>
+                              </div>
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td className="px-4 py-3 font-mono text-xs text-white/70 max-w-[280px] truncate" title={m.id}>{m.id}</td>
+                            <td className="px-4 py-3">{m.label}</td>
+                            <td className="px-4 py-3">
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${PROVIDER_COLORS[m.provider] || "bg-white/5 text-white/50"}`}>
+                                <Server size={12} />
+                                {m.provider}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3">
+                              {m.supportsVision ? <span className="text-emerald-400 font-medium">✓</span> : <span className="text-white/30">—</span>}
+                            </td>
+                            <td className="px-4 py-3">
+                              {isCustom ? <span className="text-emerald-400 text-xs">Custom</span> : <span className="text-white/30 text-xs bg-white/5 px-1.5 py-0.5 rounded">Default</span>}
+                            </td>
+                            <td className="px-4 py-3">
+                              {isCustom && (
+                                <div className="flex items-center gap-1">
+                                  <button onClick={() => startEditing(adm!)} className="p-1.5 rounded text-white/30 hover:text-blue-400 hover:bg-blue-500/10 transition-all" title="Edit">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                                  </button>
+                                  <button onClick={() => handleDelete(m.id)} className="p-1.5 rounded text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-all" title="Delete">
+                                    <Trash2 size={14} />
+                                  </button>
+                                </div>
+                              )}
+                            </td>
+                          </>
+                        )}
                       </tr>
                     );
                   })}
