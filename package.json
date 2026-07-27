@@ -8,7 +8,8 @@
     "db:init": "wrangler d1 execute prototype-chatbot-db --local --file=src/db/schema.sql",
     "db:init:remote": "wrangler d1 execute prototype-chatbot-db --remote --file=src/db/schema.sql",
     "db:reset": "wrangler d1 execute prototype-chatbot-db --local --command=\"DROP TABLE IF EXISTS messages; DROP TABLE IF EXISTS conversations;\" && npm run db:init",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "warmup": "node scripts/warmup.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260722.1",
