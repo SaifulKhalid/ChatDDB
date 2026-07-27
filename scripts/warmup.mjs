@@ -1,19 +1,16 @@
-#!/usr/bin/env node
-
-/**
- * Cloudflare Worker warmup script.
- *
- * Pings the deployed worker's public endpoints periodically to keep
- * the isolate warm and avoid cold-start latency for real users.
- *
- * Usage:
- *   node scripts/warmup.mjs                   # uses WORKER_URL env var
- *   node scripts/warmup.mjs https://my-worker.example.com
- *   WORKER_URL=https://my-worker.example.com node scripts/warmup.mjs
- *
- * Typical use: run via cron every 5 minutes.
- *   crontab:  */5 * * * * cd /path/to/project && node scripts/warmup.mjs
- */
+// @ts-check
+// Cloudflare Worker warmup script.
+//
+// Pings the deployed worker's public endpoints periodically to keep
+// the isolate warm and avoid cold-start latency for real users.
+//
+// Usage:
+//   node scripts/warmup.mjs                   (uses WORKER_URL env var)
+//   node scripts/warmup.mjs https://my-worker.example.com
+//   WORKER_URL=https://my-worker.example.com node scripts/warmup.mjs
+//
+// Typical cron usage (every 5 minutes):
+//   crontab:  */5 * * * * cd /path/to/project && node scripts/warmup.mjs
 
 const WORKER_URL = process.env.WORKER_URL || process.argv[2];
 if (!WORKER_URL) {
