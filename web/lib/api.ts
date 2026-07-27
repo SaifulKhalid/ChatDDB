@@ -6,7 +6,7 @@
  * In development, the Worker runs locally on port 8787.
  */
 
-const API_BASE =
+export const API_BASE =
   process.env.NEXT_PUBLIC_API_URL ||
   (typeof window !== "undefined"
     ? (window as any).__CHATDDB_API_URL || window.location.origin
@@ -44,6 +44,12 @@ export interface ChatMessage {
   attachments: AttachmentMeta[];
   model: string | null;
   created_at: number;
+  /** Per-message model selection info (auto mode). Persisted by the store. */
+  selectionInfo?: {
+    modelId: string;
+    label: string;
+    reason: string;
+  };
 }
 
 export interface Conversation {
@@ -191,7 +197,15 @@ export async function generateImage(options: {
   imageR2Key?: string;
   /** MIME type of the source image */
   imageMimeType?: string;
-}): Promise<{ images: ImageGenResult[]; model: string; userMessageId: string; assistantMessageId: string }> {
+}): Promise<{
+  images: ImageGenResult[];
+  model: string;
+  userMessageId: string;
+  assistantMessageId: string;
+  /** Full message content as persisted in D1 (with /api/files/ URLs instead of embedded base64). */
+  content?: string;
+  modelSelection?: { modelId: string; label: string; reason: string };
+}> {
   return request("/api/generate-image", {
     method: "POST",
     body: JSON.stringify(options),

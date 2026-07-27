@@ -1,6 +1,6 @@
 # PrototypeChatBot
 
-A ChatGPT-style chatbot running on **Cloudflare Workers**, powered by multiple AI providers (**AgentRouter** for ChatGPT & Claude, **Groq** for Llama, and **Google Gemini**). Supports image and PDF uploads, streaming responses, conversation history, and a clean ChatGPT-like UI. **Model names are hidden** — clients see only friendly brand labels like "ChatGPT", "Claude", "Gemini", etc.
+A ChatGPT-style chatbot running on **Cloudflare Workers**, powered by multiple AI providers (**AgentRouter** for ChatGPT & Claude, **Groq** for Llama, and **Google Gemini**). Supports image and PDF uploads, streaming responses, conversation history, and a clean ChatGPT-like UI.
 
 ## Features
 
@@ -34,11 +34,7 @@ messages                           • Groq (Llama)
 
 ## Available Models
 
-Clients see only the **Label** — internal model IDs are never exposed to the UI.
-
-| Label | Provider | Vision | Internal Model |
-|---|---|---|---|
-| Label | Provider | Vision | Internal Model |
+| Label | Provider | Vision | Model ID |
 |---|---|---|---|
 | Groq | Groq | ❌ | llama-3.1-8b-instant |
 | Gemini | Gemini | ✅ | gemini-2.5-flash |
@@ -145,6 +141,7 @@ Secrets (set via wrangler secret put or .dev.vars):
 | GROQ_API_KEY | Groq API key |
 | GEMINI_API_KEY | Google Gemini API key |
 | AGENTROUTER_API_KEY | AgentRouter API key (for ChatGPT & Claude) |
+| OPENROUTER_API_KEY | OpenRouter API key (for free chat & image generation) |
 
 ## Adding More Models
 

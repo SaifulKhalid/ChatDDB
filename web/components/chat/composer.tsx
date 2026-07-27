@@ -11,9 +11,11 @@ import {
   ImageIcon,
 } from "lucide-react";
 import { useChatStore } from "@/stores/chat-store";
+import { useGuestStore } from "@/stores/guest-store";
 import { uploadFile } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { getProviderEmoji, AUTO_MODEL_ID } from "@/lib/constants";
+import { useRouter } from "next/navigation";
 import type { AttachmentMeta } from "@/lib/api";
 
 export function Composer() {
@@ -33,6 +35,14 @@ export function Composer() {
     isGeneratingImage,
   } = useChatStore();
 
+  const {
+    isGuest,
+    tryAddFileUpload,
+    tryAddImageGen,
+    isQuotaExhausted,
+  } = useGuestStore();
+  const router = useRouter();
+
   const [text, setText] = useState("");
   const [uploading, setUploading] = useState(false);
   const [enhancing, setEnhancing] = useState(false);
@@ -43,6 +53,9 @@ export function Composer() {
   const modelDropdownRef = useRef<HTMLDivElement>(null);
 
   const currentModel = models.find((m) => m.id === currentModelId);
+
+  // Checks if guest can still send messages — if exhausted, show login prompt
+  const canGuestSend = !isGuest || (isGuest && !isQuotaExhausted());
 
   // Listen for prefill events from suggestion cards
   useEffect(() => {
@@ -87,7 +100,19 @@ export function Composer() {
   const handleSend = () => {
     if ((!text.trim() && pendingAttachments.length === 0) || isStreaming)
       return;
+
+    // Guest quota check — if exhausted, prompt login
+    if (isGuest && isQuotaExhausted()) {
+      router.push("/login");
+      return;
+    }
+
     if (isImageGenMode) {
+      // Check guest image gen quota
+      if (isGuest && !tryAddImageGen()) {
+        router.push("/login");
+        return;
+      }
       generateImage(text.trim());
       setText("");
       setImageGenMode(false);
@@ -111,6 +136,16 @@ export function Composer() {
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
+
+    // Guest file upload quota check
+    if (isGuest) {
+      const allowed = tryAddFileUpload();
+      if (!allowed) {
+        router.push("/login");
+        return;
+      }
+    }
+
     setUploading(true);
     try {
       for (const file of Array.from(files)) {
@@ -155,7 +190,7 @@ export function Composer() {
     }
   }, [enhanceError]);
 
-  const canSend = (text.trim() || pendingAttachments.length > 0) && !isStreaming && !isGeneratingImage;
+  const canSend = (text.trim() || pendingAttachments.length > 0) && !isStreaming && !isGeneratingImage && canGuestSend;
 
   return (
     <div className="relative pb-5 pt-2 px-4">

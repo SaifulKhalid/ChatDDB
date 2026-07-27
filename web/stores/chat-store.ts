@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { ChatMessage, Conversation, ModelInfo, AttachmentMeta } from "@/lib/api";
 import * as api from "@/lib/api";
 import { AUTO_MODEL_ID } from "@/lib/constants";
+import { useGuestStore } from "./guest-store";
 
 /* ─── Selection Info ────────────────────────────────── */
 
@@ -36,6 +37,7 @@ interface ChatState {
   pendingAttachments: AttachmentMeta[];
 
   // Auto-selection info for 'Why this model?' display
+  // DEPRECATED: kept for backward compat, use per-message selectionInfo instead
   lastSelectionInfo: SelectionInfo | null;
 
   // Image generation
@@ -54,6 +56,8 @@ interface ChatState {
   addPendingAttachment: (att: AttachmentMeta) => void;
   removePendingAttachment: (id: string) => void;
   setSelectionInfo: (info: SelectionInfo | null) => void;
+  setMessageSelectionInfo: (messageId: string, info: SelectionInfo) => void;
+  setMessages: (msgs: ChatMessage[]) => void;
 
   sendMessage: (text: string) => Promise<void>;
   stopStreaming: () => void;
@@ -133,6 +137,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         currentConversationId: id,
         activeConversationTitle: conversation.title,
         messages,
+        lastSelectionInfo: null, // Clear selection badge when switching conversations
       });
       if (conversation.model) {
         if (conversation.model === AUTO_MODEL_ID) {
@@ -154,11 +159,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
       activeConversationTitle: "ChatDDB",
       messages: [],
       pendingAttachments: [],
+      lastSelectionInfo: null,
     });
   },
 
   setSelectionInfo: (info: SelectionInfo | null) => {
     set({ lastSelectionInfo: info });
+  },
+
+  setMessageSelectionInfo: (messageId: string, info: SelectionInfo) => {
+    const { messages } = get();
+    const updated = messages.map((m) =>
+      m.id === messageId ? { ...m, selectionInfo: info } : m
+    );
+    set({ messages: updated });
+  },
+
+  setMessages: (msgs: ChatMessage[]) => {
+    set({ messages: msgs });
   },
 
   addPendingAttachment: (att: AttachmentMeta) => {
@@ -258,15 +276,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
         imageMimeType: sourceImage?.type,
       });
 
-      // Format images as markdown with embedded data URIs for persistence
-      const modeLabel = isEditing ? "Edited" : "Generated";
-      const imageMarkdown = result.images
-        .map((img, i) => `![${modeLabel} Image ${i + 1}](data:${img.media_type};base64,${img.b64_json})`)
-        .join("\n\n");
+      // Store selection info on the assistant message (from API response when auto-selected)
+      if (result.modelSelection) {
+        get().setMessageSelectionInfo(assistantMsg.id, {
+          modelId: result.modelSelection.modelId,
+          label: result.modelSelection.label,
+          reason: result.modelSelection.reason,
+        });
+      } else {
+        // Manual mode — still show which model was used
+        get().setMessageSelectionInfo(assistantMsg.id, {
+          modelId: imageModel.id,
+          label: imageModel.label || imageModel.id,
+          reason: isEditing ? "Image editing" : "Image generation",
+        });
+      }
 
-      const content = `🎨 **${modeLabel} with ${modelName}**\n\n${imageMarkdown}\n\n*Prompt: ${prompt}*`;
+      // Use the content string returned by the API (which uses /api/files/ URLs instead of base64)
+      // This matches exactly what was persisted in D1 and avoids the 2MB row limit.
+      const content = result.content || buildImageFallbackContent(result.images, isEditing, modelName, prompt);
 
-      // Update the assistant message with the markdown content (images embedded as data URIs)
+      // Update the assistant message with the server-side content
       const finalMessages = get().messages;
       const updated = [...finalMessages];
       const last = updated[updated.length - 1];
@@ -360,9 +390,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ activeConversationTitle: text.slice(0, 50) });
     }
 
-    // Clear previous selection info for new messages
-    set({ lastSelectionInfo: null });
-
     const controller = api.streamChat(
       convId,
       text,
@@ -380,6 +407,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
           get().failStream(error);
         },
         onModelSelection: (modelId, label, reason) => {
+          // Store selection info on the current assistant message (per-message, not global)
+          const state = get();
+          const lastMsg = state.messages[state.messages.length - 1];
+          if (lastMsg && lastMsg.role === "assistant") {
+            get().setMessageSelectionInfo(lastMsg.id, { modelId, label, reason });
+          }
+          // Also set legacy global state for any remaining uses
           get().setSelectionInfo({ modelId, label, reason });
         },
       }
@@ -420,6 +454,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streamedContent: "",
       abortController: null,
     });
+    // Persist guest messages to localStorage
+    if (useGuestStore.getState().isGuest) {
+      useGuestStore.getState().setMessages(updated);
+    }
     // Refresh conversation list
     get().loadConversations();
   },
@@ -442,9 +480,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streamedContent: "",
       abortController: null,
     });
+    // Persist guest messages to localStorage
+    if (useGuestStore.getState().isGuest) {
+      useGuestStore.getState().setMessages(updated);
+    }
     get().loadConversations();
   },
 }));
+
+/* ─── Image content fallback ────────────────────────── */
+
+/** Build image markdown from base64 data (fallback for older API responses). */
+function buildImageFallbackContent(
+  images: { b64_json: string; media_type: string }[],
+  isEditing: boolean,
+  modelName: string,
+  prompt: string
+): string {
+  const modeLabel = isEditing ? "Edited" : "Generated";
+  const imageMarkdown = images
+    .map((img, i) => `![${modeLabel} Image ${i + 1}](data:${img.media_type};base64,${img.b64_json})`)
+    .join("\n\n");
+  return `🎨 **${modeLabel} with ${modelName}**\n\n${imageMarkdown}\n\n*Prompt: ${prompt}*`;
+}
 
 /* ─── Error helper ──────────────────────────────────── */
 

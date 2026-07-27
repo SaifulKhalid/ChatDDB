@@ -56,6 +56,6 @@ export const PROVIDER_CONFIGS: ProviderConfig[] = [
       "openrouter:black-forest-labs/flux-1-schnell:free",
       "openrouter:black-forest-labs/flux-pro:free",
     ],
-    capabilities: ["image-generation", "cheap"],
+    capabilities: ["image-generation", "image-editing", "cheap"],
   },
 ];

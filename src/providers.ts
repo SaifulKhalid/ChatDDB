@@ -158,11 +158,20 @@ export async function generateImage(
   if (!model) throw new Error("Unknown model: " + modelId);
   if (!model.supportsImageGen) throw new Error("Model does not support image generation: " + modelId);
 
+  // Reject editing requests against models that don't support image editing
+  if (inputReferences && inputReferences.length > 0 && !model.supportsImageEditing) {
+    throw new Error(
+      'Image-to-image editing is not supported by "' +
+        model.label +
+        '". Please use an editing-capable model like FLUX.1 Schnell or FLUX Pro.'
+    );
+  }
+
   switch (model.provider) {
     case "openrouter":
       return generateOpenRouterImage(prompt, modelId, env, inputReferences);
     case "workers-ai":
-      return generateWorkersAIImage(prompt, modelId, env);
+      return generateWorkersAIImage(prompt, modelId, env, inputReferences);
     default:
       throw new Error("Image generation not supported for provider: " + model.provider);
   }
@@ -240,12 +249,23 @@ async function generateOpenRouterImage(
 /**
  * Generate image via Cloudflare Workers AI (free daily quota).
  * Uses env.AI.run() with text-to-image models like @cf/black-forest-labs/flux-1-schnell.
+ *
+ * NOTE: Workers AI FLUX.1 Schnell does NOT support image-to-image editing (inputReferences).
+ * Callers must check the model's supportsImageEditing flag before passing inputReferences.
  */
 async function generateWorkersAIImage(
   prompt: string,
   modelId: string,
-  env: Env
+  env: Env,
+  inputReferences?: { type: string; image_url: { url: string } }[]
 ): Promise<ImageGenResult[]> {
+  // Workers AI doesn't support image editing, so this is a safety check
+  if (inputReferences && inputReferences.length > 0) {
+    throw new Error(
+      "Cloudflare Workers AI does not support image-to-image editing. " +
+        "Please use an OpenRouter FLUX model for editing."
+    );
+  }
   const { model: apiModel } = parseModelId(modelId);
 
   let response: ArrayBuffer | ReadableStream;

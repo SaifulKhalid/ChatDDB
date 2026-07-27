@@ -114,7 +114,7 @@ export function Message({ message, isStreaming, isFirst }: MessageProps) {
         </div>
 
         {/* "Why this model?" badge — shown for auto-selected assistant messages */}
-        <ModelSelectionBadge isStreaming={isStreaming} />
+        <ModelSelectionBadge message={message} isStreaming={isStreaming} />
 
         {/* Hover copy action */}
         {!isStreaming && message.content && (
@@ -138,11 +138,11 @@ export function Message({ message, isStreaming, isFirst }: MessageProps) {
 }
 
 /** Badge that explains why Auto mode selected a particular model. */
-function ModelSelectionBadge({ isStreaming }: { isStreaming?: boolean }) {
-  const selectionInfo = useChatStore((s) => s.lastSelectionInfo);
+function ModelSelectionBadge({ message, isStreaming }: { message: ChatMessageType; isStreaming?: boolean }) {
   const currentModelId = useChatStore((s) => s.currentModelId);
+  const selectionInfo = message.selectionInfo;
 
-  // Only show in auto mode, after selection is known, and when not streaming
+  // Only show in auto mode, when per-message selection info exists, and when not streaming
   if (
     currentModelId !== "auto" ||
     !selectionInfo ||

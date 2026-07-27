@@ -1,6 +1,7 @@
 "use client";
 
-import { PanelLeft, ChevronDown, Search, Bell } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { PanelLeft, ChevronDown, Search, LogOut, Settings, Shield } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/ui/logo";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -11,10 +12,12 @@ import {
   DropdownItem,
   DropdownLabel,
 } from "@/components/ui/dropdown";
-import { Avatar } from "@/components/ui/avatar";
 import { useChatStore } from "@/stores/chat-store";
+import { useGuestStore } from "@/stores/guest-store";
 import { useUIStore } from "@/stores/ui-store";
 import { getProviderEmoji } from "@/lib/constants";
+import { useAuth } from "@/contexts/auth-context";
+import { useRouter } from "next/navigation";
 import type { ModelInfo } from "@/lib/api";
 
 export function TopBar() {
@@ -26,6 +29,9 @@ export function TopBar() {
     messages,
   } = useChatStore();
   const { sidebarOpen, setSidebarOpen } = useUIStore();
+  const { user, logout } = useAuth();
+  const { isGuest, remainingMessages } = useGuestStore();
+  const router = useRouter();
 
   const currentModel = models.find((m) => m.id === currentModelId);
   const grouped = groupModels(models);
@@ -35,6 +41,22 @@ export function TopBar() {
     .reverse()
     .find((m) => m.role === "user");
   const lastUserText = lastUserMessage?.content || "";
+
+  // User menu dropdown state
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
+        setUserMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  const userInitial = user?.name?.charAt(0)?.toUpperCase() || user?.email?.charAt(0)?.toUpperCase() || "U";
 
   return (
     <header className="flex h-14 items-center justify-between gap-2 border-b border-[var(--border-subtle)] bg-[var(--bg-primary)] px-3">
@@ -128,10 +150,92 @@ export function TopBar() {
           <Search className="h-4 w-4" />
         </Button>
         <ThemeToggle />
-        <Button variant="ghost" size="icon-sm" title="Notifications">
-          <Bell className="h-4 w-4" />
-        </Button>
-        <Avatar fallback="U" size="sm" className="ml-1 cursor-pointer" />
+
+        {/* Guest mode badge */}
+        {isGuest && (
+          <button
+            onClick={() => router.push("/login")}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg
+              text-xs font-medium text-[var(--accent-secondary)]
+              bg-[var(--accent-secondary)]/10 border border-[var(--accent-secondary)]/20
+              hover:bg-[var(--accent-secondary)]/20 transition-colors"
+            title={`${remainingMessages()} messages remaining — Sign in to save chats`}
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent-secondary)]" />
+            Guest
+          </button>
+        )}
+
+        {/* User avatar with dropdown menu */}
+        <div className="relative" ref={userMenuRef}>
+          <button
+            onClick={() => setUserMenuOpen(!userMenuOpen)}
+            className="flex items-center gap-2 ml-1 rounded-lg p-1 hover:bg-[var(--bg-hover)] transition-colors"
+            title={user?.email || "User menu"}
+          >
+            {user?.picture ? (
+              <img
+                src={user.picture}
+                alt=""
+                className="h-7 w-7 rounded-full object-cover"
+              />
+            ) : (
+              <div className="h-7 w-7 rounded-full bg-[var(--accent-primary)] flex items-center justify-center text-xs font-semibold text-white">
+                {userInitial}
+              </div>
+            )}
+          </button>
+
+          {userMenuOpen && user && (
+            <div
+              className="absolute right-0 top-full mt-1 min-w-[200px] rounded-xl
+                bg-[var(--bg-card)] border border-[var(--border-subtle)]
+                shadow-xl shadow-black/20 py-1 z-50 animate-fade-in"
+            >
+              {/* User info header */}
+              <div className="px-3 py-2.5 border-b border-[var(--border-subtle)]">
+                <div className="text-sm font-medium text-[var(--text-primary)] truncate">
+                  {user.name || "User"}
+                </div>
+                <div className="text-xs text-[var(--text-muted)] truncate mt-0.5">
+                  {user.email}
+                </div>
+              </div>
+
+              {/* Menu items */}
+              <a
+                href="/settings"
+                className="flex items-center gap-2.5 px-3 py-2.5 text-sm text-[var(--text-secondary)]
+                  hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors"
+              >
+                <Settings className="h-4 w-4" />
+                Settings
+              </a>
+
+              {user.isAdmin && (
+                <a
+                  href="/admin"
+                  className="flex items-center gap-2.5 px-3 py-2.5 text-sm text-[var(--text-secondary)]
+                    hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors"
+                >
+                  <Shield className="h-4 w-4" />
+                  Admin Panel
+                </a>
+              )}
+
+              <div className="mx-3 my-1 h-px bg-[var(--border-subtle)]" />
+
+              <button
+                onClick={logout}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-[var(--text-secondary)]
+                  hover:bg-[var(--bg-hover)] hover:text-red-400 transition-colors"
+              >
+                <LogOut className="h-4 w-4" />
+                Sign out
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </header>
   );

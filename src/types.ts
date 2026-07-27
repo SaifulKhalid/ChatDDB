@@ -87,6 +87,7 @@ export type Capability =
   | "pdf-analysis"
   | "long-context"
   | "image-generation"
+  | "image-editing"
   | "fast"
   | "cheap"
   | "premium";
@@ -121,6 +122,7 @@ export interface ModelInfo {
   supportsVision: boolean;
   supportsStreaming: boolean;
   supportsImageGen?: boolean;
+  supportsImageEditing?: boolean;
 }
 
 export const MODELS: ModelInfo[] = [
@@ -232,6 +234,7 @@ export const MODELS: ModelInfo[] = [
     supportsVision: false,
     supportsStreaming: false,
     supportsImageGen: true,
+    supportsImageEditing: true,
   },
   {
     id: "openrouter:black-forest-labs/flux-pro:free",
@@ -240,6 +243,7 @@ export const MODELS: ModelInfo[] = [
     supportsVision: false,
     supportsStreaming: false,
     supportsImageGen: true,
+    supportsImageEditing: true,
   },
   {
     id: "workers-ai:@cf/black-forest-labs/flux-1-schnell",
@@ -277,7 +281,12 @@ export async function getMergedModels(env: Env): Promise<ModelInfo[]> {
       for (const am of adminModels) {
         const idx = merged.findIndex((m) => m.id === am.id);
         if (idx !== -1) {
-          merged[idx] = am;
+          // Preserve flags that the admin_models table doesn't track
+          merged[idx] = {
+            ...am,
+            supportsImageGen: merged[idx].supportsImageGen || am.supportsImageGen,
+            supportsImageEditing: merged[idx].supportsImageEditing || am.supportsImageEditing,
+          };
         } else {
           merged.push(am);
         }

@@ -26,19 +26,26 @@ import {
 import {
   MODELS,
   getMergedModels,
+  parseModelId,
   type AttachmentMeta,
   type ChatMessage,
   type Conversation,
   type Env,
+  type ModelSelection,
   type Role,
 } from "./types";
-import { selectAutoModel, selectFallbackModel } from "./auto-selector";
+import {
+  selectAutoModel,
+  selectFallbackModel,
+  selectAutoImageModel,
+  selectFallbackImageModel,
+} from "./auto-selector";
 import { healthTracker } from "./health-tracker";
 
 // ─── Firebase JWT Verification ───────────────────────
 
 const JWKS = createRemoteJWKSet(
-  new URL("https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com")
+  new URL("https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com")
 );
 
 interface FirebaseUser {
@@ -62,10 +69,23 @@ async function verifyAuth(req: Request, env: Env): Promise<FirebaseUser | null> 
   } catch { return null; }
 }
 
-/** Require auth; returns 401 if not authenticated. */
+/** Require auth; returns 401 if not authenticated, 403 if disabled. */
 async function requireAuth(req: Request, env: Env): Promise<FirebaseUser | Response> {
   const user = await verifyAuth(req, env);
   if (!user) return json({ error: "Authentication required. Please sign in." }, 401);
+
+  // Check if account is disabled
+  try {
+    const profile = await env.DB.prepare(
+      "SELECT is_disabled FROM user_profiles WHERE uid = ?"
+    ).bind(user.uid).first<{ is_disabled: number }>();
+    if (profile?.is_disabled === 1) {
+      return json({ error: "Account disabled. Please contact the administrator." }, 403);
+    }
+  } catch {
+    // If DB query fails, allow through (better than locking everyone out)
+  }
+
   return user;
 }
 
@@ -97,8 +117,15 @@ export default {
     }
 
     try {
-      // Public routes
+      // Public routes (no auth required)
       if (pathname === "/api/health") return json({ ok: true, name: env.APP_NAME });
+      if (pathname === "/api/models" && method === "GET") {
+        return json({ models: await getMergedModels(env) });
+      }
+
+      // File serving — publicly accessible via unguessable UUID keys (no auth needed)
+      const fileMatch = pathname.match(/^\/api\/files\/(.+)$/);
+      if (fileMatch && method === "GET") return serveFile(fileMatch[1], env);
 
       // Auth routes (verify token, no session needed)
       if (pathname === "/api/auth/login" && method === "POST") {
@@ -139,10 +166,6 @@ export default {
       }
 
       // Authenticated user routes
-      if (pathname === "/api/models" && method === "GET") {
-        return json({ models: await getMergedModels(env) });
-      }
-
       if (pathname === "/api/conversations") {
         if (method === "GET") return listConversations(user.uid, env);
         if (method === "POST") return createConversation(req, user.uid, env);
@@ -157,12 +180,10 @@ export default {
       }
 
       if (pathname === "/api/upload" && method === "POST") return uploadFile(req, env, ctx);
-      const fileMatch = pathname.match(/^\/api\/files\/(.+)$/);
-      if (fileMatch && method === "GET") return serveFile(fileMatch[1], env);
 
       if (pathname === "/api/chat" && method === "POST") return chat(req, user, env);
       if (pathname === "/api/enhance" && method === "POST") return enhancePrompt(req, env);
-      if (pathname === "/api/generate-image" && method === "POST") return handleGenerateImage(req, env);
+      if (pathname === "/api/generate-image" && method === "POST") return handleGenerateImage(req, user, env);
 
       return env.ASSETS ? fetchAssetFallback(req, env) : new Response("Not Found", { status: 404 });
     } catch (err) {
@@ -651,12 +672,12 @@ async function chat(req: Request, user: FirebaseUser, env: Env): Promise<Respons
             try {
               fullText = await tryProvider(modelId);
               healthTracker.recordSuccess(
-                autoSelection.provider,
+                autoSelection.provider + ":chat",
                 Date.now() - startTime
               );
               succeeded = true;
             } catch (err) {
-              healthTracker.recordFailure(autoSelection.provider);
+              healthTracker.recordFailure(autoSelection.provider + ":chat");
               lastFailedProvider = autoSelection.provider;
 
               const fallback = selectFallbackModel(
@@ -864,52 +885,54 @@ async function adminGetUserConversations(uid: string, env: Env): Promise<Respons
  *
  * Request body:
  *   - prompt: string (required) - text description or editing instruction
- *   - model?: string - model ID to use (defaults to first image gen model)
+ *   - model?: string - model ID to use (auto-selected if omitted)
  *   - conversationId: string (required) - conversation to persist messages in
  *   - imageR2Key?: string - R2 key of a source image for img2img editing
  *   - imageMimeType?: string - MIME type of the source image
  *
- * When imageR2Key is provided, the source image is fetched directly from R2
- * and passed as an input_reference to the OpenRouter API for image-to-image editing.
+ * Returns:
+ *   - images: ImageGenResult[]
+ *   - model: string (the model used)
+ *   - modelSelection?: { modelId, label, reason } — auto-selection info
+ *   - userMessageId, assistantMessageId: string
  */
-async function handleGenerateImage(req: Request, env: Env): Promise<Response> {
+async function handleGenerateImage(req: Request, user: FirebaseUser, env: Env): Promise<Response> {
   const body = await req.json().catch(() => ({})) as {
     prompt?: string;
     model?: string;
     conversationId?: string;
-    /** R2 key of a source image for image-to-image editing (img2img). */
     imageR2Key?: string;
-    /** MIME type of the source image (e.g. "image/png"). */
     imageMimeType?: string;
   };
 
   const prompt = (body.prompt ?? "").trim();
-  if (!prompt) {
-    return json({ error: "prompt is required" }, 400);
-  }
+  if (!prompt) return json({ error: "prompt is required" }, 400);
 
   const conversationId = body.conversationId;
-  if (!conversationId) {
-    return json({ error: "conversationId is required" }, 400);
-  }
+  if (!conversationId) return json({ error: "conversationId is required" }, 400);
 
   const mergedModels = await getMergedModels(env);
   const imageGenModels = mergedModels.filter((m) => m.supportsImageGen);
-  if (imageGenModels.length === 0) {
-    return json({ error: "No image generation models available" }, 400);
+  if (imageGenModels.length === 0) return json({ error: "No image generation models available" }, 400);
+
+  const isEditing = !!body.imageR2Key;
+
+  // Auto-select or use explicit model
+  let modelId: string;
+  let autoImageSelection: ModelSelection | undefined;
+  if (body.model && imageGenModels.some((m) => m.id === body.model)) {
+    modelId = body.model;
+  } else if (body.model) {
+    return json({ error: `Image generation model "${body.model}" not found` }, 400);
+  } else {
+    try {
+      autoImageSelection = selectAutoImageModel(mergedModels, isEditing);
+      modelId = autoImageSelection.modelId;
+    } catch {
+      return json({ error: "No image generation models available" }, 400);
+    }
   }
 
-  // Use requested model or the first available image gen model
-  let modelId = body.model;
-  if (modelId && !imageGenModels.some((m) => m.id === modelId)) {
-    return json({ error: `Image generation model "${modelId}" not found` }, 400);
-  }
-  if (!modelId) {
-    modelId = imageGenModels[0].id;
-  }
-
-  // If imageR2Key is provided, fetch the source image from R2 directly for img2img
-  // We use the R2 key directly (not attachment ID) to avoid race conditions with async metadata writes
   let inputReferences: { type: string; image_url: { url: string } }[] | undefined;
   if (body.imageR2Key) {
     const obj = await env.BUCKET.get(body.imageR2Key);
@@ -917,74 +940,128 @@ async function handleGenerateImage(req: Request, env: Env): Promise<Response> {
       const buf = await obj.arrayBuffer();
       const b64 = arrayBufferToBase64(buf);
       const mimeType = body.imageMimeType || "image/png";
-      inputReferences = [
-        {
-          type: "image_url",
-          image_url: {
-            url: `data:${mimeType};base64,${b64}`,
-          },
-        },
-      ];
+      inputReferences = [{ type: "image_url", image_url: { url: `data:${mimeType};base64,${b64}` } }];
     }
-    if (!inputReferences) {
-      return json({ error: "Source image not found in storage. It may still be uploading." }, 404);
-    }
+    if (!inputReferences) return json({ error: "Source image not found in storage." }, 404);
   }
 
-  // Ensure conversation exists
+  // Ensure conversation exists — scoped to the authenticated user
   let conv = await env.DB.prepare(
-    "SELECT id, title, model FROM conversations WHERE id = ?"
-  ).bind(conversationId).first<Conversation>();
+    "SELECT id, title, model FROM conversations WHERE id = ? AND user_id = ?"
+  ).bind(conversationId, user.uid).first<Conversation>();
   if (!conv) {
     const now = Math.floor(Date.now() / 1000);
-    const title = prompt.slice(0, 40);
     await env.DB.prepare(
-      "INSERT INTO conversations (id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
-    ).bind(conversationId, title, modelId, now, now).run();
-    conv = { id: conversationId, title, model: modelId, created_at: now, updated_at: now };
+      "INSERT INTO conversations (id, user_id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+    ).bind(conversationId, user.uid, prompt.slice(0, 40), modelId, now, now).run();
+    conv = { id: conversationId, title: prompt.slice(0, 40), model: modelId, created_at: now, updated_at: now };
   }
 
-  try {
-    const images = await generateImage(modelId, prompt, env, inputReferences);
+  // Image generation with fallback loop
+  let images: Awaited<ReturnType<typeof generateImage>> = [];
+  let finalModelId = modelId;
+  let finalSelection = autoImageSelection;
+  const startTime = Date.now();
 
-    // Persist the user message
+  try {
+    let lastFailedModelId = "";
+    let succeeded = false;
+
+    while (!succeeded) {
+      try {
+        images = await generateImage(finalModelId, prompt, env, inputReferences);
+        healthTracker.recordSuccess(
+          (finalSelection?.provider || parseModelId(finalModelId).provider) + ":image",
+          Date.now() - startTime
+        );
+        succeeded = true;
+      } catch (err) {
+        const failProvider = finalSelection?.provider || parseModelId(finalModelId).provider;
+        healthTracker.recordFailure(failProvider + ":image");
+        lastFailedModelId = finalModelId;
+
+        if (autoImageSelection) {
+          const fallback = selectFallbackImageModel(finalModelId, mergedModels, isEditing);
+          if (fallback) {
+            finalModelId = fallback.modelId;
+            finalSelection = fallback;
+            continue;
+          }
+        }
+        // No more fallbacks or manual mode — re-throw original error
+        throw err;
+      }
+    }
+
+    // Persist messages
     const now = Math.floor(Date.now() / 1000);
     const userMsgId = genId();
     await env.DB.prepare(
       "INSERT INTO messages (id, conversation_id, role, content, attachments, created_at) VALUES (?, ?, 'user', ?, '[]', ?)"
     ).bind(userMsgId, conversationId, prompt, now).run();
 
-    // Update conversation title
-    if (conv.title === "New chat" && prompt) {
-      await env.DB.prepare("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?")
-        .bind(prompt.slice(0, 50), now, conversationId).run();
+    const assistantMsgId = genId();
+    const modelLabel = mergedModels.find((m) => m.id === finalModelId)?.label || finalModelId;
+
+    // Upload each generated image to R2 (instead of embedding base64 in D1, which hits the 2MB row limit)
+    const imageAttachments: AttachmentMeta[] = [];
+    for (let i = 0; i < images.length; i++) {
+      const img = images[i];
+      const key = `generated/${conversationId}/${assistantMsgId}/${i}`;
+      const binaryStr = atob(img.b64_json);
+      const buf = new Uint8Array(binaryStr.length);
+      for (let j = 0; j < binaryStr.length; j++) {
+        buf[j] = binaryStr.charCodeAt(j);
+      }
+      await env.BUCKET.put(key, buf, {
+        httpMetadata: { contentType: img.media_type },
+        customMetadata: {
+          source: "ai-generated",
+          prompt: prompt.slice(0, 200),
+          model: finalModelId,
+        },
+      });
+      imageAttachments.push({
+        id: genId(),
+        name: `${isEditing ? "edited" : "generated"}-image-${i + 1}.png`,
+        type: img.media_type,
+        size: buf.byteLength,
+        r2Key: key,
+        kind: "image",
+      });
     }
 
-    // Build assistant content with embedded markdown images (data URIs for persistence)
-    const modelLabel = mergedModels.find((m) => m.id === modelId)?.label || modelId;
-    const isEditing = !!inputReferences;
-    const imageMarkdown = images
-      .map((img, i) => `![${isEditing ? "Edited" : "Generated"} Image ${i + 1}](data:${img.media_type};base64,${img.b64_json})`)
+    // Build markdown content with /api/files/ URLs (small footprint in D1)
+    const imageMarkdown = imageAttachments
+      .map((att, i) => `![${isEditing ? "Edited" : "Generated"} Image ${i + 1}](/api/files/${encodeURIComponent(att.r2Key)})`)
       .join("\n\n");
-    const modeLabel = isEditing ? "Edited" : "Generated";
-    const assistantContent = `🎨 **${modeLabel} with ${modelLabel}**\n\n${imageMarkdown}\n\n*Prompt: ${prompt}*`;
+    const assistantContent = `🎨 **${isEditing ? "Edited" : "Generated"} with ${modelLabel}**\n\n${imageMarkdown}\n\n*Prompt: ${prompt}*`;
 
-    // Persist the assistant message
-    const assistantMsgId = genId();
+    // Persist assistant message with image attachments (so deleteConversation cleans them up)
     await env.DB.prepare(
-      "INSERT INTO messages (id, conversation_id, role, content, attachments, model, created_at) VALUES (?, ?, 'assistant', ?, '[]', ?, ?)"
-    ).bind(assistantMsgId, conversationId, assistantContent, modelId, now).run();
-
-    // Update conversation timestamp
+      "INSERT INTO messages (id, conversation_id, role, content, attachments, model, created_at) VALUES (?, ?, 'assistant', ?, ?, ?, ?)"
+    ).bind(assistantMsgId, conversationId, assistantContent, JSON.stringify(imageAttachments), finalModelId, now).run();
     await env.DB.prepare("UPDATE conversations SET updated_at = ? WHERE id = ?")
       .bind(now, conversationId).run();
 
-    return json({
+    const responseBody: Record<string, unknown> = {
       images,
-      model: modelId,
+      content: assistantContent,
+      model: finalModelId,
       userMessageId: userMsgId,
       assistantMessageId: assistantMsgId,
-    });
+    };
+
+    // Return model selection info for the frontend to display
+    if (finalSelection) {
+      responseBody.modelSelection = {
+        modelId: finalSelection.modelId,
+        label: modelLabel,
+        reason: finalSelection.reason,
+      };
+    }
+
+    return json(responseBody);
   } catch (err) {
     console.error("Image generation failed:", err);
     return json({ error: (err as Error).message }, 500);

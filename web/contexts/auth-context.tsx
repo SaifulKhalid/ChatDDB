@@ -19,7 +19,7 @@ import {
   type User,
 } from "firebase/auth";
 import { getFirebaseAuth } from "@/lib/firebase";
-import { setAuthToken as setApiToken } from "@/lib/api";
+import { setAuthToken as setApiToken, API_BASE } from "@/lib/api";
 
 export interface AuthUser {
   uid: string;
@@ -76,7 +76,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // Fetch user profile from backend (admin status, etc.)
         try {
           const t = await getIdToken(fbUser);
-          const res = await fetch("/api/auth/me", {
+          const res = await fetch(`${API_BASE}/api/auth/me`, {
             headers: { Authorization: `Bearer ${t}` },
           });
           if (res.ok) {

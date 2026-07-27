@@ -1,12 +1,14 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { AuthProvider, useAuth } from "@/contexts/auth-context";
+import { useAuth } from "@/contexts/auth-context";
+import { useGuestStore } from "@/stores/guest-store";
 import { Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 
-function AuthCheck({ children }: { children: ReactNode }) {
+export function AuthGuard({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
+  const isGuest = useGuestStore((s) => s.isGuest);
   const router = useRouter();
 
   if (loading) {
@@ -20,18 +22,11 @@ function AuthCheck({ children }: { children: ReactNode }) {
     );
   }
 
-  if (!user) {
+  // Allow if authenticated OR in guest mode
+  if (!user && !isGuest) {
     router.replace("/login");
     return null;
   }
 
   return <>{children}</>;
-}
-
-export function AuthGuard({ children }: { children: ReactNode }) {
-  return (
-    <AuthProvider>
-      <AuthCheck>{children}</AuthCheck>
-    </AuthProvider>
-  );
 }

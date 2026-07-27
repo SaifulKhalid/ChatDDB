@@ -9,7 +9,7 @@
 import { PROVIDER_CONFIGS } from "./capabilities";
 import { healthTracker } from "./health-tracker";
 import { MODELS } from "./types";
-import type { Capability, ModelSelection, AttachmentMeta } from "./types";
+import type { Capability, ModelInfo, ModelSelection, AttachmentMeta } from "./types";
 
 /* ─── Intent Classification ─────────────────────────── */
 
@@ -71,6 +71,7 @@ const CAPABILITY_LABELS: Record<Capability, string> = {
   "pdf-analysis": "Document attached",
   "long-context": "Long conversation",
   "image-generation": "Image generation",
+  "image-editing": "Image editing",
   fast: "",
   cheap: "",
   premium: "",
@@ -139,7 +140,7 @@ function scoreProvider(
   config: typeof PROVIDER_CONFIGS[0],
   requiredCaps: Set<Capability>
 ): number {
-  const health = healthTracker.getHealth(config.provider);
+  const health = healthTracker.getHealth(config.provider + ":chat");
 
   // Capability penalty: 100 per missing required capability
   let capabilityPenalty = 0;
@@ -228,7 +229,7 @@ export function selectFallbackModel(
     }))
     .filter((c) => {
       // Exclude unhealthy providers entirely for fallback
-      const health = healthTracker.getHealth(c.pc.provider);
+      const health = healthTracker.getHealth(c.pc.provider + ":chat");
       return health.status !== "unhealthy";
     })
     .sort((a, b) => a.score - b.score);
@@ -242,5 +243,90 @@ export function selectFallbackModel(
     modelId,
     provider: best.pc.provider,
     reason,
+  };
+}
+
+/* ─── Image Generation Model Selection ─────────────── */
+
+/**
+ * Select the best image generation model, aware of editing capability and provider health.
+ */
+export function selectAutoImageModel(
+  mergedModels: ModelInfo[],
+  editing?: boolean
+): ModelSelection {
+  let candidates = mergedModels.filter((m) => m.supportsImageGen);
+  if (candidates.length === 0) throw new Error("No image generation models available");
+
+  if (editing) {
+    const editingCandidates = candidates.filter((m) => m.supportsImageEditing);
+    if (editingCandidates.length > 0) candidates = editingCandidates;
+  }
+
+  // Score by health (namespaced under ":image") and order
+  const scored = candidates
+    .map((m) => {
+      const health = healthTracker.getHealth(m.provider + ":image");
+      let score = 0;
+      if (health.status === "unhealthy") score += 100;
+      else if (health.status === "degraded") score += 20;
+      return { model: m, score };
+    })
+    .sort((a, b) => a.score - b.score);
+
+  const best = scored[0];
+  if (!best) throw new Error("No image generation models available");
+
+  const reason = editing
+    ? best.model.supportsImageEditing
+      ? "Image editing · Auto-selected"
+      : "Image generation · Auto-selected"
+    : "Image generation · Auto-selected";
+
+  return { modelId: best.model.id, provider: best.model.provider, reason };
+}
+
+/**
+ * Select a fallback image model when the primary fails.
+ * Returns null if no compatible healthy model is available.
+ */
+export function selectFallbackImageModel(
+  failedModelId: string,
+  mergedModels: ModelInfo[],
+  editing?: boolean
+): ModelSelection | null {
+  let candidates = mergedModels.filter(
+    (m) => m.supportsImageGen && m.id !== failedModelId
+  );
+  if (candidates.length === 0) return null;
+
+  if (editing) {
+    const editingCandidates = candidates.filter((m) => m.supportsImageEditing);
+    // If editing is needed but no editing-capable models remain, return null immediately
+    // to avoid a pointless retry loop where generateImage rejects non-editing models.
+    if (editingCandidates.length === 0) return null;
+    candidates = editingCandidates;
+  }
+
+  const scored = candidates
+    .map((m) => {
+      const health = healthTracker.getHealth(m.provider + ":image");
+      let score = 0;
+      if (health.status === "unhealthy") score += 100;
+      else if (health.status === "degraded") score += 20;
+      return { model: m, score };
+    })
+    .filter((c) => {
+      const health = healthTracker.getHealth(c.model.provider + ":image");
+      return health.status !== "unhealthy";
+    })
+    .sort((a, b) => a.score - b.score);
+
+  if (scored.length === 0) return null;
+  const best = scored[0];
+  return {
+    modelId: best.model.id,
+    provider: best.model.provider,
+    reason: "Failed · Auto-fallback",
   };
 }
