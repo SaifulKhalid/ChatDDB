@@ -68,6 +68,8 @@ interface ChatState {
   // Image generation actions
   setImageGenMode: (enabled: boolean) => void;
   generateImage: (prompt: string) => Promise<void>;
+  /** Regenerate with a specific model (used by "Try again" button). */
+  retryGenerateImage: (prompt: string, usedModelId: string, conversationId: string) => Promise<void>;
 }
 
 /* ─── Store ─────────────────────────────────────────── */
@@ -316,6 +318,108 @@ export const useChatStore = create<ChatState>((set, get) => ({
         updated[updated.length - 1] = {
           ...last,
           content: `⚠️ **Image generation failed**: ${(err as Error).message}`,
+        };
+        set({
+          messages: updated,
+          isStreaming: false,
+          isGeneratingImage: false,
+        });
+      }
+    }
+
+    get().loadConversations();
+  },
+
+  retryGenerateImage: async (prompt: string, usedModelId: string, convId: string) => {
+    const { messages, models } = get();
+    if (!prompt.trim() || get().isGeneratingImage) return;
+
+    // Find a different image gen model than the one that was used
+    const differentModels = models.filter(
+      (m) => m.supportsImageGen && m.id !== usedModelId
+    );
+    if (differentModels.length === 0) {
+      // Add error if no alternative models
+      const errorMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        conversation_id: convId,
+        role: "assistant",
+        content: "⚠️ **No alternative models**: No other image generation models are available. Try selecting a different model manually.",
+        attachments: [],
+        model: null,
+        created_at: Math.floor(Date.now() / 1000),
+      };
+      set({ messages: [...messages, errorMsg] });
+      return;
+    }
+
+    // Pick the first alternative
+    const altModel = differentModels[0];
+
+    set({ isGeneratingImage: true, isStreaming: true });
+
+    // Build both user and assistant messages (matching what the backend persists)
+    const userMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      conversation_id: convId,
+      role: "user",
+      content: prompt,
+      attachments: [],
+      model: null,
+      created_at: Math.floor(Date.now() / 1000),
+    };
+    const assistantMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      conversation_id: convId,
+      role: "assistant",
+      content: "",
+      attachments: [],
+      model: altModel.id,
+      created_at: Math.floor(Date.now() / 1000),
+    };
+
+    const updatedMessages = [...messages, userMsg, assistantMsg];
+    set({
+      messages: updatedMessages,
+      streamedContent: "",
+    });
+
+    try {
+      const result = await api.generateImage({
+        prompt,
+        model: altModel.id,
+        conversationId: convId,
+      });
+
+      // Store selection info
+      get().setMessageSelectionInfo(assistantMsg.id, {
+        modelId: result.modelSelection?.modelId || altModel.id,
+        label: result.modelSelection?.label || altModel.label || altModel.id,
+        reason: "Retry with different model",
+      });
+
+      const modelName = altModel.label || altModel.id;
+      const content = result.content || buildImageFallbackContent(result.images, false, modelName, prompt);
+
+      const finalMessages = get().messages;
+      const updated = [...finalMessages];
+      const last = updated[updated.length - 1];
+      if (last && last.role === "assistant") {
+        updated[updated.length - 1] = { ...last, content };
+        set({
+          messages: updated,
+          isStreaming: false,
+          isGeneratingImage: false,
+        });
+      }
+    } catch (err) {
+      const finalMessages = get().messages;
+      const updated = [...finalMessages];
+      const last = updated[updated.length - 1];
+      if (last && last.role === "assistant") {
+        updated[updated.length - 1] = {
+          ...last,
+          content: `⚠️ **Retry failed**: ${(err as Error).message}`,
         };
         set({
           messages: updated,

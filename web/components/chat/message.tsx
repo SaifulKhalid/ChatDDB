@@ -1,11 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import {
   Copy,
   Check,
   FileText,
   Sparkles,
+  Download,
+  RefreshCw,
 } from "lucide-react";
 import { renderMarkdown } from "@/lib/markdown";
 import { getFileUrl } from "@/lib/api";
@@ -70,6 +72,12 @@ export function Message({ message, isStreaming, isFirst }: MessageProps) {
   const isEmpty = !message.content && isStreaming;
   const html = renderMarkdown(message.content || "", !!isStreaming);
 
+  // Parse image URLs for download/try-again buttons
+  const isImageGenMessage = message.content.startsWith("🎨");
+  const imageUrls = isImageGenMessage
+    ? extractImageUrls(message.content)
+    : [];
+
   return (
     <div className="px-4 message-enter">
       <div className="mx-auto max-w-chat">
@@ -115,6 +123,14 @@ export function Message({ message, isStreaming, isFirst }: MessageProps) {
 
         {/* "Why this model?" badge — shown for auto-selected assistant messages */}
         <ModelSelectionBadge message={message} isStreaming={isStreaming} />
+
+        {/* Image action buttons: download + try again */}
+        {!isStreaming && isImageGenMessage && imageUrls.length > 0 && (
+          <ImageActions
+            imageUrls={imageUrls}
+            message={message}
+          />
+        )}
 
         {/* Hover copy action */}
         {!isStreaming && message.content && (
@@ -171,6 +187,116 @@ function ModelSelectionBadge({ message, isStreaming }: { message: ChatMessageTyp
       </div>
     </div>
   );
+}
+
+/** Action bar shown below generated images: download + try again. */
+function ImageActions({
+  imageUrls,
+  message,
+}: {
+  imageUrls: string[];
+  message: ChatMessageType;
+}) {
+  const models = useChatStore((s) => s.models);
+  const retryGenerateImage = useChatStore((s) => s.retryGenerateImage);
+  const isGeneratingImage = useChatStore((s) => s.isGeneratingImage);
+  const [downloading, setDownloading] = useState<string | null>(null);
+
+  // Extract prompt from message content (after "*Prompt: ") or use the message model info
+  const promptMatch = message.content.match(/\*Prompt: (.+)\*/);
+  const prompt = promptMatch ? promptMatch[1].trim() : "";
+  const usedModelId = message.model;
+
+  // Check if there are alternative models to try
+  const genModels = models.filter((m) => m.supportsImageGen);
+  const hasAlternative = usedModelId
+    ? genModels.some((m) => m.id !== usedModelId)
+    : genModels.length > 0;
+
+  const handleDownload = useCallback(async (url: string, index: number) => {
+    setDownloading(`img-${index}`);
+    try {
+      // Fetch the image and trigger a download via blob URL
+      const res = await fetch(url);
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = `generated-image-${index + 1}.png`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+    } catch {
+      // Fallback: open in new tab
+      window.open(url, "_blank");
+    } finally {
+      setDownloading(null);
+    }
+  }, []);
+
+  const handleRetry = useCallback(() => {
+    if (!prompt || !usedModelId || isGeneratingImage) return;
+    retryGenerateImage(prompt, usedModelId, message.conversation_id);
+  }, [prompt, usedModelId, message.conversation_id, isGeneratingImage, retryGenerateImage]);
+
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2 px-1">
+      {/* Download buttons for each image */}
+      {imageUrls.map((url, i) => (
+        <button
+          key={i}
+          onClick={() => handleDownload(url, i)}
+          disabled={downloading === `img-${i}`}
+          className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium
+            bg-[var(--bg-card)] border border-[var(--border-subtle)]
+            text-[var(--text-secondary)]
+            hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]
+            hover:border-[var(--border-hover)]
+            transition-all duration-150
+            disabled:opacity-50 disabled:cursor-not-allowed"
+          title={`Download image ${i + 1}`}
+        >
+          <Download className="h-3.5 w-3.5" />
+          {downloading === `img-${i}` ? "Downloading…" : `Download (${i + 1})`}
+        </button>
+      ))}
+
+      {/* Try again with different model */}
+      {hasAlternative && (
+        <button
+          onClick={handleRetry}
+          disabled={isGeneratingImage}
+          className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium
+            bg-[var(--bg-card)] border border-[var(--border-subtle)]
+            text-[var(--text-secondary)]
+            hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]
+            hover:border-[var(--border-hover)]
+            transition-all duration-150
+            disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Generate this image again with a different model"
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${isGeneratingImage ? "animate-spin" : ""}`} />
+          {isGeneratingImage ? "Generating…" : "Try different model"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Extract all /api/files/ image URLs from markdown content. */
+function extractImageUrls(content: string): string[] {
+  const urls: string[] = [];
+  const regex = /!\[[^\]]*\]\(([^)]+)\)/g;
+  let match;
+  while ((match = regex.exec(content)) !== null) {
+    const url = match[1];
+    // Only include URLs that point to our file server (exclude data URIs)
+    if (url.startsWith("/api/files/")) {
+      urls.push(url);
+    }
+  }
+  return urls;
 }
 
 function AttachmentChip({ att }: { att: any }) {
