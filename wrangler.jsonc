@@ -9,6 +9,9 @@
 	"assets": {
 		"directory": "./web/out"
 	},
+	"routes": [
+		{ "pattern": "chatddb.workers.dev/*", "zone_name": "chatddb.workers.dev" }
+	],
 	"vars": {
 		"APP_NAME": "PrototypeChatBot",
 		"MAX_UPLOAD_BYTES": "20971520",
