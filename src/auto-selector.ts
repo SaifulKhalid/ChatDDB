@@ -248,8 +248,15 @@ export function selectFallbackModel(
 
 /* ─── Image Generation Model Selection ─────────────── */
 
+/** In-memory counter to round-robin among equally-healthy image gen models. */
+let imageModelRoundRobin = 0;
+
 /**
  * Select the best image generation model, aware of editing capability and provider health.
+ *
+ * Round-robins among healthy models at the same health tier to distribute load
+ * evenly rather than always hammering the first model (e.g., FLUX.1 Schnell via
+ * OpenRouter while Workers AI FLUX sits idle).
  */
 export function selectAutoImageModel(
   mergedModels: ModelInfo[],
@@ -270,7 +277,7 @@ export function selectAutoImageModel(
     }
   }
 
-  // Score by health (namespaced under ":image") and order
+  // Score by health (namespaced under ":image")
   const scored = candidates
     .map((m) => {
       const health = healthTracker.getHealth(m.provider + ":image");
@@ -281,8 +288,15 @@ export function selectAutoImageModel(
     })
     .sort((a, b) => a.score - b.score);
 
-  const best = scored[0];
-  if (!best) throw new Error("No image generation models available (all are unhealthy)");
+  if (scored.length === 0) throw new Error("No image generation models available");
+
+  // Round-robin within the same health tier to distribute load
+  const bestScore = scored[0].score;
+  const sameTier = scored.filter((s) => s.score === bestScore);
+  const idx = imageModelRoundRobin % sameTier.length;
+  // Prevent unbounded growth of the counter (cap at 1000)
+  imageModelRoundRobin = (imageModelRoundRobin + 1) % 1000;
+  const best = sameTier[idx];
 
   const reason = editing
     ? best.model.supportsImageEditing
