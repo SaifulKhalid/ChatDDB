@@ -73,3 +73,24 @@ CREATE TABLE IF NOT EXISTS user_profiles (
 );
 
 CREATE INDEX IF NOT EXISTS idx_user_profiles_email ON user_profiles(email);
+
+-- Rate limiting table (tracks request counts per identifier per window)
+CREATE TABLE IF NOT EXISTS rate_limits (
+  identifier TEXT NOT NULL,  -- e.g., "ip:1.2.3.4" or "user:abc123"
+  endpoint TEXT NOT NULL,    -- e.g., "/api/chat"
+  window_start INTEGER NOT NULL, -- unix timestamp of window start
+  request_count INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  PRIMARY KEY (identifier, endpoint, window_start)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rate_limits_lookup ON rate_limits(identifier, endpoint, window_start);
+
+-- Guest usage tracking (backend-enforced quotas for unauthenticated users)
+CREATE TABLE IF NOT EXISTS guest_usage (
+  client_id TEXT NOT NULL,                        -- anonymous client ID from the browser
+  resource_type TEXT NOT NULL CHECK (resource_type IN ('chat', 'upload', 'image_gen')),
+  used INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  PRIMARY KEY (client_id, resource_type)
+);

@@ -41,8 +41,15 @@ import {
   selectFallbackImageModel,
 } from "./auto-selector";
 import { healthTracker } from "./health-tracker";
+import {
+  checkRateLimit,
+  rateLimitIdentifier,
+  checkGuestQuota,
+  getGuestUsage,
+  incrementGuestUsage,
+} from "./rate-limiting";
 
-// ─── Firebase JWT Verification ───────────────────────
+/* ─── Firebase JWT Verification ─────────────────────── */
 
 const JWKS = createRemoteJWKSet(
   new URL("https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com")
@@ -147,6 +154,9 @@ export default {
       const user: FirebaseUser = authResult;
       ctx.waitUntil(upsertUserProfile(user, env));
 
+      // Check if guestClientId was provided even for authenticated users (ignore)
+      // Only unauthenticated requests pass through guestClientId
+
       // Admin-only routes
       if (pathname.startsWith("/api/admin/")) {
         if (!(await isAdmin(user, env))) return json({ error: "Admin access required." }, 403);
@@ -179,15 +189,43 @@ export default {
         if (method === "DELETE") return deleteConversation(id, user.uid, env);
       }
 
-      if (pathname === "/api/upload" && method === "POST") return uploadFile(req, env, ctx);
+      if (pathname === "/api/upload" && method === "POST") {
+        // Backend guest quota check (read from header to avoid consuming the body)
+        const guestClientId = req.headers.get("X-Guest-Client-Id") || undefined;
+        const guestCheck = await checkGuestQuota(guestClientId, "upload", env);
+        if (guestCheck) return guestCheck;
+        return uploadFile(req, env, ctx);
+      }
 
-      // Temporary: test all free OpenRouter models
-      if (pathname === "/api/test-openrouter" && method === "GET") return testOpenRouterFreeModels(env);
+      // Rate limiting for authenticated routes (guest rate limits use same identifier)
+      const rlIdent = rateLimitIdentifier(req, user);
+      const rateLimitCheck = await checkRateLimit(rlIdent, pathname, env);
+      if (rateLimitCheck) return rateLimitCheck;
 
-      if (pathname === "/api/chat" && method === "POST") return chat(req, user, env);
+      // Protect /api/test-openrouter behind feature flag
+      if (pathname === "/api/test-openrouter" && method === "GET") {
+        if (env.ENABLE_TEST_OPENROUTER !== "true") {
+          return json({ error: "This endpoint is disabled.", code: "ENDPOINT_DISABLED" }, 404);
+        }
+        return testOpenRouterFreeModels(env);
+      }
+
+      if (pathname === "/api/chat" && method === "POST") {
+        // Backend guest quota check (read from header to avoid consuming the body)
+        const guestClientId = req.headers.get("X-Guest-Client-Id") || undefined;
+        const guestCheck = await checkGuestQuota(guestClientId, "chat", env);
+        if (guestCheck) return guestCheck;
+        return chat(req, user, env, ctx);
+      }
       if (pathname === "/api/enhance" && method === "POST") return enhancePrompt(req, env);
-      if (pathname === "/api/generate-image" && method === "POST") return handleGenerateImage(req, user, env);
+      if (pathname === "/api/generate-image" && method === "POST") {
+        const guestClientId = req.headers.get("X-Guest-Client-Id") || undefined;
+        const guestCheck = await checkGuestQuota(guestClientId, "image_gen", env);
+        if (guestCheck) return guestCheck;
+        return handleGenerateImage(req, user, env, ctx);
+      }
 
+      // Catch-all: SPA fallback or 404
       return env.ASSETS ? fetchAssetFallback(req, env) : new Response("Not Found", { status: 404 });
     } catch (err) {
       console.error("API error", err);
@@ -201,7 +239,7 @@ export default {
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, PUT, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
     "Access-Control-Max-Age": "86400",
   };
@@ -373,7 +411,17 @@ async function uploadFile(req: Request, env: Env, ctx: ExecutionContext): Promis
     ctx.waitUntil(p);
   }
 
-  return json({ attachment: meta }, 201);
+  // If guest upload, increment the backend quota count
+  // (Read guestClientId from header to avoid consuming the form body twice)
+  const guestClientId = req.headers.get("X-Guest-Client-Id");
+  if (guestClientId) {
+    ctx.waitUntil(incrementGuestUsage(guestClientId, "upload", env));
+  }
+
+  return json({
+    attachment: meta,
+    code: "UPLOAD_SUCCESS",
+  }, 201);
 }
 
 /** Background PDF processing: extract text, chunk, store in R2 + D1. */
@@ -527,7 +575,7 @@ async function enrichAttachmentsWithProcessedData(
   return Promise.all(enriched);
 }
 
-async function chat(req: Request, user: FirebaseUser, env: Env): Promise<Response> {
+async function chat(req: Request, user: FirebaseUser, env: Env, ctx: ExecutionContext): Promise<Response> {
   const body = await req.json().catch(() => ({})) as {
     conversationId?: string; message?: string; attachments?: AttachmentMeta[]; model?: string;
   };
@@ -711,6 +759,12 @@ async function chat(req: Request, user: FirebaseUser, env: Env): Promise<Respons
 
         send({ type: "done", text: fullText });
 
+        // Increment guest usage if applicable (read from header, body already consumed)
+        const guestClientId = req.headers.get("X-Guest-Client-Id");
+        if (guestClientId) {
+          ctx.waitUntil(incrementGuestUsage(guestClientId, "chat", env));
+        }
+
         // Persist assistant message with the actually selected model
         const persistModel = autoSelection ? autoSelection.modelId : modelId;
         const ts = Math.floor(Date.now() / 1000);
@@ -871,7 +925,8 @@ async function adminGetUserConversations(uid: string, env: Env): Promise<Respons
         const row = await env.DB.prepare(
           "SELECT COUNT(*) as count FROM messages WHERE conversation_id = ?"
         ).bind(conv.id).first<{ count: number }>();
-        return { ...conv, message_count: (row as any)?.count || 0 };
+        const msgCount = (row as any)?.count || 0;
+        return { ...conv, message_count: msgCount };
       })
     );
 
@@ -900,7 +955,7 @@ async function adminGetUserConversations(uid: string, env: Env): Promise<Respons
  *   - modelSelection?: { modelId, label, reason } — auto-selection info
  *   - userMessageId, assistantMessageId: string
  */
-async function handleGenerateImage(req: Request, user: FirebaseUser, env: Env): Promise<Response> {
+async function handleGenerateImage(req: Request, user: FirebaseUser, env: Env, ctx: ExecutionContext): Promise<Response> {
   const body = await req.json().catch(() => ({})) as {
     prompt?: string;
     model?: string;
@@ -1055,6 +1110,12 @@ async function handleGenerateImage(req: Request, user: FirebaseUser, env: Env): 
       userMessageId: userMsgId,
       assistantMessageId: assistantMsgId,
     };
+
+    // Increment guest usage for image generation (read from header, body already consumed)
+    const guestClientId = req.headers.get("X-Guest-Client-Id");
+    if (guestClientId) {
+      ctx.waitUntil(incrementGuestUsage(guestClientId, "image_gen", env));
+    }
 
     // Return model selection info for the frontend to display
     if (finalSelection) {

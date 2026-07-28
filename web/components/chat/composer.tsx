@@ -265,7 +265,7 @@ export function Composer() {
             placeholder="Ask anything"
             rows={1}
             className="max-h-[144px] flex-1 resize-none bg-transparent py-1.5
-              text-[15px] leading-6
+              text-[15px] lg:text-[18.75px] leading-6
               text-[var(--text-primary)] placeholder:text-[var(--text-muted)]
               focus:outline-none"
           />

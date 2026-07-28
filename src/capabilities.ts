@@ -16,7 +16,7 @@ export const PROVIDER_CONFIGS: ProviderConfig[] = [
   },
   {
     provider: "workers-ai",
-    priority: 2,
+    priority: 3,
     costTier: 1,
     models: [
       "workers-ai:@cf/meta/llama-4-scout-17b-16e-instruct",
@@ -29,7 +29,7 @@ export const PROVIDER_CONFIGS: ProviderConfig[] = [
   },
   {
     provider: "gemini",
-    priority: 3,
+    priority: 4,
     costTier: 2,
     models: ["gemini:gemini-2.5-flash"],
     capabilities: [
@@ -45,7 +45,7 @@ export const PROVIDER_CONFIGS: ProviderConfig[] = [
   },
   {
     provider: "agentrouter",
-    priority: 4,
+    priority: 2,
     costTier: 3,
     models: ["agentrouter:claude-opus-4-8", "agentrouter:gpt-5.6-sol"],
     capabilities: ["chat", "coding", "reasoning", "math", "creative", "premium"],

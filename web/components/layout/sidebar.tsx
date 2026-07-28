@@ -17,6 +17,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { useUIStore } from "@/stores/ui-store";
 import { useChatStore } from "@/stores/chat-store";
 import { cn } from "@/lib/utils";
+import { AUTO_MODEL_ID, getProviderEmoji } from "@/lib/constants";
 
 export function Sidebar() {
   const { sidebarOpen, setSidebarOpen, toggleRightPanel, rightPanelOpen } =
@@ -192,9 +193,12 @@ export function Sidebar() {
                 backgroundPosition: "right 10px center",
               }}
             >
+              <option value={AUTO_MODEL_ID}>
+                ✨ Auto (Recommended)
+              </option>
               {models.map((m) => (
                 <option key={m.id} value={m.id}>
-                  {m.label}
+                  {getProviderEmoji(m.provider)} {m.label}
                 </option>
               ))}
             </select>

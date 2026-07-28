@@ -18,6 +18,8 @@ export interface ProviderHealth {
   avgLatencyMs: number;
   failureRate: number;
   totalRequests: number;
+  /** Timestamp of the most recent failure (0 if none). Used to penalize recently-flaky providers. */
+  lastFailure: number;
 }
 
 class HealthTracker {
@@ -38,6 +40,10 @@ class HealthTracker {
     s.successes++;
     s.totalLatency += latencyMs;
     s.lastSuccess = Date.now();
+    // Reset lastFailure on success so the "recently failed" penalty clears
+    // after a healthy response. Otherwise the 60-second window check in
+    // auto-selector would penalize a provider that has since recovered.
+    s.lastFailure = 0;
   }
 
   /** Record a failed request. */
@@ -52,7 +58,7 @@ class HealthTracker {
     const s = this.getStats(provider);
     const total = s.successes + s.failures;
     if (total === 0) {
-      return { status: "healthy", avgLatencyMs: 0, failureRate: 0, totalRequests: 0 };
+      return { status: "healthy", avgLatencyMs: 0, failureRate: 0, totalRequests: 0, lastFailure: 0 };
     }
     const failureRate = s.failures / total;
     const avgLatency = s.successes > 0 ? s.totalLatency / s.successes : 0;
@@ -66,6 +72,7 @@ class HealthTracker {
       avgLatencyMs: Math.round(avgLatency),
       failureRate: Math.round(failureRate * 100) / 100,
       totalRequests: total,
+      lastFailure: s.lastFailure,
     };
   }
 }

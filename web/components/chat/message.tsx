@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Copy,
   Check,
@@ -21,9 +21,32 @@ interface MessageProps {
   isFirst?: boolean;
 }
 
+const THINKING_PHRASES = [
+  "Thinking…",
+  "Brainstorming…",
+  "DDBing…",
+  "Analyzing…",
+  "Processing…",
+  "Computing…",
+];
+
 export function Message({ message, isStreaming, isFirst }: MessageProps) {
   const [copied, setCopied] = useState(false);
+  const [thinkingIndex, setThinkingIndex] = useState(0);
   const isUser = message.role === "user";
+
+  // Rotate thinking phrases while streaming with no content
+  const isEmpty = !message.content && isStreaming;
+  useEffect(() => {
+    if (!isEmpty) {
+      setThinkingIndex(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setThinkingIndex((prev) => (prev + 1) % THINKING_PHRASES.length);
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [isEmpty]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(message.content);
@@ -54,7 +77,7 @@ export function Message({ message, isStreaming, isFirst }: MessageProps) {
               <div
                 className="inline-block max-w-[80%] rounded-2xl px-4 py-2.5
                   bg-[var(--accent-primary)]/10
-                  text-[15px] leading-relaxed text-[var(--text-primary)]"
+                  text-[15px] lg:text-[18.75px] leading-relaxed text-[var(--text-primary)]"
               >
                 {message.content}
               </div>
@@ -69,7 +92,6 @@ export function Message({ message, isStreaming, isFirst }: MessageProps) {
   }
 
   // Assistant
-  const isEmpty = !message.content && isStreaming;
   const html = renderMarkdown(message.content || "", !!isStreaming);
 
   // Parse image URLs for download/try-again buttons
@@ -107,14 +129,26 @@ export function Message({ message, isStreaming, isFirst }: MessageProps) {
         {/* Content */}
         <div className="min-w-0">
           {isEmpty ? (
-            <div className="typing-indicator">
-              <span />
-              <span />
-              <span />
+            <div className="flex items-center gap-3 py-3">
+              {/* Animated dots */}
+              <div className="typing-indicator">
+                <span />
+                <span />
+                <span />
+              </div>
+              {/* Rotating thinking phrase */}
+              <div className="relative h-5 overflow-hidden">
+                <span
+                  key={thinkingIndex}
+                  className="absolute inset-0 flex items-center text-sm text-[var(--text-muted)] animate-fade-in"
+                >
+                  {THINKING_PHRASES[thinkingIndex]}
+                </span>
+              </div>
             </div>
           ) : (
             <div
-              className="text-[15px] leading-relaxed text-[var(--text-primary)] [&_p]:my-1.5 [&_p]:leading-relaxed"
+              className="text-[15px] lg:text-[18.75px] leading-relaxed text-[var(--text-primary)] [&_p]:my-1.5 [&_p]:leading-relaxed"
               dangerouslySetInnerHTML={{ __html: html }}
               onClick={handleCodeCopy}
             />

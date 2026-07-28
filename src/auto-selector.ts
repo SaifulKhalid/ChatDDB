@@ -13,16 +13,36 @@ import type { Capability, ModelInfo, ModelSelection, AttachmentMeta, ProviderCon
 
 /* ─── Intent Classification ─────────────────────────── */
 
-const CODE_PATTERN = /```|function |const |import |export |class |def |fn |impl |interface|type |=>|async |await |Promise/i;
+// ── Coding patterns ──
+const CODE_PATTERN = /```|function |const |import |export |class |def |fn |impl |interface|type |=>|async |await |Promise|console\.log|return |npm |yarn |git |npx |wrangler|curl |fetch\(|axios|useState|useEffect|Component|props|React\./i;
 
+// ── Reasoning & analysis patterns ──
 const REASONING_PATTERN =
-  /why|how|explain|reason|analyze|compare|contrast|evaluate|prove|derive|what if|difference between/i;
+  /why|how|explain|reason|analyze|compare|contrast|evaluate|prove|derive|what if|difference between|describe the|break down|walk me through|think step by step|give me the pros and cons/i;
 
+// ── Math / equation patterns ──
 const MATH_PATTERN =
-  /calculate|solve|equation|derivative|integral|matrix|√|π|\+|-|\*|\/|=|≥|≤|∑|∫|dx|algebra|geometry|calculus/i;
+  /calculate|solve|equation|derivative|integral|matrix|√|π|\+|-|\*|\/|=|≥|≤|∑|∫|dx|algebra|geometry|calculus|percent|percentage|statistics|probability/i;
 
+// ── Creative / writing patterns ──
 const CREATIVE_PATTERN =
-  /write a|story|poem|creative|imagine|generate|design|create|draft|compose/i;
+  /write a|story|poem|creative|imagine|generate|draft|compose|script|essay|article|blog post|newsletter|tweet|song|lyrics|dialogue|screenplay/i;
+
+// ── Translation patterns ──
+const TRANSLATION_PATTERN =
+  /translate|translation|in (?:french|spanish|german|japanese|chinese|korean|italian|portuguese|russian|arabic|hindi)|(?:french|spanish|german|japanese|chinese|korean|italian|portuguese|russian|arabic|hindi) (?:to|translate)/i;
+
+// ── Summarization patterns ──
+const SUMMARIZATION_PATTERN =
+  /summarize|summary|tl;dr|tldr|recap|in a nutshell|give me the key points|main ideas|key takeaways|bullet points|digest/i;
+
+// ── Code review / debugging patterns ──
+const CODE_REVIEW_PATTERN =
+  /review this|code review|debug|bug|fix this|what\'s wrong|why is this broken|issue|error|not working|refactor|optimize|improve this code/i;
+
+// ── Data / extraction patterns ──
+const DATA_PATTERN =
+  /extract|parse|convert|format|transform|scrape|crawl|migrate|normalize|clean (?:data|up)|reformat/i;
 
 /**
  * Classify a user request to determine the required AI capabilities.
@@ -41,10 +61,13 @@ function classifyRequest(
   if (attachments.some((a) => a.kind === "pdf")) caps.add("pdf-analysis");
 
   // Content-based classification
-  if (CODE_PATTERN.test(text)) caps.add("coding");
+  if (CODE_PATTERN.test(text) || CODE_REVIEW_PATTERN.test(text)) caps.add("coding");
   if (REASONING_PATTERN.test(text)) caps.add("reasoning");
   if (MATH_PATTERN.test(text)) caps.add("math");
   if (CREATIVE_PATTERN.test(text)) caps.add("creative");
+  if (TRANSLATION_PATTERN.test(text)) caps.add("reasoning"); // Translation benefits from reasoning models
+  if (SUMMARIZATION_PATTERN.test(text)) caps.add("reasoning"); // Summarization benefits from reasoning models
+  if (DATA_PATTERN.test(text)) caps.add("coding"); // Data tasks benefit from coding-capable models
 
   // When coding is detected, remove creative — coding requests often start with
   // "write a" (e.g., "write a function") which matches the creative pattern but
@@ -53,7 +76,17 @@ function classifyRequest(
   if (caps.has("coding") && caps.has("creative")) caps.delete("creative");
 
   // Context-based classification
-  if (text.length > 500 || historyLength > 20) caps.add("long-context");
+  // Also consider long-context earlier: if history exceeds 10 messages, add long-context
+  if (text.length > 500 || historyLength > 10) caps.add("long-context");
+
+  // For simple greetings or very short messages (< 10 chars), don't add extra capabilities
+  // so the cheapest model is selected
+  if (text.length < 10 && !caps.has("vision") && !caps.has("pdf-analysis")) {
+    // Keep only "chat" — simple chat request, use cheapest
+    caps.delete("reasoning");
+    caps.delete("creative");
+    caps.delete("math");
+  }
 
   return caps;
 }
@@ -79,9 +112,9 @@ const CAPABILITY_LABELS: Record<Capability, string> = {
 
 /** Cost tier labels for the reason summary. */
 const COST_NOTES: Record<number, string> = {
-  1: "Cheapest option",
-  2: "Great value",
-  3: "Premium quality",
+  1: "Best value",
+  2: "Great balance",
+  3: "Maximum capability",
 };
 
 /** Provider display names for fallback messages. */
@@ -148,13 +181,19 @@ function scoreProvider(
     if (!config.capabilities.includes(cap)) capabilityPenalty += 100;
   }
 
-  // Health penalty
+  // Health penalty — aggressive for unhealthy or recently-failed providers
+  const now = Date.now();
+  const recentMs = 60_000; // 1 minute
+  const recentlyFailed = health.lastFailure > 0 && (now - health.lastFailure) < recentMs;
+
   const healthPenalty =
     health.status === "unhealthy"
-      ? 200
+      ? 2000  // Very high: completely avoid
       : health.status === "degraded"
-        ? 50
-        : 0;
+        ? 200
+        : recentlyFailed
+          ? 150  // Recently failed but not yet degraded — give a heavy penalty
+          : 0;
 
   // Base score: priority (lower = better) + cost tier scaled
   const baseScore = config.priority * 10 + config.costTier * 5;

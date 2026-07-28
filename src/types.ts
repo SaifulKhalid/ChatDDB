@@ -15,6 +15,18 @@ export interface Env {
   APP_NAME: string;
   MAX_UPLOAD_BYTES: string;
   FIREBASE_PROJECT_ID: string;
+  /** Feature flag: set to "true" to enable the /api/test-openrouter endpoint. */
+  ENABLE_TEST_OPENROUTER?: string;
+  /** Rate limit: max requests per window. Defaults to 60. */
+  RATE_LIMIT_MAX?: string;
+  /** Rate limit: window in seconds. Defaults to 60. */
+  RATE_LIMIT_WINDOW?: string;
+  /** Guest quota: max messages per guest session (client ID-based). Defaults to 10. */
+  GUEST_MAX_MESSAGES?: string;
+  /** Guest quota: max file uploads per guest session. Defaults to 2. */
+  GUEST_MAX_UPLOADS?: string;
+  /** Guest quota: max image generations per guest session. Defaults to 2. */
+  GUEST_MAX_IMAGE_GENS?: string;
 
   // Secrets (set via `wrangler secret put`)
   GROQ_API_KEY: string;

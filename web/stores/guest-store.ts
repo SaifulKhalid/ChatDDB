@@ -34,6 +34,21 @@ function loadFromStorage<T>(key: string, fallback: T): T {
   }
 }
 
+/** Generate or retrieve a persistent anonymous client ID for guest requests. */
+export function getGuestClientId(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    let id = sessionStorage.getItem("chatddb-guest-cid");
+    if (!id) {
+      id = crypto.randomUUID();
+      sessionStorage.setItem("chatddb-guest-cid", id);
+    }
+    return id;
+  } catch {
+    return null;
+  }
+}
+
 function saveToStorage(key: string, value: unknown) {
   if (typeof window === "undefined") return;
   try {

@@ -15,6 +15,10 @@ export const API_BASE =
 // In production, NEXT_PUBLIC_API_URL must be set to the Worker URL.
 // Example: https://prototype-chatbot.chatddb-smoke.workers.dev
 
+/* ─── Import guest client ID helper from guest store ─── */
+
+import { getGuestClientId } from "../stores/guest-store";
+
 /* ─── Types ─────────────────────────────────────────── */
 
 export interface ModelInfo {
@@ -170,6 +174,11 @@ export async function uploadFile(
   const form = new FormData();
   form.append("file", file);
   const headers: Record<string, string> = {};
+  // Include guest client ID as a header for backend quota enforcement (avoids form body re-read)
+  if (!_token) {
+    const cid = getGuestClientId();
+    if (cid) headers["X-Guest-Client-Id"] = cid;
+  }
   if (_token) headers["Authorization"] = `Bearer ${_token}`;
   const res = await fetch(`${API_BASE}/api/upload`, {
     method: "POST",
@@ -206,10 +215,25 @@ export async function generateImage(options: {
   content?: string;
   modelSelection?: { modelId: string; label: string; reason: string };
 }> {
-  return request("/api/generate-image", {
+  // Use fetchWithToken so we can pass both auth and guest headers
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (_token) headers["Authorization"] = `Bearer ${_token}`;
+  // Include guest client ID as a header for backend quota enforcement (avoids body re-read)
+  if (!_token) {
+    const cid = getGuestClientId();
+    if (cid) headers["X-Guest-Client-Id"] = cid;
+  }
+  const res = await fetch(`${API_BASE}/api/generate-image`, {
     method: "POST",
+    headers,
     body: JSON.stringify(options),
   });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    const snippet = text.length > 200 ? text.slice(0, 200) + "…" : text;
+    throw new Error(snippet || `HTTP ${res.status}`);
+  }
+  return res.json();
 }
 
 /* ─── Streaming Chat ────────────────────────────────── */
@@ -233,6 +257,11 @@ export function streamChat(
     try {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (_token) headers["Authorization"] = `Bearer ${_token}`;
+      // Include guest client ID as a header for backend quota enforcement (avoids body re-read)
+      if (!_token) {
+        const cid = getGuestClientId();
+        if (cid) headers["X-Guest-Client-Id"] = cid;
+      }
       const res = await fetch(`${API_BASE}/api/chat`, {
         method: "POST",
         headers,

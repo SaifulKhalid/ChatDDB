@@ -774,6 +774,14 @@ async function streamWorkersAI(
 
 /* ----------------------------- SSE reader ----------------------------- */
 
+/**
+ * Read an SSE stream, yielding parsed text chunks.
+ *
+ * Fix: Properly handles partial frames split across chunk boundaries.
+ * Rather than splitting on every \n (which breaks when a data: line is
+ * split mid-frame), we buffer by SSE message boundaries (double \n\n).
+ * This ensures partial JSON payloads are reassembled before parsing.
+ */
 async function readSSEStream(
   body: ReadableStream<Uint8Array>,
   parseData: (data: string) => string,
@@ -789,20 +797,52 @@ async function readSSEStream(
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
 
+    // Process complete SSE messages delimited by double newline
     let idx: number;
-    while ((idx = buffer.indexOf("\n")) !== -1) {
-      const line = buffer.slice(0, idx).trim();
-      buffer = buffer.slice(idx + 1);
-      if (!line) continue;
-      if (line.startsWith("data:")) {
-        const data = line.slice(5).trim();
-        const text = parseData(data);
-        if (text) {
-          full += text;
-          onChunk(text);
+    while ((idx = buffer.indexOf("\n\n")) !== -1) {
+      const raw = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+
+      // Collect all data: lines within this SSE message (there may be
+      // multiple if the payload was split across chunks)
+      const lines = raw.split("\n");
+      let dataPayload = "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("data:")) {
+          // If we already have partial data, this is a continuation line
+          dataPayload += trimmed.slice(5).trim();
         }
+      }
+
+      if (!dataPayload) continue;
+
+      const text = parseData(dataPayload);
+      if (text) {
+        full += text;
+        onChunk(text);
       }
     }
   }
+
+  // Flush remaining buffer (incomplete trailing message)
+  if (buffer.trim()) {
+    const lines = buffer.split("\n");
+    let dataPayload = "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("data:")) {
+        dataPayload += trimmed.slice(5).trim();
+      }
+    }
+    if (dataPayload) {
+      const text = parseData(dataPayload);
+      if (text) {
+        full += text;
+        onChunk(text);
+      }
+    }
+  }
+
   return full;
 }

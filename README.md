@@ -1,61 +1,78 @@
-# PrototypeChatBot
+# ChatDDB — One Workspace. Every AI.
 
-A ChatGPT-style chatbot running on **Cloudflare Workers**, powered by multiple AI providers (**AgentRouter** for ChatGPT & Claude, **Groq** for Llama, and **Google Gemini**). Supports image and PDF uploads, streaming responses, conversation history, and a clean ChatGPT-like UI.
+A production-grade AI workspace that brings together **Groq, OpenAI (ChatGPT), Anthropic (Claude), Google Gemini, Cloudflare Workers AI, and OpenRouter** — all in one beautiful, unified chat interface.
+
+**Live deployments:**
+- **Cloudflare Workers:** https://prototype-chatbot.chatddb-smoke.workers.dev
+- **Vercel:** https://chatddb.vercel.app
+
+---
 
 ## Features
 
-- 🤖 **Multiple AI providers** — switch between ChatGPT, Claude, Gemini, and Llama on the fly
-- 🏷️ **Friendly model labels** — clients see brand names (ChatGPT, Claude, Gemini), not internal model IDs
-- 📸 **Image uploads** — vision-capable models can analyze images
-- 📄 **PDF uploads** — text is extracted and provided as context to the model
-- ⚡ **Streaming responses** — real-time token streaming via Server-Sent Events (SSE)
-- 💬 **Conversation history** — persisted in Cloudflare D1 (SQLite)
-- 🗄️ **File storage** — uploads stored in Cloudflare R2
-- 🎨 **Premium Next.js UI** — dark/light/system themes, sidebar, markdown rendering, drag-and-drop, animations
-- 🛑 **Stop generation** — abort streaming mid-response
-- 📋 **Paste images** — paste from clipboard directly into the composer
+- 🤖 **10+ AI models** — Switch between Groq, ChatGPT, Claude, Gemini, Workers AI, and OpenRouter
+- ✨ **Auto Mode** — Intelligently selects the best model for your task (prioritizes Groq → ChatGPT → others)
+- ⚡ **Real-time streaming** — See responses as they're generated (SSE)
+- 💬 **Conversation history** — Persisted via Cloudflare D1 (SQLite)
+- 📸 **Image upload & analysis** — Vision-capable models can analyze your images
+- 📄 **PDF upload & analysis** — Text extraction + chunking for context
+- 🎨 **Image generation** — Generate images via FLUX.1 Schnell and Leonardo Lucid
+- 🔑 **Firebase Authentication** — Google sign-in + email/password
+- 👤 **Guest mode** — Try before you sign up (limited quota)
+- 🛡️ **Admin panel** — Model CRUD, user management, email allowlist
+- 🌗 **Dark/Light/System themes** — Smooth theme switching
+- 🛑 **Stop generation** — Abort streaming mid-response
+- 📋 **Clipboard paste** — Paste images directly into the composer
 
 ## Architecture
 
 ```
-Browser (Next.js SPA — web/out/)
-  ↕ fetch / SSE
-Cloudflare Worker (src/index.ts)
-  • REST API (/api/*)
-  • SSE streaming (/api/chat)
-  • Static asset serving (ASSETS binding → web/out/)
-D1 (DB)         R2 (BUCKET)       AI Providers
-conversations    uploads/          • AgentRouter (ChatGPT, Claude, Kimi)
-messages                           • Groq (Llama)
-                                   • Gemini
-                                   • Workers AI (Mistral, Llama, Gemma)
-                                   • OpenRouter (free models)
+┌─────────────────────────────────────────────────────┐
+│                  Browser (Next.js SPA)               │
+│  Vercel (https://chatddb.vercel.app)                 │
+│  or Workers (https://...workers.dev)                  │
+└──────────────────────┬──────────────────────────────┘
+                       │ fetch / SSE
+┌──────────────────────▼──────────────────────────────┐
+│           Cloudflare Worker (src/index.ts)           │
+│  • REST API (/api/*)                                 │
+│  • SSE streaming (/api/chat)                         │
+│  • Static asset serving (ASSETS → web/out/)          │
+└──┬──────────────┬──────────────┬─────────────────────┘
+   │              │              │
+┌──▼──┐     ┌────▼────┐    ┌────▼──────────────┐
+│ D1  │     │   R2    │    │   AI Providers     │
+│ DB  │     │ Bucket  │    │ • Groq             │
+│     │     │         │    │ • AgentRouter      │
+│     │     │ Uploads │    │   (ChatGPT, Claude)│
+│     │     │ Files   │    │ • Gemini           │
+│     │     │ Meta    │    │ • Workers AI       │
+│     │     │         │    │ • OpenRouter       │
+└─────┘     └─────────┘    └────────────────────┘
 ```
 
-## Available Models
+## Tech Stack
 
-| Label | Provider | Vision | Model ID |
-|---|---|---|---|
-| Groq | Groq | ❌ | llama-3.1-8b-instant |
-| Gemini | Gemini | ✅ | gemini-2.5-flash |
-| Kimi | AgentRouter | ✅ | kimi-k3 |
-| Claude | AgentRouter | ✅ | claude-opus-4-8 |
-| ChatGPT | AgentRouter | ✅ | gpt-5.6-sol |
-| Workers AI (Mistral 7B) | Workers AI | ❌ | @cf/mistral/mistral-7b-instruct-v0.3 |
-| Workers AI (Vision) | Workers AI | ✅ | @cf/meta/llama-3.2-11b-vision-instruct |
-| Workers AI (Llama 3.3) | Workers AI | ❌ | @cf/meta/llama-3.3-70b-instruct-fp8-fast |
-| Workers AI (Gemma 2 27B) | Workers AI | ❌ | @hf/google/gemma-2-27b-it |
-| Laguna S 2.1 | OpenRouter | ❌ | poolside/laguna-s-2.1:free |
-| OpenRouter Free | OpenRouter | ❌ | openrouter/free |
-| Ling 3.0 Flash | OpenRouter | ❌ | inclusionai/ling-3.0-flash:free |
-| GPT-OSS 20B | OpenRouter | ❌ | openai/gpt-oss-20b:free |
-| Gemma 4 26B | OpenRouter | ❌ | google/gemma-4-26b-a4b-it:free |
+| Layer | Technology |
+|-------|-----------|
+| **Frontend** | Next.js 15 + React 19 + Tailwind CSS + Framer Motion |
+| **Backend** | Cloudflare Workers (TypeScript) |
+| **Database** | Cloudflare D1 (SQLite-compatible) |
+| **File Storage** | Cloudflare R2 |
+| **Auth** | Firebase Authentication (Google + Email/Password) |
+| **AI Providers** | Groq, AgentRouter (ChatGPT, Claude), Gemini, Workers AI, OpenRouter |
+| **Deployment** | Cloudflare Workers + Vercel |
 
 ## Prerequisites
 
 - Node.js 18+
-- A Cloudflare account
-- API keys for AgentRouter (https://agentrouter.org/), Groq (https://console.groq.com/keys), and Gemini (https://aistudio.google.com/apikey)
+- A [Cloudflare](https://dash.cloudflare.com/) account
+- A [Firebase](https://console.firebase.google.com/) project (with Auth enabled)
+- API keys for desired AI providers:
+  - [Groq](https://console.groq.com/keys)
+  - [AgentRouter](https://agentrouter.org/) (for ChatGPT & Claude)
+  - [Gemini](https://aistudio.google.com/apikey)
+  - [OpenRouter](https://openrouter.ai/keys) (optional, for free models)
 
 ## Setup
 
@@ -63,6 +80,7 @@ messages                           • Groq (Llama)
 
 ```bash
 npm install
+cd web && npm install && cd ..
 ```
 
 ### 2. Create Cloudflare resources
@@ -72,27 +90,52 @@ npx wrangler d1 create prototype-chatbot-db
 npx wrangler r2 bucket create prototype-chatbot-bucket
 ```
 
-Copy the database_id from the D1 output into wrangler.jsonc.
+Copy the `database_id` from the D1 output into `wrangler.jsonc`.
 
 ### 3. Initialize the database
 
 ```bash
-npm run db:init          # local
-npm run db:init:remote   # remote (production)
+# Local development
+npm run db:init
+
+# Production (remote)
+npm run db:init:remote
 ```
 
-### 4. Set API keys
+### 4. Configure Firebase
 
-For local development, copy .dev.vars.example to .dev.vars and fill in your keys.
+Create a Firebase project at https://console.firebase.google.com, enable Authentication (Google + Email/Password), and create a web app. Copy the Firebase config into `web/.env.local`:
 
-For production:
+```
+NEXT_PUBLIC_FIREBASE_API_KEY=...
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=...
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=...
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=...
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=...
+NEXT_PUBLIC_FIREBASE_APP_ID=...
+```
+
+### 5. Set API keys
+
+**Local development** — copy `.dev.vars.example` to `.dev.vars`:
+
+```
+GROQ_API_KEY=gsk_...
+GEMINI_API_KEY=AIza...
+AGENTROUTER_API_KEY=ar_...
+OPENROUTER_API_KEY=sk-or-...
+```
+
+**Production:**
+
 ```bash
 npx wrangler secret put GROQ_API_KEY
 npx wrangler secret put GEMINI_API_KEY
 npx wrangler secret put AGENTROUTER_API_KEY
+npx wrangler secret put OPENROUTER_API_KEY
 ```
 
-### 5. Run locally
+### 6. Run locally
 
 ```bash
 npm run dev
@@ -100,89 +143,130 @@ npm run dev
 
 Open http://localhost:8787 in your browser.
 
-### 6. Deploy
+### 7. Build frontend
 
 ```bash
+cd web && npm run build && cd ..
+```
+
+### 8. Deploy
+
+```bash
+# Deploy to Cloudflare Workers
 npm run deploy
+
+# Deploy frontend to Vercel
+cd web && NEXT_PUBLIC_API_URL=https://your-worker.workers.dev npx vercel --prod
 ```
 
-### 7. Warm up (prevent cold starts)
+## Auto Model Selection
 
-Cloudflare Workers idle after a few seconds of inactivity, causing a cold
-start on the next request. Run the warmup script periodically to keep the
-worker responsive:
+When **Auto** mode is active, ChatDDB intelligently selects the best model based on your request:
 
-```bash
-# Single run:
-npm run warmup https://your-worker.workers.dev
+| Priority | Provider | Best For |
+|----------|----------|----------|
+| 1 🥇 | **Groq** | Fast responses, simple chat, coding |
+| 2 🥈 | **AgentRouter** (ChatGPT/Claude) | Complex reasoning, creative tasks, premium quality |
+| 3 🥉 | **Workers AI** | Vision tasks, image analysis |
+| 4 | **Gemini** | Long context, PDF analysis, math |
+| 5 | **OpenRouter** | Free fallback |
 
-# Or via environment variable:
-WORKER_URL=https://your-worker.workers.dev npm run warmup
-```
-
-**Cron setup (every 5 minutes):**
-
-```bash
-# Edit your crontab:
-crontab -e
-
-# Add this line (update the path and worker URL):
-*/5 * * * * cd /path/to/prototype-chatbot && WORKER_URL=https://your-worker.workers.dev node scripts/warmup.mjs >> /tmp/warmup.log 2>&1
-```
-
-The script pings `/api/health`, `/api/models`, and `/` with a 10-second
-timeout per endpoint, logs latency, and exits non-zero if all requests fail
-(useful for monitoring).
+The selector analyzes your message for patterns (code, reasoning, math, translation, etc.) and routes to the best provider. If a provider fails, it automatically falls back to the next best option.
 
 ## API Reference
 
-| Method | Endpoint | Description |
-|---|---|---|
-| GET | /api/health | Health check |
-| GET | /api/models | List available models |
-| GET | /api/conversations | List all conversations |
-| POST | /api/conversations | Create a conversation |
-| GET | /api/conversations/:id | Get conversation + messages |
-| PATCH | /api/conversations/:id | Update title or model |
-| DELETE | /api/conversations/:id | Delete conversation |
-| POST | /api/upload | Upload file to R2 (multipart form, field file) |
-| GET | /api/files/:key | Serve file from R2 |
-| POST | /api/chat | Stream chat completion (SSE) |
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/api/health` | No | Health check |
+| GET | `/api/models` | No | List available models |
+| GET | `/api/conversations` | Yes | List conversations |
+| POST | `/api/conversations` | Yes | Create conversation |
+| GET | `/api/conversations/:id` | Yes | Get conversation + messages |
+| PATCH | `/api/conversations/:id` | Yes | Update title/model |
+| DELETE | `/api/conversations/:id` | Yes | Delete conversation |
+| POST | `/api/upload` | Yes | Upload file (multipart) |
+| GET | `/api/files/:key` | No | Serve uploaded file |
+| POST | `/api/chat` | Yes | Stream chat (SSE) |
+| POST | `/api/auth/login` | No | Verify Firebase token |
+| GET | `/api/auth/me` | No | Get current user |
+| POST | `/api/enhance` | Yes | Enhance prompt |
+| POST | `/api/generate-image` | Yes | Generate image |
 
-### Chat request body
+### Chat SSE Event Format
 
-```json
-{
-  "conversationId": "uuid",
-  "message": "Hello!",
-  "attachments": [],
-  "model": "agentrouter:gpt-5.5"
-}
+```
+data: {"type":"start","messageId":"uuid"}
+
+data: {"type":"delta","text":"Hello"}
+
+data: {"type":"model_selection","model":"groq:llama-3.1-8b-instant","label":"llama-3.1-8b-instant","reason":"Chat request · Best value"}
+
+data: {"type":"done","text":"Hello! How can I help you?"}
+
+data: {"type":"error","error":"Service unavailable"}
 ```
 
 ## Configuration
 
-Secrets (set via wrangler secret put or .dev.vars):
+### Environment Variables (Cloudflare Worker)
 
-| Secret | Description |
-|---|---|
-| GROQ_API_KEY | Groq API key |
-| GEMINI_API_KEY | Google Gemini API key |
-| AGENTROUTER_API_KEY | AgentRouter API key (for ChatGPT & Claude) |
-| OPENROUTER_API_KEY | OpenRouter API key (for free chat & image generation) |
+| Variable | Type | Description |
+|----------|------|-------------|
+| `APP_NAME` | Var | Application name |
+| `MAX_UPLOAD_BYTES` | Var | Max file upload size (default: 20MB) |
+| `RATE_LIMIT_MAX` | Var | Max requests per window (default: 60) |
+| `RATE_LIMIT_WINDOW` | Var | Rate limit window in seconds (default: 60) |
+| `GUEST_MAX_MESSAGES` | Var | Guest message quota (default: 10) |
+| `GUEST_MAX_UPLOADS` | Var | Guest upload quota (default: 2) |
+| `GUEST_MAX_IMAGE_GENS` | Var | Guest image gen quota (default: 2) |
+| `GROQ_API_KEY` | Secret | Groq API key |
+| `GEMINI_API_KEY` | Secret | Google Gemini API key |
+| `AGENTROUTER_API_KEY` | Secret | AgentRouter API key |
+| `OPENROUTER_API_KEY` | Secret | OpenRouter API key |
 
-## Adding More Models
+## Adding Models
 
-Edit src/types.ts and add entries to the MODELS array. The provider routing in src/providers.ts handles the rest automatically.
+### Via Admin Panel (Recommended)
 
-## Tech Stack
+1. Sign in with an admin email
+2. Go to **Settings → Admin Panel**
+3. Click **Add Model** and fill in the details
 
-- Runtime: Cloudflare Workers
-- Database: Cloudflare D1 (SQLite)
-- Storage: Cloudflare R2
-- AI: AgentRouter (OpenAI-compatible: ChatGPT, Claude, Kimi), Groq API (Llama), Google Gemini API, Workers AI (Cloudflare edge inference), OpenRouter (free models)
-- PDF: unpdf (Workers-compatible PDF text extraction)
-- Frontend: Next.js 15 + React 19 + Tailwind CSS + Framer Motion
+### Via Code
+
+Edit `src/types.ts` — add entries to the `MODELS` array. Provider routing in `src/providers.ts` handles the rest automatically.
+
+## Development
+
+```bash
+# TypeScript type-checking
+npm run typecheck
+cd web && npm run typecheck
+
+# Watch mode (worker)
+npm run dev
+
+# Watch mode (frontend)
+cd web && npm run dev
+
+# Database management
+npm run db:init        # Local
+npm run db:init:remote # Remote
+npm run db:reset       # Local (destructive)
+```
+
+## Warmup (Prevent Cold Starts)
+
+Cloudflare Workers idle after a few seconds of inactivity. Run the warmup script periodically:
+
+```bash
+npm run warmup https://your-worker.workers.dev
+```
+
+**Cron (every 5 minutes):**
+```bash
+*/5 * * * * cd /path/to/chatddb && WORKER_URL=https://your-worker.workers.dev node scripts/warmup.mjs >> /tmp/warmup.log 2>&1
+```
 
 ## License
 
