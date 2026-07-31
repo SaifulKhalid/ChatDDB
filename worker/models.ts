@@ -29,29 +29,27 @@ export interface ModelSpec {
 }
 
 /**
- * `vision: false` is a *deliberate, provisional* setting.
+ * `vision: true` is *observed*, not assumed (PHASE2-PLAN.md §14, item 2 —
+ * resolved). AgentRouter does forward multimodal content parts for
+ * `gpt-5.6-sol`: `npm run probe:vision` posts generated images of known colour
+ * and layout and the model reads them back correctly, including which half of a
+ * split image is which. That last check matters — a model that only answered
+ * plausibly about colour could be guessing, and this flag existed precisely to
+ * avoid claiming a capability nobody had watched work.
  *
- * GPT-5.6 is a vision-capable model upstream, but whether AgentRouter forwards
- * multimodal content parts for `gpt-5.6-sol` is unverified (PHASE2-PLAN.md §14,
- * item 2) -- AgentRouter synthesises its own responses and its docs say nothing
- * about content parts. Claiming a capability we have not observed would produce
- * a confusing upstream 400 at send time instead of a clear message before it.
- *
- * The probe is `npm run probe:vision`. If it passes, flip this to `true` and
- * drop the note; the whole image pipeline is already built behind it.
+ * Re-run the probe before trusting this after a gateway change.
  */
 export const MODELS: ModelSpec[] = [
   {
     id: 'gpt-5.6-sol',
     label: 'GPT-5.6 Sol',
     provider: 'agentrouter',
-    vision: false,
+    vision: true,
     documents: true,
     contextTokens: 400_000,
     maxOutputTokens: 128_000,
     reasoning: true,
     default: true,
-    note: 'Image input is pending an AgentRouter capability probe; PDFs work via text extraction.',
   },
 ]
 
