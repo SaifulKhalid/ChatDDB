@@ -73,9 +73,29 @@ data: [DONE]
 | --- | --- |
 | `worker/index.ts` | Routing, request validation, system prompt, error mapping |
 | `worker/agentrouter.ts` | AgentRouter HTTP client — headers, retries, timeout, abort |
-| `worker/sse.ts` | Normalises upstream SSE to the contract above |
+| `worker/failover.ts` | The gateway chain: AgentRouter, then freemodel.dev |
+| `worker/images.ts` | The image chain: Workers AI, then Pollinations |
+| `worker/sse.ts` | Normalises upstream SSE to the contract above; peeks for tool calls |
 
 Config lives in `wrangler.jsonc` `vars` (model, base URL, token cap, timeout) and can be overridden per-machine in `.dev.vars`. Full reference in [DOCS.md § 4](DOCS.md#4-configuration).
+
+### Two failover chains, both silent
+
+Each of the two things this app asks an outside provider for has a backup behind it, and neither announces itself. There is no picker, no provider badge, and nothing in `src/` knows which one answered.
+
+**Text: AgentRouter → freemodel.dev.** AgentRouter fails often enough that users noticed. `completeWithFailover` in `worker/failover.ts` sits *above* the stream opener, so it cannot restart a stream that has already delivered bytes — a mid-flight death still surfaces as an SSE error frame. A crossover writes an `upstream_failover` activity row and sets `X-ChatDDB-Upstream`.
+
+**Images: Workers AI → Pollinations.** The Cloudflare free allowance is 10,000 neurons *per account per day*, shared by every signed-in user, so the first person to spend it used to take image generation down for everyone until 00:00 UTC. `generateImage` in `worker/images.ts` crosses over on exactly two error classes — `image_quota_exhausted` and `image_model_unavailable`, the two that mean *this provider cannot serve right now*. A refusal is deliberately **not** one of them: resubmitting a prompt one safety filter rejected to a provider with a different policy would make the deployment's effective content policy "whichever provider is last on the chain". Crossovers write an `image_failover` row, and `files.gen_model` records what actually drew the image (`pollinations/flux`, not the Cloudflare model id).
+
+Both backups are metered, so both are backups rather than peers: a missing primary is an error, not a reason to run entirely on the paid one. `FALLBACK_ENABLED` and `POLLINATIONS_ENABLED` switch them off, and only the exact string `"false"` does — a typo leaves the backup armed rather than silently removing it.
+
+### Generating images mid-conversation
+
+The model can attach one image to a reply by calling a `generate_image` tool, so "can you show me one?" works without the user reaching for the composer's image toggle. The toggle and `POST /api/images` are unchanged; this is an additional path.
+
+The tool is offered on the first upstream request, and `peekToolCalls` in `worker/sse.ts` reads far enough into the response to tell a tool call from ordinary text before any byte reaches the client — a stream that turns out to be text is replayed intact, so the ordinary path loses nothing. Execution runs server-side through the same image chain, the same `limitImage` gate, and the same R2 write as the button, then the result goes back upstream for a final answer.
+
+`RATE_TOOL_IMAGE_PER_DAY` (default 5) caps it *on top of* the ordinary image budget, because the guidance about when to fire is a sentence in a prompt and a sentence in a prompt has never been a spending control. Probe measurements behind the design are in `scripts/probe-tool-calling.mjs`.
 
 ### Two AgentRouter quirks worth knowing
 
@@ -94,6 +114,10 @@ Pacing was tried in the Worker first and removed: Workers pin `Date.now()` betwe
 ### Notes on the model
 
 `gpt-5.6-sol` is a reasoning model, so the Worker sends `max_completion_tokens` (not `max_tokens`) and no `temperature`. Set `REASONING_EFFORT` to trade latency for depth. Reasoning deltas are dropped — the UI has nowhere to show them.
+
+It also calls tools reliably, which is what the `generate_image` path depends on. `npm run probe:tools` measured 10/10 on prompts that should fire it, 5/5 restraint on one that should not, 5/5 on relaying a tool result, 5/5 on explaining a failed one, and 5/5 producing usable `tool_calls` over a *streaming* request — the last of which is why the decision leg keeps `stream: true` instead of being downgraded to a buffered request. Arguments arrive as ~150 delta fragments, so anything reading them has to reassemble by `index` rather than expecting one frame.
+
+freemodel's tool support has never been probed. The backup is offered `tools` anyway and ignoring the field is survivable by construction: no `tool_calls` just means the turn is answered as plain text, which is what it would have been.
 
 ## Development
 

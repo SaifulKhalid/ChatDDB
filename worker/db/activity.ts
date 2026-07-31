@@ -35,6 +35,13 @@ export const ACTIVITY_ACTIONS = [
   'image_generated',
   /** Generation was attempted but the model or the allowance refused it. */
   'image_failed',
+  /**
+   * Workers AI could not serve an image and the metered backup drew it instead.
+   * The `upstream_failover` of the image path, and the same argument for
+   * existing: the user sees an image either way, so this row is the only record
+   * that the shared Cloudflare allowance ran out and money was spent covering it.
+   */
+  'image_failover',
   'admin_chat_access',
   'admin_file_access',
   'admin_user_updated',

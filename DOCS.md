@@ -109,6 +109,11 @@ committed.
 | `npm run lint` | oxlint |
 | `npm run cf-typegen` | Regenerate `worker-configuration.d.ts` — rerun after editing `wrangler.jsonc` |
 | `npm run secret` | `wrangler secret put AGENTROUTER_API_KEY` for the deployed Worker |
+| `npm run secret:pollinations` | Same, for the backup image provider's key |
+| `npm run probe:tools` | Measures whether the model actually calls tools, over 5 runs per case — see §10 |
+| `npm run stub:pollinations` | Fake Pollinations endpoint, so crossover tests spend no allowance |
+| `npm run smoke:image-failover` | End-to-end image crossover, both directions |
+| `npm run smoke:chat-image-tool` | End-to-end `generate_image` tool path |
 | `npm run deploy` | Build, then `wrangler deploy` |
 
 ---
@@ -119,7 +124,9 @@ committed.
 worker/
   index.ts          routes, validation, system prompt, error mapping
   agentrouter.ts    upstream client: config, headers, retries, timeout, abort
-  sse.ts            upstream stream → client SSE contract
+  failover.ts       gateway chain: AgentRouter → freemodel.dev
+  images.ts         image chain: Workers AI → Pollinations, and error classification
+  sse.ts            upstream stream → client SSE contract; the tool-call peek
   tsconfig.json     workers-only TS project (ES2023 libs, no DOM)
 src/
   App.tsx           all conversation state and turn orchestration
@@ -166,9 +173,19 @@ per-machine in `.dev.vars`.
 | `UPSTREAM_TIMEOUT_MS` | `180000` | Time-to-first-byte budget only; never caps an in-flight stream |
 | `REASONING_EFFORT` | unset | `minimal` \| `low` \| `medium` \| `high` — omitted when unset |
 | `SYSTEM_PROMPT` | built-in | Replaces the default system prompt |
+| `POLLINATIONS_API_KEY` | — | **Secret.** Arms the backup image provider. `npm run secret:pollinations` |
+| `POLLINATIONS_ENABLED` | armed | Kill switch; only the exact string `"false"` disables |
+| `POLLINATIONS_MODEL` | `flux` | Backup image model. `turbo` was retired |
+| `POLLINATIONS_BASE_URL` | `https://gen.pollinations.ai` | Backup base; trailing slashes trimmed |
+| `RATE_TOOL_IMAGE_PER_DAY` | `5` | Images the *model* may request per user per day, on top of `RATE_IMAGE_PER_DAY` |
 
 The literal placeholder `sk-replace-me` counts as "not configured", so copying
 `.dev.vars.example` without editing it behaves the same as having no key.
+`pk-replace-me` does the same for Pollinations.
+
+`POLLINATIONS_API_KEY` is a **secret and never a var**: Pollinations meters by
+account, so a key in `wrangler.jsonc` would be a spendable credential committed
+to git history. Same rule as `FREEMODEL_API_KEY`.
 
 ### Request guardrails
 
@@ -192,6 +209,15 @@ Breaching any of them returns `400` with a message naming the offending index.
 
 It is prepended only when the posted messages contain no `system` role, so a
 client can supply its own.
+
+**`SYSTEM_PROMPT` does not switch off the tool guidance.** The base prompt is
+either/or — a custom `SYSTEM_PROMPT` replaces the default outright — but when the
+image tool is armed, `TOOL_USE_CLAUSE` is appended *after* whichever base
+resolved. The alternative was letting any deployment with a custom prompt hand
+the model a working image generator with no instruction about when to use it, and
+the budget behind that generator is shared by every user of the deployment and
+resets once a day. So the clause cannot be dropped by accident. It is guidance
+regardless; `RATE_TOOL_IMAGE_PER_DAY` is the enforcement.
 
 ---
 
@@ -254,6 +280,38 @@ data: [DONE]
 | `500` | Upstream failure, bad key, or an unexpected error |
 | `503` | No API key configured (the UI reads this as "mock instead") |
 
+#### Generating an image mid-turn
+
+When the image chain is configured, the request carries one tool —
+`generate_image(prompt: string)` — and the system prompt gains a clause saying
+when to use it. If the model calls it, the whole round trip happens **before the
+response headers are committed**: generate, store in R2, hand the result back
+upstream, get the final text, and only then open the stream. Nothing capable of
+restarting a turn sits downstream of the first client byte, which is the same
+invariant `completeWithFailover` protects.
+
+`peekToolCalls` in `worker/sse.ts` is what makes that possible without giving up
+streaming. It reads the upstream response far enough to see whether the first
+signal is a tool call or ordinary content; text is replayed intact through a new
+stream, so an ordinary turn is not buffered and loses nothing.
+
+The follow-up request deliberately omits `tools`. The model has had its turn with
+it, and re-offering invites a second call the loop would spend a round refusing —
+each round being another full round trip in front of the user's first token.
+`MAX_TOOL_ROUNDS = 3` is the backstop for a gateway that produces one anyway, and
+one image per turn is enforced separately.
+
+The generated file attaches to the **assistant** row, so it comes back with the
+transcript exactly like a button-generated image. `X-ChatDDB-Generated-File`
+carries its id; like `X-ChatDDB-Upstream` it is deliberately *not* in
+`Access-Control-Expose-Headers`, so no browser client can read it yet.
+
+A generation that fails — spent budget, refused prompt, provider down — is not a
+failed turn. The tool result says so in plain words and the model relays it, so
+the user gets "I couldn't make that image because today's limit is reached"
+rather than a 429. Budgets consumed: `tool_image` (day) *and* `image`
+(minute + day), tighter one first so a refusal does not waste the shared counter.
+
 ### `GET /api/health`
 
 ```json
@@ -262,12 +320,31 @@ data: [DONE]
   "service": "chatddb-f5",
   "model": "gpt-5.6-sol",
   "provider": "agentrouter",
-  "configured": true
+  "configured": true,
+  "ready": {
+    "upstream": true, "db": true, "r2": true, "auth": true, "signedUrls": true,
+    "fallback": true, "image": true, "imageFallback": true
+  },
+  "fallbackProvider": "freemodel", "fallbackModel": "gpt-5.5",
+  "imageFallbackProvider": "pollinations", "imageFallbackModel": "flux"
 }
 ```
 
 Always `200`. When `configured` is `false`, a `detail` field explains what is
 missing. The key itself is never echoed.
+
+`ready.imageFallback` is **armed**, not enabled: it is false when the key is
+absent, when `POLLINATIONS_ENABLED` is `"false"`, *and* when image generation
+itself is off, since a backup behind a disabled feature is not armed in any
+useful sense. A deployment that left the switch on but has no key is reported the
+same way a missing binding is — as a line in `missing`:
+
+```
+"missing": ["POLLINATIONS_API_KEY (optional; image fallback unconfigured)"]
+```
+
+Silence there means nobody asked for a backup. That line means one was asked for
+and cannot run, which is a misconfiguration rather than a choice.
 
 ### `GET /api/models`
 
@@ -281,8 +358,9 @@ curl -s http://localhost:5173/api/models | grep -o '"gpt-5\.6[^"]*"'
 
 ### `POST /api/images`
 
-Generates one image from a prompt, on Workers AI. Plain JSON, not SSE — the
-model produces a whole image in one shot, so there is nothing to stream.
+Generates one image from a prompt, on Workers AI with Pollinations behind it.
+Plain JSON, not SSE — the model produces a whole image in one shot, so there is
+nothing to stream.
 
 ```jsonc
 // request
@@ -316,6 +394,52 @@ from the same allowance, which is why the `ai` binding is declared `remote: true
 `503 not_configured` when the `AI` binding is absent or `IMAGE_ENABLED` is
 `"false"`; `GET /api/me` reports `imageGeneration` so the composer can hide its
 toggle rather than offering a button that always fails.
+
+#### The backup provider
+
+That shared daily wall is the reason there is a second provider. When Workers AI
+cannot serve, `generateImage` in `worker/images.ts` asks Pollinations instead —
+same shape as `completeWithFailover`, minus the streaming concerns, since an
+image is one indivisible result. Nobody is told: the response is identical apart
+from `file.genModel`, which reads `pollinations/flux` rather than the bare `@cf/…`
+id. The prefix exists because `flux` alone would be indistinguishable from the
+Cloudflare model of the same family.
+
+The crossover fires on exactly two error classes:
+
+| Type | Crosses over? | Why |
+| --- | --- | --- |
+| `image_quota_exhausted` | **yes** | "This provider cannot serve right now" — a different one can disprove it |
+| `image_model_unavailable` | **yes** | Same claim; also covers a provider that is simply down |
+| `image_prompt_refused` | no | A refusal is an answer — see below |
+| `image_failed` / `image_empty` / `image_malformed` | no | Something unexpected happened, not an unavailable provider, and every attempt spends real budget |
+
+A prompt one model's safety filter rejected must **not** be quietly resubmitted
+to a model with a different policy. That turns a refusal into a search for the
+laxest filter on the chain, and it makes the deployment's effective content
+policy "whichever provider happens to be last".
+
+Each crossover writes an `image_failover` activity row — the same shape as
+`upstream_failover`, so the admin feed reads the two alike — and it is written
+inside `generateAndStore` rather than by the caller, so it lands whether or not
+the request that triggered it goes on to succeed.
+
+**The two providers do not share an error vocabulary**, which is why
+`classifyWorkersAi` and `classifyPollinations` are separate functions. Workers AI
+throws `Error`s worded in its own terms ("capacity", "quota", "no such model");
+Pollinations answers with an HTTP status and a JSON envelope. Measured against
+the live endpoint:
+
+- An unknown model is `400 BAD_REQUEST`: `Invalid model or alias: "turbo". …`.
+  "no such model" never appears.
+- **Exceeding the request pace answers `401 UNAUTHORIZED`** with
+  `Authentication required. Please provide an API key …` — not `429`, and not a
+  word about rate limits. An unrecognised bearer token is not rejected either; it
+  is silently treated as anonymous, so a stale key and a spent allowance are
+  indistinguishable on the wire. The 401 branch says both things for that reason.
+
+`scripts/stub-pollinations.mjs` reproduces those envelopes verbatim, including
+the 401, so a Worker that only handled a tidy 429 fails the test it should fail.
 
 ---
 
@@ -562,6 +686,50 @@ Changing these breaks the suite: `textarea[aria-label="Message ChatDDB"]`,
 `div.whitespace-pre-wrap` (user bubbles), and `[data-role="assistant"]` — the
 last exists only as a test hook on the assistant message root.
 
+### Backend smoke tests
+
+These drive the Worker over HTTP rather than a browser, and each needs a Firebase
+ID token in `CHATDDB_TOKEN` (`await firebase.auth().currentUser.getIdToken()` in
+a signed-in tab).
+
+| Script | Asserts |
+| --- | --- |
+| `npm run smoke:failover` | A real `POST /api/chat` survives a dead primary: response headers, the assistant row's `model_used`/`model_provider`, the `upstream_failover` row, the session title |
+| `npm run smoke:image-failover` | Workers AI dead → Pollinations serves: the `image_failover` row, `gen_model` recording the provider that actually drew it, `limitImage` still consumed — then every branch of `classifyPollinations` in the other direction |
+| `npm run smoke:chat-image-tool` | The `generate_image` path: an implicit mid-conversation request attaches an image and consumes a `tool_image` slot; an ordinary question fires nothing; a request past the daily cap gets a plain-text explanation rather than a 429 |
+
+Both failover scripts point the primary at something broken using
+`wrangler dev --var` overrides, so `.dev.vars` is never touched, and both drive
+the backup against a local stub (`npm run stub:gateway`,
+`npm run stub:pollinations`) so no metered credit is spent. Each script's header
+has the exact three-terminal invocation, including the kill-switch run —
+`EXPECT_FAILOVER=0` with `FALLBACK_ENABLED:false` or
+`POLLINATIONS_ENABLED:false`, which asserts the backup *stops*. A backup that
+cannot be switched off is a dependency, not a backup.
+
+`smoke:chat-image-tool` is the exception on cost: every case runs a real
+completion through AgentRouter, and its first case draws a real image on the
+account's shared allowance. There is no way to test "does the model reach for the
+tool" against a stub.
+
+### Probes
+
+Probes measure a provider's behaviour rather than this code's. They exist because
+several decisions here turn on facts no amount of reading the docs establishes.
+
+| Script | Question it answers |
+| --- | --- |
+| `npm run probe:vision` | Does `gpt-5.6-sol` accept image content parts? |
+| `npm run probe:freemodel` | What shape does the backup gateway want (`max_tokens` vs `max_completion_tokens`, reasoning effort)? |
+| `npm run probe:tools` | Does the model call tools reliably, *and* does it do so over a streaming request? |
+
+`probe:tools` runs five phases, five runs each, and reports hit rates rather than
+a single result — a tool that fires four times out of five is a different feature
+from one that fires five. Its phase 5 is why the tool-decision leg keeps
+`stream: true`: `tool_calls` arrive as `delta` fragments (~150 of them per call)
+over a streaming response, so they can be reassembled by `index` without giving
+up genuine streaming on the backup gateway.
+
 ---
 
 ## 11. Deployment
@@ -690,3 +858,30 @@ uses the **`chatddb-f5`** prefix to avoid collisions:
   accepts `'system'`. Nothing in the UI can produce a system message today.
 - `smoke-edit.mjs` filters console errors containing `502` — a holdover from
   when no Worker existed. Harmless, but it would mask a genuine 502.
+- **A tool-generated image does not appear until the transcript is reloaded.**
+  `src/` is untouched by the tool work, so nothing reads
+  `X-ChatDDB-Generated-File` or renders an attachment that arrives mid-turn. The
+  image is stored, attached to the assistant row, and comes back correctly with
+  the transcript — it just is not there in the live bubble. Wiring it up is a
+  frontend change: read the header in `streamChat`, and attach the file to the
+  streaming assistant message the way a reloaded one already is.
+- **The tool path adds a long pre-stream wait.** Generation plus a second
+  AgentRouter round trip both happen before the first byte, so a turn that fires
+  the tool can sit for tens of seconds where an ordinary one would already be
+  typing. The waiting state exists — `MessageItem.tsx` shows a pulsing dot for a
+  `streaming` assistant message with no content yet, which is inserted the moment
+  the user sends — so this is not silent dead air. But that indicator says
+  "thinking", not "drawing", and it looks the same at 2 seconds and at 40. If the
+  header above gets read, this is the other thing worth doing with it.
+- **`UpstreamError` has the bug `ImageError` used to have, and §9 above is
+  optimistic because of it.** It extends `Error`, not `ApiError`, and
+  `errorResponse` renders only `ApiError` — so every pre-stream chat failure
+  reaches the client as a flat `500 internal_error` with the message replaced by
+  "Something went wrong on our side.". The statuses and types in §9's table
+  (`invalid_api_key` 500, `rate_limited` 429, `model_unavailable` 400) are built
+  correctly and then discarded at the boundary; nothing between `postChat` and
+  `errorResponse` maps them. `ImageError` was changed to extend `ApiError` during
+  the image-failover work because a smoke test needed to assert classified types.
+  The same one-line fix would work here, but it changes user-visible statuses on
+  the main chat path, so it was left for a change that can be tested on its own
+  rather than done in passing.

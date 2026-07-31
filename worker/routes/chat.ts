@@ -36,6 +36,8 @@ import {
   UpstreamError,
   type ChatMessage,
   type ContentPart,
+  type ToolCall,
+  type ToolDefinition,
   type UpstreamConfig,
 } from '../agentrouter.ts'
 import {
@@ -43,10 +45,18 @@ import {
   resolveFallback,
   resolveProviders,
   titleWithFailover,
+  type CrossoverReporter,
   type UpstreamAttempt,
 } from '../failover.ts'
-import { toClientStream, type StreamResult } from '../sse.ts'
-import { badRequest, corsHeaders, json, notConfigured, notFound } from '../lib/http.ts'
+import { peekToolCalls, toClientStream, type StreamResult } from '../sse.ts'
+import { ApiError, badRequest, corsHeaders, json, notConfigured, notFound } from '../lib/http.ts'
+import { MAX_PROMPT_CHARS, resolveImageProviders } from '../images.ts'
+import {
+  generateAndStore,
+  imageGeneratedLog,
+  limitImage,
+  requireImageProviders,
+} from './images.ts'
 import { LIMITS, readJsonBody, optionalString, requireString, requireUuid, isUuid } from '../lib/validate.ts'
 import { batch, requireBucket } from '../db/client.ts'
 import * as activity from '../db/activity.ts'
@@ -67,6 +77,124 @@ const DEFAULT_SYSTEM_PROMPT = [
   'Use Markdown — fenced code blocks with a language tag, tables where they help.',
   'If you are unsure or lack the information, say so rather than guessing.',
 ].join(' ')
+
+// ---------------------------------------------------------------------------
+// The generate_image tool
+// ---------------------------------------------------------------------------
+//
+// Everything the tool is — its schema, the rule for when it may fire, the
+// wording of its results, and the loop that runs it — lives in this section and
+// nowhere else. It is offered only when image generation is actually configured,
+// so a deployment without the `AI` binding sends exactly the request body it
+// always did.
+//
+// Verified before any of it was written: `npm run probe:tools`, 5 runs per case
+// against `gpt-5.6-sol` through AgentRouter — 10/10 tool calls on explicit and
+// implicit image requests, 5/5 restraint on a question with no visual intent,
+// 5/5 clean round trips in both the success and unavailable directions, and 5/5
+// over a streaming request. Re-run it after touching anything below.
+
+const IMAGE_TOOL_NAME = 'generate_image'
+
+/**
+ * The tool as the gateway sees it.
+ *
+ * `additionalProperties: false` and a single required field on purpose: the only
+ * thing the Worker can act on is a prompt string, and a schema that admits more
+ * invites the model to send size or style fields that would be silently dropped.
+ */
+const IMAGE_TOOL: ToolDefinition = {
+  type: 'function',
+  function: {
+    name: IMAGE_TOOL_NAME,
+    description:
+      'Generate an image and attach it to your reply. Call this only when the user is ' +
+      'asking to see, visualise, or be shown something — never to decorate an answer.',
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: {
+          type: 'string',
+          description:
+            'A complete, self-contained description of the image to generate, in English. ' +
+            'Compose it from the conversation; the image model sees nothing but this string.',
+        },
+      },
+      required: ['prompt'],
+      additionalProperties: false,
+    },
+  },
+}
+
+/**
+ * When the tool may fire, appended to whichever system prompt resolves.
+ *
+ * ## Why it is appended rather than written into `DEFAULT_SYSTEM_PROMPT`
+ *
+ * `buildUpstreamMessages` picks `SYSTEM_PROMPT || DEFAULT_SYSTEM_PROMPT` — an
+ * either/or, not a merge. Putting this clause in the default would mean any
+ * deployment that sets a custom `SYSTEM_PROMPT` hands the model a working image
+ * generator with no instruction about when to use it, which is worse than not
+ * shipping the feature: the budget behind it is shared by every user of the
+ * deployment and resets once a day. So the clause is appended after the base
+ * prompt, whichever base that turns out to be, and an operator cannot drop it by
+ * accident. This is option (a) of the two the task set out.
+ *
+ * It is *guidance*, not enforcement. `limitToolImage` is the enforcement, and it
+ * exists because a sentence in a prompt has never been a spending control.
+ *
+ * The last two lines are not stylistic. The probe found that a model told the
+ * image is "already attached" often answers with nothing at all, and a model
+ * told only "ok" invents `![...](attachment://...)` for a file that does not
+ * exist. Both were fixed by wording, and both are asserted by phases 3 and 4.
+ */
+const TOOL_USE_CLAUSE = [
+  'You can attach one generated image to a reply by calling the `generate_image` tool.',
+  'Call it only when the user asks to see, visualise, draw, or be shown something —',
+  'never to illustrate an answer nobody asked to see.',
+  'Compose the `prompt` argument yourself from the conversation: the image model reads that',
+  'string and nothing else, so it must stand alone.',
+  'At most one image per reply — every call spends a small budget shared by all users.',
+  'The image is attached to your reply automatically: introduce it in one short sentence,',
+  'and never write a Markdown image link for it.',
+].join(' ')
+
+/** Handed back when the image exists. See the note on `TOOL_USE_CLAUSE`. */
+const TOOL_RESULT_OK = JSON.stringify({
+  status: 'ok',
+  instruction:
+    'The image has been generated and attached to your reply. Introduce it in one short ' +
+    'sentence. Do not write a Markdown image link — the attachment renders on its own.',
+})
+
+/**
+ * Handed back when no image was produced, for any reason.
+ *
+ * The `reason` is shown to the user in the model's own words, so it has to be
+ * something a person can act on — "resets at midnight UTC" rather than a status
+ * code. `Do not retry` matters because the loop below deliberately stops
+ * offering the tool after the first round; a model that retried would spend a
+ * round being refused instead of explaining itself.
+ */
+function toolResultUnavailable(reason: string): string {
+  return JSON.stringify({
+    status: 'unavailable',
+    reason,
+    instruction:
+      'No image was generated and nothing is attached. Tell the user plainly that you could ' +
+      'not make the image and why. Do not retry the tool.',
+  })
+}
+
+/**
+ * How many times the model may be handed a tool result before we stop.
+ *
+ * In practice the loop runs once: the follow-up request deliberately omits
+ * `tools`, so a well-behaved gateway cannot produce a second call. This is the
+ * backstop for one that does anyway — and the generation itself is capped
+ * independently, at one image per turn, by the `file` check in `runToolLoop`.
+ */
+const MAX_TOOL_ROUNDS = 3
 
 interface ChatBody {
   sessionId?: string
@@ -143,7 +271,10 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
   const session = await resolveSession(ctx, body, model.id)
   const turn = await prepareTurn(ctx, body, session.id, model)
 
-  const upstream = buildUpstreamMessages(ctx, turn)
+  // Offered only when there is something behind it. With no `AI` binding the
+  // request body is byte-for-byte what it was before the tool existed.
+  const toolsArmed = resolveImageProviders(ctx.env).length > 0
+  const upstream = buildUpstreamMessages(ctx, turn, toolsArmed)
 
   // The requested registry id applies to the primary only. The backup serves a
   // different catalogue and keeps the model its own config named — see the
@@ -154,25 +285,44 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
   // `persistFailure` blames the one that actually refused last.
   let failed = chain[0]
 
+  const onCrossover: CrossoverReporter = (from, to, err) => {
+    failed = chain.find((cfg) => cfg.provider === to) ?? failed
+    ctx.exec.waitUntil(
+      activity.log(ctx.db, {
+        userId: ctx.user.id,
+        action: 'upstream_failover',
+        severity: 'warn',
+        metadata: {
+          from,
+          to,
+          reason: err.type,
+          upstreamStatus: err.upstreamStatus ?? null,
+          sessionId: session.id,
+        },
+      }),
+    )
+  }
+
   let attempt: UpstreamAttempt
+  let generated: filesDb.PublicFile | null = null
   try {
-    attempt = await completeWithFailover(chain, upstream, ctx.request.signal, (from, to, err) => {
-      failed = chain.find((cfg) => cfg.provider === to) ?? failed
-      ctx.exec.waitUntil(
-        activity.log(ctx.db, {
-          userId: ctx.user.id,
-          action: 'upstream_failover',
-          severity: 'warn',
-          metadata: {
-            from,
-            to,
-            reason: err.type,
-            upstreamStatus: err.upstreamStatus ?? null,
-            sessionId: session.id,
-          },
-        }),
-      )
-    })
+    attempt = await completeWithFailover(
+      chain,
+      upstream,
+      ctx.request.signal,
+      onCrossover,
+      toolsArmed ? [IMAGE_TOOL] : undefined,
+    )
+
+    // Runs entirely in front of `toClientStream`, so the invariant that no
+    // already-open stream is ever restarted still holds structurally rather than
+    // by care — `completeWithFailover` resolves on headers, and nothing below
+    // has written a byte to the client yet. See `peekToolCalls` in `sse.ts`.
+    if (toolsArmed) {
+      const outcome = await runToolLoop(ctx, chain, upstream, attempt, session.id, onCrossover)
+      attempt = outcome.attempt
+      generated = outcome.file
+    }
   } catch (err) {
     // Nothing streamed, so the user turn we just wrote has no answer. Record the
     // failure against the session rather than leaving a silent gap.
@@ -186,8 +336,9 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
     throw err
   }
 
+  const attached = generated
   const stream = toClientStream(attempt.res, (result) => {
-    ctx.exec.waitUntil(persistAssistant(ctx, session, chain, attempt, model, turn, result))
+    ctx.exec.waitUntil(persistAssistant(ctx, session, chain, attempt, model, turn, result, attached))
   })
 
   return new Response(stream, {
@@ -211,6 +362,13 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
       // without waiting for the stream to finish.
       'X-ChatDDB-Session-Id': session.id,
       ...(turn.userMessageId ? { 'X-ChatDDB-Message-Id': turn.userMessageId } : {}),
+      // Set when the model generated an image for this turn. Like
+      // `X-ChatDDB-Upstream` it is deliberately *not* in
+      // `Access-Control-Expose-Headers`, so no browser client can read it yet —
+      // it is here for smoke tests and for whatever renders the attachment
+      // live, which does not exist yet. Until it does, the image appears when
+      // the transcript is next loaded; see the follow-up note in DOCS.md.
+      ...(attached ? { 'X-ChatDDB-Generated-File': attached.id } : {}),
       ...corsHeaders(ctx.request, ctx.env),
     },
   })
@@ -614,9 +772,16 @@ async function imageParts(ctx: AuthedContext, files: FileRow[]): Promise<Content
  * content parts when there are. Text-only requests therefore keep exactly the
  * body AgentRouter is known to accept — the multimodal form is only used when it
  * has to be, and only for a model whose `vision` flag was actually verified.
+ *
+ * `toolsArmed` appends `TOOL_USE_CLAUSE` to whichever base prompt resolved. The
+ * base is still all-or-nothing — a custom `SYSTEM_PROMPT` replaces the default
+ * outright — but the tool constraint is no longer part of that choice, because
+ * an operator dropping it would leave the model holding a budget-spending tool
+ * with no instruction about when to use it. See the note on the clause itself.
  */
-function buildUpstreamMessages(ctx: AuthedContext, turn: Turn): ChatMessage[] {
-  const system = ctx.env.SYSTEM_PROMPT?.trim() || DEFAULT_SYSTEM_PROMPT
+function buildUpstreamMessages(ctx: AuthedContext, turn: Turn, toolsArmed = false): ChatMessage[] {
+  const base = ctx.env.SYSTEM_PROMPT?.trim() || DEFAULT_SYSTEM_PROMPT
+  const system = toolsArmed ? `${base}\n\n${TOOL_USE_CLAUSE}` : base
   const messages: ChatMessage[] = [{ role: 'system', content: system }]
 
   for (const entry of turn.history) {
@@ -635,6 +800,220 @@ function buildUpstreamMessages(ctx: AuthedContext, turn: Turn): ChatMessage[] {
 }
 
 // ---------------------------------------------------------------------------
+// Tool execution
+// ---------------------------------------------------------------------------
+
+/** What the tool rounds settled on: the response to stream, and any image made. */
+interface ToolOutcome {
+  attempt: UpstreamAttempt
+  file: filesDb.PublicFile | null
+}
+
+/**
+ * Runs tool calls until the model answers with prose.
+ *
+ * ## Where this sits
+ *
+ * Between `completeWithFailover` and `toClientStream`, which is the only place
+ * it can sit. `peekToolCalls` reads far enough into the upstream response to
+ * tell a tool call from an answer; on an answer it hands back a replay of that
+ * same stream, so the ordinary path loses nothing and the client still gets
+ * bytes as they arrive.
+ *
+ * ## Why the follow-up request omits `tools`
+ *
+ * The model has had its turn with the tool. Re-offering it invites a second call
+ * that the loop would have to spend a round refusing, and every round is another
+ * full round trip in front of the user's first token. `MAX_TOOL_ROUNDS` is the
+ * backstop for a gateway that produces one anyway.
+ *
+ * ## At most one image per turn
+ *
+ * Enforced by the `file` check, not by asking nicely: once something has been
+ * generated, every further call in this turn is answered "unavailable" without
+ * touching a provider. The rate limits are a per-day budget; this is the
+ * per-turn one, and it is what stops a single confused turn from spending five
+ * images before the daily cap notices.
+ */
+async function runToolLoop(
+  ctx: AuthedContext,
+  chain: UpstreamConfig[],
+  messages: ChatMessage[],
+  first: UpstreamAttempt,
+  sessionId: string,
+  onCrossover: CrossoverReporter,
+): Promise<ToolOutcome> {
+  let attempt = first
+  let file: filesDb.PublicFile | null = null
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const peek = await peekToolCalls(attempt.res)
+    if (peek.kind === 'text') return { attempt: { ...attempt, res: peek.res }, file }
+
+    // Echoed back verbatim before the results, as the protocol requires: the
+    // model matches each result to its call by `tool_call_id`.
+    messages.push({ role: 'assistant', content: null, tool_calls: peek.calls })
+
+    for (const call of peek.calls) {
+      const { payload, generated } = await runToolCall(ctx, sessionId, call, file !== null)
+      if (generated) file = generated
+      messages.push({ role: 'tool', tool_call_id: call.id, content: payload })
+    }
+
+    attempt = await completeWithFailover(chain, messages, ctx.request.signal, onCrossover)
+  }
+
+  // The model kept calling tools past the cap. Stream whatever the last response
+  // holds rather than looping: it is a real answer more often than not, and
+  // `peekToolCalls` has already turned it back into a replayable stream.
+  console.warn('[chatddb] tool loop hit %d rounds for session %s', MAX_TOOL_ROUNDS, sessionId)
+  const last = await peekToolCalls(attempt.res)
+  return {
+    attempt: { ...attempt, res: last.kind === 'text' ? last.res : attempt.res },
+    file,
+  }
+}
+
+/**
+ * Executes one call and returns the JSON the model gets back.
+ *
+ * Never throws. Every failure — a bad argument, a spent budget, a provider that
+ * refused — becomes an `unavailable` result carrying a reason in plain words,
+ * because the alternative is a turn that dies after the user's message was
+ * already committed. The model then explains it, which the probe's phase 4
+ * confirms it does reliably.
+ */
+async function runToolCall(
+  ctx: AuthedContext,
+  sessionId: string,
+  call: ToolCall,
+  alreadyGenerated: boolean,
+): Promise<{ payload: string; generated: filesDb.PublicFile | null }> {
+  if (call.function.name !== IMAGE_TOOL_NAME) {
+    // Nothing else is offered, so this is a gateway echoing a tool we never sent
+    // or a model inventing one. Answered rather than ignored: an unanswered
+    // `tool_call_id` makes the next request malformed.
+    return {
+      payload: toolResultUnavailable(`There is no \`${call.function.name}\` tool available.`),
+      generated: null,
+    }
+  }
+
+  if (alreadyGenerated) {
+    return {
+      payload: toolResultUnavailable('Only one image can be attached to a reply.'),
+      generated: null,
+    }
+  }
+
+  let prompt = ''
+  try {
+    const args = JSON.parse(call.function.arguments || '{}') as { prompt?: unknown }
+    if (typeof args.prompt === 'string') prompt = args.prompt.trim()
+  } catch {
+    /* reported as an unusable prompt below */
+  }
+  if (!prompt) {
+    return {
+      payload: toolResultUnavailable('The image request arrived without a usable prompt.'),
+      generated: null,
+    }
+  }
+  // The model has no reason to know flux-1-schnell's ceiling, and a prompt over
+  // it would be refused upstream after the budget was already spent.
+  prompt = prompt.slice(0, MAX_PROMPT_CHARS)
+
+  // Both budgets, tighter one first. `limitToolImage` is the one likely to
+  // refuse, and consuming the shared per-user counter before finding that out
+  // would cost the user an image they could otherwise have asked for by hand.
+  try {
+    await limitToolImage(ctx)
+    await limitImage(ctx)
+  } catch (err) {
+    if (err instanceof ApiError) return { payload: toolResultUnavailable(err.message), generated: null }
+    throw err
+  }
+
+  try {
+    const providers = requireImageProviders(ctx)
+    const bucket = requireBucket(ctx.env.FILES)
+    const { image, file } = await generateAndStore(ctx, bucket, providers, sessionId, prompt)
+
+    // The same row `POST /api/images` writes, with `kind: 'tool'` as the only
+    // difference — so admin visibility does not depend on which path drew it.
+    ctx.exec.waitUntil(
+      activity.log(
+        ctx.db,
+        imageGeneratedLog({
+          ctx,
+          sessionId,
+          fileId: file.id,
+          image,
+          steps: providers[0].provider === 'workers-ai' ? providers[0].steps : undefined,
+          kind: 'tool',
+        }),
+      ),
+    )
+    return { payload: TOOL_RESULT_OK, generated: file }
+  } catch (err) {
+    const message = err instanceof ApiError ? err.message : 'Image generation failed.'
+    console.error('[chatddb] generate_image tool failed for session %s: %s', sessionId, err)
+    ctx.exec.waitUntil(
+      activity.log(ctx.db, {
+        userId: ctx.user.id,
+        action: 'image_failed',
+        severity: 'warn',
+        metadata: { sessionId, kind: 'tool', reason: err instanceof ApiError ? err.type : 'unknown' },
+        ipHash: ctx.ipHash,
+        userAgent: ctx.userAgent,
+      }),
+    )
+    return { payload: toolResultUnavailable(message), generated: null }
+  }
+}
+
+/**
+ * The tool's own daily budget, on top of the user's ordinary image budget.
+ *
+ * A separate `'tool_image'` action rather than a share of `'image'`, so the two
+ * cannot drain each other: a tool-triggered generation spends *both*, while the
+ * composer button spends only the human one. Deliberately a quarter of it by
+ * default — see `RATE_TOOL_IMAGE_PER_DAY` in `env.ts`.
+ *
+ * The reason it exists at all is that `TOOL_USE_CLAUSE` is a sentence in a
+ * prompt. A model that reads it differently than intended, on any given day,
+ * must not be able to spend the whole deployment's shared allowance before
+ * anyone notices; prompting is a hint and this is the budget.
+ *
+ * Minute-window only through `limitImage`: this cap is about the daily total,
+ * and the burst is already bounded by the same call.
+ */
+async function limitToolImage(ctx: AuthedContext): Promise<void> {
+  const verdict = await ratelimit.consume(ctx.db, `user:${ctx.user.id}`, 'tool_image', [
+    { kind: 'day', max: ctx.policy.rateToolImagePerDay },
+  ])
+  if (verdict.allowed) return
+
+  await activity.log(ctx.db, {
+    userId: ctx.user.id,
+    action: 'rate_limited',
+    severity: 'warn',
+    metadata: { action: 'tool_image', window: verdict.kind, limit: verdict.limit, count: verdict.count },
+    ipHash: ctx.ipHash,
+    userAgent: ctx.userAgent,
+  })
+  // Phrased for the model to relay, not for an HTTP client to parse: this
+  // message is on its way into `toolResultUnavailable` and then into a sentence
+  // the user reads.
+  throw new ApiError(
+    429,
+    'tool_image_rate_limited',
+    `You have reached today's limit of ${ctx.policy.rateToolImagePerDay} generated images. ` +
+      'It resets at midnight UTC.',
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Post-stream persistence
 // ---------------------------------------------------------------------------
 
@@ -649,6 +1028,12 @@ function buildUpstreamMessages(ctx: AuthedContext, turn: Turn): ChatMessage[] {
  * The session title is settled here too, for the same reason: naming costs an
  * extra upstream round-trip, and nothing about it should be in front of the
  * user's first token.
+ *
+ * `file` is the image the `generate_image` tool drew during this turn, if it
+ * fired. It attaches to the *assistant* row rather than the user's, so
+ * `listForSession` groups it under the reply that describes it — the same shape
+ * `POST /api/images` already writes, and therefore no change at all to the
+ * transcript path that reads it back.
  */
 async function persistAssistant(
   ctx: AuthedContext,
@@ -658,6 +1043,7 @@ async function persistAssistant(
   model: ModelSpec,
   turn: Turn,
   result: StreamResult,
+  file: filesDb.PublicFile | null,
 ): Promise<void> {
   const sessionId = session.id
   const fromUpstream = result.usage !== null
@@ -684,6 +1070,7 @@ async function persistAssistant(
     tokenSource: fromUpstream ? 'upstream' : 'estimate',
     finishReason: result.finishReason,
     error: result.error,
+    attachmentCount: file ? 1 : 0,
   })
 
   // Awaited before the batch so the retitle can join the same transaction. A
@@ -696,6 +1083,10 @@ async function persistAssistant(
 
   const statements = [inserted.stmt, sessionsDb.touchStmt(sessionId, 1, model.id)]
   if (title) statements.push(sessionsDb.retitleStmt(sessionId, title))
+  // The file row already exists and is already `stored` — the tool wrote it
+  // mid-turn. All that is left is pointing it at a message id that could not be
+  // known until now, which is why this cannot happen at generation time.
+  if (file) statements.push(filesDb.attachToMessageStmt([file.id], inserted.id, sessionId, ctx.user.id))
 
   try {
     await batch(ctx.db, statements)

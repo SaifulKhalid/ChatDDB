@@ -32,7 +32,7 @@ export const DEFAULT_TIMEOUT_MS = 180_000
 /** Which gateway a config points at. Labels logs and `chat_messages.model_provider`. */
 export type ProviderId = 'agentrouter' | 'freemodel'
 
-export type ChatRole = 'system' | 'user' | 'assistant'
+export type ChatRole = 'system' | 'user' | 'assistant' | 'tool'
 
 /**
  * A multimodal content part, in OpenAI's shape.
@@ -45,9 +45,42 @@ export type ContentPart =
   | { type: 'text'; text: string }
   | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }
 
+/**
+ * A tool the model may call, in OpenAI's `tools` shape.
+ *
+ * Sent only when the caller supplies one — a request with no tools keeps exactly
+ * the body every gateway here is known to accept, which is the same rule
+ * `ContentPart` follows for images.
+ */
+export interface ToolDefinition {
+  type: 'function'
+  function: {
+    name: string
+    description: string
+    /** JSON Schema for the arguments. Passed through verbatim. */
+    parameters: Record<string, unknown>
+  }
+}
+
+/** One call the model asked for. `arguments` is JSON *as a string*, per OpenAI. */
+export interface ToolCall {
+  id: string
+  type: 'function'
+  function: { name: string; arguments: string }
+}
+
 export interface ChatMessage {
   role: ChatRole
-  content: string | ContentPart[]
+  /**
+   * Null on an assistant turn that is purely a tool call — the model said
+   * nothing, it only asked for something. Gateways reject `undefined` here but
+   * accept an explicit null.
+   */
+  content: string | ContentPart[] | null
+  /** Present on an assistant turn the model answered with tool calls. */
+  tool_calls?: ToolCall[]
+  /** Required on a `role: 'tool'` message: which call this is the result of. */
+  tool_call_id?: string
 }
 
 export interface UpstreamConfig {
@@ -170,7 +203,7 @@ export function upstreamHeaders(cfg: UpstreamConfig, apiKey: string): HeadersIni
   }
 }
 
-function buildBody(cfg: UpstreamConfig, messages: ChatMessage[]): string {
+function buildBody(cfg: UpstreamConfig, messages: ChatMessage[], tools?: ToolDefinition[]): string {
   const body: Record<string, unknown> = {
     model: cfg.model,
     messages,
@@ -184,6 +217,13 @@ function buildBody(cfg: UpstreamConfig, messages: ChatMessage[]): string {
   // params are sent to anyone — the cap parameter itself is per-gateway.
   if (cfg.maxOutputTokens > 0) body[cfg.tokenParam] = cfg.maxOutputTokens
   if (cfg.reasoningEffort && cfg.sendReasoningEffort) body.reasoning_effort = cfg.reasoningEffort
+  // Omitted entirely when there are none, so a request that wants no tools keeps
+  // byte-for-byte the body every gateway here is known to accept. Same rule the
+  // multimodal content parts follow.
+  if (tools && tools.length > 0) {
+    body.tools = tools
+    body.tool_choice = 'auto'
+  }
   return JSON.stringify(body)
 }
 
@@ -214,6 +254,15 @@ export interface CompletionOptions {
    * backup gateway is metered.
    */
   crossFast?: boolean
+  /**
+   * Tools to offer the model. Omitted from the body entirely when absent.
+   *
+   * Verified against AgentRouter by `npm run probe:tools` before this existed:
+   * `gpt-5.6-sol` returns `tool_calls` over a streaming request 5/5 times, with
+   * the arguments arriving as `delta.tool_calls` fragments. `sse.ts` is what
+   * reassembles them — see `peekToolCalls` there.
+   */
+  tools?: ToolDefinition[]
 }
 
 /**
@@ -234,7 +283,7 @@ export async function createChatCompletion(
 ): Promise<Response> {
   const crossFast = options.crossFast ?? false
   const url = `${cfg.baseUrl}/chat/completions`
-  const body = buildBody(cfg, messages)
+  const body = buildBody(cfg, messages, options.tools)
   let lastError: unknown
 
   for (let keyIndex = 0; keyIndex < cfg.apiKeys.length; keyIndex++) {

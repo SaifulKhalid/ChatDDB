@@ -25,7 +25,12 @@
 import { batch, first, run, stmt } from '../db/client.ts'
 import { rateLimited } from './http.ts'
 
-export type RateAction = 'chat' | 'upload' | 'auth' | 'admin' | 'image'
+/**
+ * `tool_image` is its own action, not a variant of `image`, so the two counters
+ * cannot drain each other: a tool-triggered generation consumes *both* budgets,
+ * while the button consumes only the human one.
+ */
+export type RateAction = 'chat' | 'upload' | 'auth' | 'admin' | 'image' | 'tool_image'
 export type WindowKind = 'minute' | 'day'
 
 const PERIOD_MS: Record<WindowKind, number> = {
