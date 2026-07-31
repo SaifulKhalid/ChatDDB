@@ -1,27 +1,35 @@
-# Dependencies
-node_modules/
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# Wrangler
-.wrangler/
+node_modules
+dist
+dist-ssr
+*.local
+
+# Smoke-test artifacts
+shots/
+
+# Secrets (AgentRouter key etc.)
+.env
 .dev.vars
+SECRETS.md
 
-# Build output
-dist/
+# Wrangler build cache / local state
+.wrangler
 
-# OS files
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
 .DS_Store
-Thumbs.db
-
-# Next.js build artifacts
-web/.next/
-web/out/
-
-# Vercel
-.vercel/
-
-# Editor
-.vscode/
-.idea/
-*.swp
-*.swo
-nul
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

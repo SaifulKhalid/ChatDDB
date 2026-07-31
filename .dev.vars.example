@@ -1,7 +1,34 @@
-# Copy this file to .dev.vars and fill in your API keys for local development.
-# .dev.vars is gitignored and used by `wrangler dev` to inject secrets locally.
+# ChatDDB — local Worker secrets
+#
+# 1. Copy this file to `.dev.vars` (same directory). `.dev.vars` is gitignored.
+# 2. Paste your AgentRouter key(s) below (get one at https://agentrouter.org/console/token).
+# 3. Run `npm run dev:all`.
+#
+# For the deployed Worker, set them as real secrets instead:
+#   npx wrangler secret put AGENTROUTER_API_KEY
+#   npx wrangler secret put AGENTROUTER_API_KEY_2
+#   npx wrangler secret put AGENTROUTER_API_KEY_3
 
-GROQ_API_KEY=your_groq_api_key_here
-GEMINI_API_KEY=your_gemini_api_key_here
-AGENTROUTER_API_KEY=your_agentrouter_api_key_here
-OPENROUTER_API_KEY=your_openrouter_api_key_here
+AGENTROUTER_API_KEY=sk-replace-me
+# AGENTROUTER_API_KEY_2=sk-replace-me
+# AGENTROUTER_API_KEY_3=sk-replace-me
+
+# The silent fallback gateway (optional). With this set, an AgentRouter outage
+# stops being visible: freemodel.dev answers instead, and the user is not told.
+# Get a key at https://freemodel.dev — it is metered ($5 signup credit, then
+# paid), so watch for `upstream_failover` rows in the admin activity log.
+# Deployed:  npm run secret:freemodel
+# FREEMODEL_API_KEY=fm-replace-me
+
+# Optional overrides — defaults live in wrangler.jsonc `vars`.
+# AGENTROUTER_MODEL=gpt-5.6-sol
+# AGENTROUTER_BASE_URL=https://agentrouter.org/v1
+# MAX_OUTPUT_TOKENS=8192
+# REASONING_EFFORT=medium
+# FREEMODEL_MODEL=gpt-5.5
+# FREEMODEL_BASE_URL=https://freemodel.dev/v1
+# FALLBACK_ENABLED=false          # kill switch: stops crossover, keeps the key
+# Both of these are answers `npm run probe:freemodel` gives you. Only set them
+# if the probe says the defaults are wrong for the model you picked.
+# FREEMODEL_TOKEN_PARAM=max_tokens
+# FREEMODEL_REASONING_EFFORT=false

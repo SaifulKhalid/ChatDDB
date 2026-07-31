@@ -1,0 +1,167 @@
+/**
+ * The Worker's environment, declared by hand.
+ *
+ * Not extending the generated `Env` from `wrangler types` is deliberate: that
+ * generator infers secrets from whatever happens to sit in `.dev.vars`, so the
+ * inferred shape differs between machines and CI. This file is the contract.
+ *
+ * Secrets are optional in the type because a Worker can legitimately boot
+ * without them -- `/api/health` reports what is missing instead of throwing.
+ */
+
+export interface WorkerEnv {
+  // ---- Bindings -----------------------------------------------------------
+  /** D1 `chatddb-f5-db`. Absent only if the binding was removed. */
+  DB?: D1Database
+  /** R2 `chatddb-f5-storage`. */
+  FILES?: R2Bucket
+  /**
+   * Workers AI, for `POST /api/images`.
+   *
+   * Optional like every other binding here: with it absent the image route
+   * reports itself unconfigured and the composer hides its toggle, exactly as
+   * the chat route does without an upstream key.
+   */
+  AI?: Ai
+
+  // ---- Secrets (`wrangler secret put` / .dev.vars) ------------------------
+  /** Primary AgentRouter API key. */
+  AGENTROUTER_API_KEY?: string
+  /** Fallback AgentRouter API key (tried when the primary fails). */
+  AGENTROUTER_API_KEY_2?: string
+  /** Secondary fallback AgentRouter API key. */
+  AGENTROUTER_API_KEY_3?: string
+  /** Salt for `ip_hash`. Rotating it deliberately breaks old correlations. */
+  IP_HASH_SALT?: string
+  /** HMAC key for short-lived signed file-view URLs. */
+  FILE_URL_SECRET?: string
+  /**
+   * freemodel.dev API key — the silent fallback gateway.
+   *
+   * Optional on purpose: with it unset the Worker behaves exactly as it did
+   * before failover existed, single-provider and all. Setting it is what arms
+   * the backup.
+   */
+  FREEMODEL_API_KEY?: string
+
+  // ---- AgentRouter (existing, unchanged) ----------------------------------
+  AGENTROUTER_MODEL?: string
+  AGENTROUTER_BASE_URL?: string
+  AGENTROUTER_USER_AGENT?: string
+  MAX_OUTPUT_TOKENS?: string
+  UPSTREAM_TIMEOUT_MS?: string
+  REASONING_EFFORT?: string
+  SYSTEM_PROMPT?: string
+
+  // ---- Fallback gateway ---------------------------------------------------
+  /** Which freemodel model answers when AgentRouter cannot. Default `gpt-5.5`. */
+  FREEMODEL_MODEL?: string
+  /** Default `https://freemodel.dev/v1`. Note: *not* the `api.` host. */
+  FREEMODEL_BASE_URL?: string
+  /**
+   * Kill switch. `'false'` disables crossover even with a key present, so a
+   * runaway failover can be stopped without unsetting the secret — the fallback
+   * is metered, and a primary that fails on every request would spend it.
+   */
+  FALLBACK_ENABLED?: string
+  /** `max_completion_tokens` (default) or `max_tokens` — set from the probe. */
+  FREEMODEL_TOKEN_PARAM?: string
+  /** `'false'` to stop sending `reasoning_effort` — set from the probe. */
+  FREEMODEL_REASONING_EFFORT?: string
+
+  // ---- Image generation ---------------------------------------------------
+  /** Workers AI model id. Default `@cf/black-forest-labs/flux-1-schnell`. */
+  IMAGE_MODEL?: string
+  /** `'false'` disables image generation without removing the AI binding. */
+  IMAGE_ENABLED?: string
+  /** Diffusion steps, 1-8. More is slower and costs 9.6 neurons each. */
+  IMAGE_STEPS?: string
+  RATE_IMAGE_PER_MIN?: string
+  RATE_IMAGE_PER_DAY?: string
+
+  // ---- Auth ---------------------------------------------------------------
+  /** Firebase project id. A public identifier, so a var and not a secret. */
+  FIREBASE_PROJECT_ID?: string
+  /** Comma-separated emails promoted to `admin` on login. */
+  ADMIN_EMAILS?: string
+
+  // ---- Policy -------------------------------------------------------------
+  /** Comma-separated CORS allowlist. Replaces the old echo-any-origin rule. */
+  ALLOWED_ORIGINS?: string
+  MAX_IMAGE_BYTES?: string
+  MAX_PDF_BYTES?: string
+  MAX_ATTACHMENTS_PER_MESSAGE?: string
+  /** `client` (Free plan, pdf.js in the browser) or `worker` (Paid, unpdf). */
+  PDF_EXTRACT_MODE?: string
+  PDF_MAX_PAGES?: string
+  PDF_CONTEXT_CHARS?: string
+  HISTORY_MAX_TURNS?: string
+  RATE_CHAT_PER_MIN?: string
+  RATE_CHAT_PER_DAY?: string
+  RATE_UPLOAD_PER_MIN?: string
+  RATE_UPLOAD_PER_DAY?: string
+  RATE_AUTH_PER_MIN?: string
+  RATE_ADMIN_PER_MIN?: string
+  ACTIVITY_RETENTION_DAYS?: string
+}
+
+/** Parses an integer var, falling back when unset, unparseable, or negative. */
+export function intVar(raw: string | undefined, fallback: number): number {
+  const n = Number.parseInt(raw ?? '', 10)
+  return Number.isFinite(n) && n >= 0 ? n : fallback
+}
+
+/** Splits a comma-separated var into trimmed, non-empty entries. */
+export function listVar(raw: string | undefined): string[] {
+  return (raw ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+}
+
+/** Effective policy numbers, resolved once per request from `env`. */
+export interface Policy {
+  maxImageBytes: number
+  maxPdfBytes: number
+  maxAttachmentsPerMessage: number
+  pdfExtractMode: 'client' | 'worker'
+  pdfMaxPages: number
+  pdfContextChars: number
+  historyMaxTurns: number
+  rateChatPerMin: number
+  rateChatPerDay: number
+  rateUploadPerMin: number
+  rateUploadPerDay: number
+  rateAuthPerMin: number
+  rateAdminPerMin: number
+  rateImagePerMin: number
+  rateImagePerDay: number
+  imageSteps: number
+  activityRetentionDays: number
+}
+
+export function resolvePolicy(env: WorkerEnv): Policy {
+  return {
+    maxImageBytes: intVar(env.MAX_IMAGE_BYTES, 10 * 1024 * 1024),
+    maxPdfBytes: intVar(env.MAX_PDF_BYTES, 25 * 1024 * 1024),
+    maxAttachmentsPerMessage: intVar(env.MAX_ATTACHMENTS_PER_MESSAGE, 4),
+    // Anything but an explicit `worker` means client-side extraction: the Free
+    // plan's 10 ms CPU ceiling cannot parse a PDF, so this fails safe.
+    pdfExtractMode: env.PDF_EXTRACT_MODE?.trim() === 'worker' ? 'worker' : 'client',
+    pdfMaxPages: intVar(env.PDF_MAX_PAGES, 50),
+    pdfContextChars: intVar(env.PDF_CONTEXT_CHARS, 24_000),
+    historyMaxTurns: intVar(env.HISTORY_MAX_TURNS, 30),
+    rateChatPerMin: intVar(env.RATE_CHAT_PER_MIN, 20),
+    rateChatPerDay: intVar(env.RATE_CHAT_PER_DAY, 300),
+    rateUploadPerMin: intVar(env.RATE_UPLOAD_PER_MIN, 10),
+    rateUploadPerDay: intVar(env.RATE_UPLOAD_PER_DAY, 100),
+    rateAuthPerMin: intVar(env.RATE_AUTH_PER_MIN, 30),
+    rateAdminPerMin: intVar(env.RATE_ADMIN_PER_MIN, 120),
+    rateImagePerMin: intVar(env.RATE_IMAGE_PER_MIN, 3),
+    rateImagePerDay: intVar(env.RATE_IMAGE_PER_DAY, 20),
+    // Clamped, not just defaulted: flux-1-schnell rejects anything outside 1-8,
+    // and a misconfigured var should cost a worse image, not every request.
+    imageSteps: Math.min(8, Math.max(1, intVar(env.IMAGE_STEPS, 4))),
+    activityRetentionDays: intVar(env.ACTIVITY_RETENTION_DAYS, 90),
+  }
+}

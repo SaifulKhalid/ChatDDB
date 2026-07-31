@@ -1,0 +1,473 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans:
+    ui-sans-serif, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    sans-serif;
+  --font-mono:
+    ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
+
+  /* ChatDDB surface palette (ChatGPT-style) */
+  --color-surface: #ffffff;
+  --color-surface-2: #f9f9f9;
+  --color-surface-3: #ececec;
+  --color-ink: #0d0d0d;
+  --color-ink-2: #5d5d5d;
+  --color-line: #e4e4e7;
+  --color-bubble: #e9e9e980;
+  --color-accent: #10a37f;
+}
+
+.dark {
+  --color-surface: #212121;
+  --color-surface-2: #171717;
+  --color-surface-3: #2f2f2f;
+  --color-ink: #ececec;
+  --color-ink-2: #a6a6a6;
+  --color-line: #ffffff1a;
+  --color-bubble: #2f2f2f;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-surface text-ink antialiased;
+  overscroll-behavior: none;
+}
+
+/* ---- Scrollbars ---- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, currentColor 22%, transparent) transparent;
+}
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  background: color-mix(in srgb, currentColor 22%, transparent);
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---- Blinking streaming cursor ---- */
+.stream-cursor::after {
+  content: '';
+  display: inline-block;
+  width: 0.55em;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  border-radius: 2px;
+  background: currentColor;
+  animation: blink 1s steps(2, start) infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* ---- Markdown content ---- */
+.markdown {
+  line-height: 1.75;
+  word-break: break-word;
+}
+.markdown > *:first-child {
+  margin-top: 0;
+}
+.markdown > *:last-child {
+  margin-bottom: 0;
+}
+.markdown p {
+  margin: 0.75rem 0;
+}
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  font-weight: 600;
+  margin: 1.25rem 0 0.5rem;
+}
+.markdown h1 {
+  font-size: 1.35rem;
+}
+.markdown h2 {
+  font-size: 1.2rem;
+}
+.markdown h3 {
+  font-size: 1.05rem;
+}
+.markdown ul,
+.markdown ol {
+  margin: 0.75rem 0;
+  padding-left: 1.5rem;
+}
+.markdown ul {
+  list-style: disc;
+}
+.markdown ol {
+  list-style: decimal;
+}
+.markdown li {
+  margin: 0.3rem 0;
+}
+.markdown li > ul,
+.markdown li > ol {
+  margin: 0.25rem 0;
+}
+.markdown a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown blockquote {
+  border-left: 3px solid var(--color-line);
+  padding-left: 1rem;
+  margin: 0.75rem 0;
+  color: var(--color-ink-2);
+}
+.markdown hr {
+  border: none;
+  border-top: 1px solid var(--color-line);
+  margin: 1.25rem 0;
+}
+.markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+.markdown :not(pre) > code {
+  background: var(--color-surface-3);
+  border-radius: 0.3rem;
+  padding: 0.15em 0.35em;
+}
+.markdown pre {
+  margin: 1rem 0;
+  border-radius: 0.75rem;
+  overflow: hidden;
+  border: 1px solid var(--color-line);
+}
+.markdown pre code {
+  display: block;
+  overflow-x: auto;
+  padding: 1rem;
+  background: #f6f8fa;
+}
+.dark .markdown pre code {
+  background: #0d0d0d;
+}
+
+/* Framed code block: the <pre> is wrapped by CodeBlock.tsx with a header
+   carrying the language label and a copy button, so the frame moves out
+   onto the wrapper and the inner <pre> goes flush. */
+.markdown .code-block {
+  margin: 1rem 0;
+  border: 1px solid var(--color-line);
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+.markdown .code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.25rem 0.35rem 0.25rem 0.75rem;
+  background: var(--color-surface-2);
+  border-bottom: 1px solid var(--color-line);
+}
+.markdown .code-block pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+.markdown table {
+  border-collapse: collapse;
+  margin: 1rem 0;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  font-size: 0.925em;
+}
+.markdown th,
+.markdown td {
+  border: 1px solid var(--color-line);
+  padding: 0.4rem 0.75rem;
+  text-align: left;
+}
+.markdown th {
+  background: var(--color-surface-2);
+  font-weight: 600;
+}
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  font-size: 1rem;
+}
+.markdown h5,
+.markdown h6 {
+  font-weight: 600;
+  margin: 1.25rem 0 0.5rem;
+}
+.markdown h6 {
+  color: var(--color-ink-2);
+}
+.markdown strong {
+  font-weight: 600;
+}
+.markdown del {
+  text-decoration: line-through;
+  color: var(--color-ink-2);
+}
+.markdown img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.5rem;
+  margin: 1rem 0;
+}
+/* Keeps footnote markers and exponents from stretching the line box. */
+.markdown sub,
+.markdown sup {
+  font-size: 0.75em;
+  line-height: 0;
+  position: relative;
+}
+.markdown sup {
+  top: -0.5em;
+}
+.markdown sub {
+  bottom: -0.25em;
+}
+
+/* GFM task lists. remark-gfm emits `<li class="task-list-item">` with a
+   disabled checkbox, which needs the marker removed and the bullet's indent
+   given back — the checkbox itself stands in for the bullet. */
+.markdown ul.contains-task-list {
+  list-style: none;
+  padding-left: 0.25rem;
+}
+.markdown li.task-list-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.markdown li.task-list-item input[type='checkbox'] {
+  /* `disabled` renders washed out in most browsers; accent-color restores
+     enough contrast to read the checked state at a glance. */
+  accent-color: var(--color-accent);
+  margin: 0;
+  flex-shrink: 0;
+  /* baseline-aligned flex items sit a touch high against the first text line */
+  transform: translateY(0.15em);
+}
+.markdown li.task-list-item > ul,
+.markdown li.task-list-item > ol {
+  /* A nested list inside a flex item would otherwise sit beside the label. */
+  flex-basis: 100%;
+}
+
+/* Footnotes. remark-gfm appends a `<section class="footnotes">` whose heading
+   is marked `.sr-only` — a Tailwind utility that will NOT be generated here,
+   because Tailwind scans source files and this class only ever appears in
+   markdown rendered at runtime. So it is spelled out. */
+.markdown .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border-width: 0;
+}
+.markdown .footnotes {
+  margin-top: 1.5rem;
+  border-top: 1px solid var(--color-line);
+  padding-top: 0.5rem;
+  font-size: 0.9em;
+  color: var(--color-ink-2);
+}
+.markdown .footnotes ol {
+  margin: 0.5rem 0;
+}
+.markdown .data-footnote-backref {
+  text-decoration: none;
+  margin-left: 0.25rem;
+}
+
+/* ---- KaTeX ----
+   The stylesheet itself is imported in main.tsx so Vite can rebase its font
+   url()s; these are only the overrides that make it sit in our type scale. */
+.markdown .katex {
+  /* KaTeX defaults to 1.21em, which reads oversized next to 1.75 line-height
+     body copy and shifts the baseline of any line containing inline math. */
+  font-size: 1.05em;
+}
+.markdown .katex-display {
+  /* A long derivation scrolls rather than widening the whole chat column.
+     Vertical padding leaves room for the scrollbar without clipping
+     descenders on \sum / \int. */
+  margin: 1rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.5rem 0;
+}
+/* `throwOnError: false` renders unparseable LaTeX as this span holding the
+   raw source. With errorColor: 'currentColor' it reads as ordinary text —
+   deliberate, since every formula is briefly malformed while streaming. A
+   dotted underline still marks it as unrendered once the stream settles. */
+.markdown .katex-error {
+  color: inherit;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  text-decoration: underline dotted var(--color-ink-2);
+  text-underline-offset: 3px;
+}
+
+/* ---- highlight.js (github light / dark) ---- */
+.hljs {
+  color: #24292e;
+}
+.hljs-keyword,
+.hljs-doctag,
+.hljs-template-tag,
+.hljs-type,
+.hljs-variable.language_ {
+  color: #d73a49;
+}
+.hljs-title,
+.hljs-title.class_,
+.hljs-title.function_ {
+  color: #6f42c1;
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-literal,
+.hljs-meta,
+.hljs-number,
+.hljs-operator,
+.hljs-selector-attr,
+.hljs-selector-class,
+.hljs-selector-id,
+.hljs-variable {
+  color: #005cc5;
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-meta .hljs-string {
+  color: #032f62;
+}
+.hljs-built_in,
+.hljs-symbol {
+  color: #e36209;
+}
+.hljs-comment,
+.hljs-code,
+.hljs-formula {
+  color: #6a737d;
+}
+.hljs-name,
+.hljs-quote,
+.hljs-selector-tag,
+.hljs-selector-pseudo {
+  color: #22863a;
+}
+.hljs-subst {
+  color: #24292e;
+}
+.hljs-section {
+  color: #005cc5;
+  font-weight: bold;
+}
+.hljs-bullet {
+  color: #735c0f;
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: bold;
+}
+.hljs-addition {
+  color: #22863a;
+  background-color: #f0fff4;
+}
+.hljs-deletion {
+  color: #b31d28;
+  background-color: #ffeef0;
+}
+
+.dark .hljs {
+  color: #c9d1d9;
+}
+.dark .hljs-keyword,
+.dark .hljs-doctag,
+.dark .hljs-template-tag,
+.dark .hljs-type,
+.dark .hljs-variable.language_ {
+  color: #ff7b72;
+}
+.dark .hljs-title,
+.dark .hljs-title.class_,
+.dark .hljs-title.function_ {
+  color: #d2a8ff;
+}
+.dark .hljs-attr,
+.dark .hljs-attribute,
+.dark .hljs-literal,
+.dark .hljs-meta,
+.dark .hljs-number,
+.dark .hljs-operator,
+.dark .hljs-selector-attr,
+.dark .hljs-selector-class,
+.dark .hljs-selector-id,
+.dark .hljs-variable {
+  color: #79c0ff;
+}
+.dark .hljs-string,
+.dark .hljs-regexp,
+.dark .hljs-meta .hljs-string {
+  color: #a5d6ff;
+}
+.dark .hljs-built_in,
+.dark .hljs-symbol {
+  color: #ffa657;
+}
+.dark .hljs-comment,
+.dark .hljs-code,
+.dark .hljs-formula {
+  color: #8b949e;
+}
+.dark .hljs-name,
+.dark .hljs-quote,
+.dark .hljs-selector-tag,
+.dark .hljs-selector-pseudo {
+  color: #7ee787;
+}
+.dark .hljs-subst {
+  color: #c9d1d9;
+}
+.dark .hljs-section {
+  color: #1f6feb;
+  font-weight: bold;
+}
+.dark .hljs-bullet {
+  color: #f2cc60;
+}
+.dark .hljs-addition {
+  color: #aff5b4;
+  background-color: #033a16;
+}
+.dark .hljs-deletion {
+  color: #ffdcd7;
+  background-color: #67060c;
+}

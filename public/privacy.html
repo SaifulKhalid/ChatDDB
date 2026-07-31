@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <title>ChatDDB by LabDDB — Privacy notice</title>
+    <!--
+      Served as a real file from public/, so the SPA fallback never sees it and
+      it works with JavaScript disabled.
+
+      This page is the *single* user-facing copy of the privacy notice. The
+      login screen and the user menu both link here, and the docs link here
+      rather than restating the text — two copies of a privacy notice is how one
+      of them ends up out of date, and the stale one is the one people read.
+    -->
+    <style>
+      :root {
+        color-scheme: light dark;
+        --ink: #0d0d0d;
+        --ink-2: #5d5d5d;
+        --surface: #ffffff;
+        --surface-2: #f9f9f9;
+        --line: #e4e4e7;
+        --accent: #10a37f;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --ink: #ececec;
+          --ink-2: #a6a6a6;
+          --surface: #212121;
+          --surface-2: #171717;
+          --line: #ffffff1a;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 3rem 1.25rem 6rem;
+        background: var(--surface);
+        color: var(--ink);
+        font:
+          16px/1.7 ui-sans-serif,
+          -apple-system,
+          'Segoe UI',
+          Roboto,
+          sans-serif;
+      }
+      main {
+        max-width: 44rem;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.6rem;
+        letter-spacing: -0.01em;
+        margin: 0 0 0.25rem;
+      }
+      h2 {
+        font-size: 1.05rem;
+        margin: 2.25rem 0 0.5rem;
+      }
+      .updated {
+        color: var(--ink-2);
+        font-size: 0.85rem;
+        margin: 0 0 2rem;
+      }
+      p,
+      li {
+        color: var(--ink-2);
+      }
+      strong {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      ul {
+        padding-left: 1.25rem;
+      }
+      li {
+        margin: 0.4rem 0;
+      }
+      code {
+        font-family: ui-monospace, Consolas, monospace;
+        font-size: 0.85em;
+        background: var(--surface-2);
+        border: 1px solid var(--line);
+        border-radius: 0.3rem;
+        padding: 0.1em 0.35em;
+      }
+      a {
+        color: var(--accent);
+      }
+      .callout {
+        border: 1px solid var(--line);
+        background: var(--surface-2);
+        border-radius: 0.75rem;
+        padding: 1rem 1.1rem;
+        margin: 1.5rem 0;
+      }
+      .callout p:last-child {
+        margin-bottom: 0;
+      }
+      .callout p:first-child {
+        margin-top: 0;
+      }
+      footer {
+        margin-top: 3rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid var(--line);
+        font-size: 0.85rem;
+        color: var(--ink-2);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Your privacy, honoured</h1>
+      <p class="updated"><strong>ChatDDB</strong> by <strong>LabDDB</strong> &mdash; Last updated 29 July 2026</p>
+
+      <div class="callout" style="border-color: var(--accent); background: rgba(16, 163, 127, 0.06);">
+        <p style="font-size: 1.05rem; color: var(--ink);">
+          🌿 <strong>Our promise to you.</strong>
+        </p>
+        <p>
+          Your conversations are yours. We store them so you can pick up where you left off,
+          not to pry. Your data is handled with care and guarded by transparent practices:
+          every administrative action is logged and auditable, and your trust is something we
+          work hard to earn and keep.
+        </p>
+      </div>
+
+      <h2>What we store — and why</h2>
+      <ul>
+        <li>
+          <strong>Your account</strong> — just your name, email and profile picture from Google, so
+          we know who you are and can show you your conversations.
+        </li>
+        <li>
+          <strong>Your conversations</strong> — every message and reply, saved so you can revisit,
+          edit, or continue them anytime.
+        </li>
+        <li>
+          <strong>Your uploads</strong> — images and PDFs you attach, so the AI can see what you
+          share (and we extract PDF text on your device so the model can read it).
+        </li>
+        <li>
+          <strong>Activity records</strong> — sign-ins, messages sent, uploads — used to keep the
+          service healthy and detect unusual behaviour.
+        </li>
+      </ul>
+
+      <h2>What we never store</h2>
+      <ul>
+        <li>
+          <strong>Your IP address.</strong> We only keep a salted, truncated hash &mdash; enough to
+          notice abuse, not enough to locate you.
+        </li>
+        <li>
+          <strong>Your browser fingerprint.</strong> User-agent strings are trimmed before storage.
+        </li>
+        <li>
+          <strong>Message content in logs.</strong> Activity records carry counts and timestamps,
+          never what you wrote.
+        </li>
+        <li><strong>Passwords.</strong> Sign-in is handled entirely by Google &mdash; we never see a password.</li>
+      </ul>
+
+      <h2>Who has access</h2>
+      <p>
+        <strong>You do.</strong> Your conversations are yours alone &mdash; they are never shared
+        between accounts, and there is no public or link-based sharing.
+      </p>
+      <p>
+        <strong>Service administrators may.</strong> In the rare case an administrator needs to
+        review a conversation (e.g. to investigate abuse or debug an issue), every such access is
+        <em>automatically and permanently logged</em> &mdash; who, when, and why. No part of the app
+        can delete those audit records.
+      </p>
+
+      <h2>Where your data lives</h2>
+      <ul>
+        <li>
+          <strong>Cloudflare</strong> — secure, global hosting for your conversations and files
+          (D1 database and R2 storage).
+        </li>
+        <li><strong>Google (Firebase Authentication)</strong> — sign-in only.</li>
+        <li>
+          <strong>AgentRouter &amp; the AI model</strong> — receives your messages and document text
+          needed to generate a reply, subject to their own policies.
+        </li>
+      </ul>
+
+      <h2>How long we keep it</h2>
+      <ul>
+        <li><strong>Conversations and files</strong> — until you choose to delete them.</li>
+        <li><strong>Activity records</strong> — 90 days, then pruned automatically.</li>
+        <li><strong>Incomplete uploads</strong> — cleared after 24 hours.</li>
+      </ul>
+
+      <h2>Your control</h2>
+      <ul>
+        <li>Delete any conversation from the sidebar, anytime.</li>
+        <li>Remove attached files from the composer before sending.</li>
+        <li>Sign out from the user menu to end this device&rsquo;s session.</li>
+        <li>Request full account deletion from your administrator.</li>
+      </ul>
+
+      <h2>Updates</h2>
+      <p>
+        If our data practices ever change, this page will be updated and the date above refreshed.
+      </p>
+
+      <footer>
+        <p>
+          <strong>ChatDDB</strong> is built by <strong>LabDDB</strong> &mdash; dedicated to building
+          AI tools that respect your privacy and earn your trust.
+        </p>
+        <p><a href="/">← Back to ChatDDB by LabDDB</a></p>
+      </footer>
+    </main>
+  </body>
+</html>

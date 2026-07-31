@@ -1,36 +1,132 @@
 {
-	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "prototype-chatbot",
-	"main": "src/index.ts",
-	"compatibility_date": "2025-07-01",
-	"compatibility_flags": [
-		"nodejs_compat"
-	],
-	"assets": {
-		"directory": "./web/out"
-	},
-	"workers_dev": true,
-	"routes": [],
-	"vars": {
-		"APP_NAME": "PrototypeChatBot",
-		"MAX_UPLOAD_BYTES": "20971520",
-		"FIREBASE_PROJECT_ID": "labddb-pro"
-	},
-	"d1_databases": [
-		{
-			"binding": "DB",
-			"database_name": "prototype-chatbot-db",
-			"database_id": "65fe4b6c-9c97-45ec-ac14-7c0ea014864f",
-			"migrations_dir": "src/db/migrations"
-		}
-	],
-	"ai": {
-		"binding": "AI"
-	},
-	"r2_buckets": [
-		{
-			"binding": "BUCKET",
-			"bucket_name": "prototype-chatbot-bucket"
-		}
-	]
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "chat",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Serve the built SPA from the same Worker. Asset routing runs first for
+  // real files; /api/* is forced to the Worker so nothing can shadow it.
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+
+  "observability": {
+    "enabled": true
+  },
+
+  // Workers AI, used only by POST /api/images. A binding rather than an HTTP
+  // gateway, so it needs no key and no secret -- which is also why image
+  // generation is the one upstream that cannot be disabled by unsetting a
+  // credential. IMAGE_ENABLED below is that switch instead.
+  // `remote: true` is not a choice so much as an acknowledgement: Workers AI has
+  // no local mode, so `wrangler dev` reaches the real account and spends from the
+  // real 10,000-neuron daily allowance. Stating it here silences wrangler's
+  // warning and keeps the fact where someone will read it.
+  "ai": {
+    "binding": "AI",
+    "remote": true
+  },
+
+  "vars": {
+    // AgentRouter model. `gpt-5.6-sol` is OpenAI's flagship GPT-5.6 tier.
+    "AGENTROUTER_MODEL": "gpt-5.6-sol",
+    "AGENTROUTER_BASE_URL": "https://agentrouter.org/v1",
+    // AgentRouter's edge rejects clients it does not recognise with
+    // `unauthorized_client_error`. A claude-cli-shaped UA passes the check.
+    "AGENTROUTER_USER_AGENT": "claude-cli/2.1.158 (external, sdk-cli)",
+    "MAX_OUTPUT_TOKENS": "8192",
+    "UPSTREAM_TIMEOUT_MS": "180000",
+
+    // The silent fallback gateway. When AgentRouter cannot answer, freemodel.dev
+    // does, and nobody is told -- see worker/failover.ts. It only arms itself
+    // once FREEMODEL_API_KEY is set, so these vars are inert until then.
+    //
+    // freemodel does not serve gpt-5.6-sol; gpt-5.5 is the top tier it offers,
+    // so a failed-over turn is recorded in D1 as gpt-5.5/freemodel while the
+    // response header still says gpt-5.6-sol, which is what was asked for.
+    //
+    // Note the bare host: api.freemodel.dev answered "Container service is
+    // restarting" while freemodel.dev served the same route fine.
+    "FREEMODEL_MODEL": "gpt-5.5",
+    "FREEMODEL_BASE_URL": "https://freemodel.dev/v1",
+    // Kill switch. "false" stops crossover without unsetting the secret -- the
+    // fallback is metered, so a primary failing on every request spends money.
+    "FALLBACK_ENABLED": "true",
+
+    // Firebase project id. A public identifier, not a secret: ID tokens are
+    // verified against Google's public JWKS, so there is no service-account key.
+    // Set this to your own project's id (see DOCS.md, "Firebase setup").
+    "FIREBASE_PROJECT_ID": "labddb-pro",
+    // Comma-separated emails promoted to `admin` on their next sign-in.
+    "ADMIN_EMAILS": "htmlwithkhalid@gmail.com",
+
+    // PDF text extraction. `client` runs pdf.js in the browser, which is what
+    // Workers Free requires -- its 10 ms CPU ceiling cannot parse a PDF. Switch
+    // to `worker` only after upgrading to Paid and installing unpdf.
+    "PDF_EXTRACT_MODE": "client",
+    "PDF_MAX_PAGES": "50",
+    "PDF_CONTEXT_CHARS": "24000",
+
+    // Image generation (Workers AI). flux-1-schnell is chosen on price: 4.80
+    // neurons per 512x512 tile + 9.60 per step, so a 1024x1024 4-step image is
+    // ~57.6 neurons against the 10,000/day free allocation -- about 173 images a
+    // day. The next cheapest listed image model (lucid-origin, 636 neurons/tile)
+    // would manage roughly four.
+    //
+    // That allowance is per *account*, not per user, and on the Workers Free plan
+    // requests fail rather than bill once it is gone. Hence the tight per-user
+    // rate limits below.
+    "IMAGE_MODEL": "@cf/black-forest-labs/flux-1-schnell",
+    // Kill switch, same convention as FALLBACK_ENABLED: only the exact string
+    // "false" disarms it, so a typo fails safe (enabled) rather than silently
+    // removing the feature.
+    "IMAGE_ENABLED": "true",
+    // flux-1-schnell accepts 1-8; 4 is the model default and the quality knee.
+    "IMAGE_STEPS": "4",
+    "RATE_IMAGE_PER_MIN": "3",
+    "RATE_IMAGE_PER_DAY": "20",
+
+    "MAX_IMAGE_BYTES": "10485760",
+    "MAX_PDF_BYTES": "26214400",
+    "MAX_ATTACHMENTS_PER_MESSAGE": "4",
+    "HISTORY_MAX_TURNS": "30",
+
+    // Rate limits. `0` disables a window; see worker/lib/ratelimit.ts.
+    "RATE_CHAT_PER_MIN": "20",
+    "RATE_CHAT_PER_DAY": "300",
+    "RATE_UPLOAD_PER_MIN": "10",
+    "RATE_UPLOAD_PER_DAY": "100",
+    "RATE_AUTH_PER_MIN": "30",
+    "RATE_ADMIN_PER_MIN": "120",
+    "ACTIVITY_RETENTION_DAYS": "90"
+  },
+
+  // Secrets, never vars:
+  //   AGENTROUTER_API_KEY  the primary upstream key
+  //   FREEMODEL_API_KEY    the fallback gateway's key (optional; arms failover)
+  //   FILE_URL_SECRET      HMAC key for signed file-view URLs
+  //   IP_HASH_SALT         salt for the truncated IP hash in the audit log
+  // local  -> .dev.vars   (gitignored; see .dev.vars.example)
+  // remote -> npx wrangler secret put <NAME>
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "chatddb-f5-db",
+      "database_id": "8cfab58e-ea64-4953-953d-074aa4802a2a",
+      // Wrangler's built-in migration runner. `npm run db:migrate:local` applies
+      // these to the local SQLite file, `db:migrate` to the deployed database.
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "chatddb-f5-storage"
+    }
+  ]
 }
