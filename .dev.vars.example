@@ -20,6 +20,13 @@ AGENTROUTER_API_KEY=sk-replace-me
 # Deployed:  npm run secret:freemodel
 # FREEMODEL_API_KEY=fm-replace-me
 
+# The backup image provider (optional). With this set, an exhausted Workers AI
+# allowance stops being visible: Pollinations draws the image instead. It is
+# metered, so watch for `image_failover` rows in the admin activity log.
+# Get a key at https://auth.pollinations.ai
+# Deployed:  npm run secret:pollinations
+# POLLINATIONS_API_KEY=pk-replace-me
+
 # Optional overrides — defaults live in wrangler.jsonc `vars`.
 # AGENTROUTER_MODEL=gpt-5.6-sol
 # AGENTROUTER_BASE_URL=https://agentrouter.org/v1
@@ -28,6 +35,10 @@ AGENTROUTER_API_KEY=sk-replace-me
 # FREEMODEL_MODEL=gpt-5.5
 # FREEMODEL_BASE_URL=https://freemodel.dev/v1
 # FALLBACK_ENABLED=false          # kill switch: stops crossover, keeps the key
+# POLLINATIONS_MODEL=flux
+# POLLINATIONS_BASE_URL=https://gen.pollinations.ai
+# POLLINATIONS_ENABLED=false      # kill switch for the image crossover
+# RATE_TOOL_IMAGE_PER_DAY=5       # images the model may request per user per day
 # Both of these are answers `npm run probe:freemodel` gives you. Only set them
 # if the probe says the defaults are wrong for the model you picked.
 # FREEMODEL_TOKEN_PARAM=max_tokens

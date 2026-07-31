@@ -40,6 +40,7 @@ import {
   UpstreamError,
   type ChatMessage,
   type ProviderId,
+  type ToolDefinition,
   type UpstreamConfig,
 } from './agentrouter.ts'
 import { intVar, type WorkerEnv } from './env.ts'
@@ -145,6 +146,7 @@ export async function completeWithFailover(
   messages: ChatMessage[],
   signal: AbortSignal,
   onCrossover?: CrossoverReporter,
+  tools?: ToolDefinition[],
 ): Promise<UpstreamAttempt> {
   if (providers.length === 0) {
     throw new NotConfiguredError('No upstream gateway is configured.')
@@ -155,7 +157,14 @@ export async function completeWithFailover(
     const next = providers[i + 1]
 
     try {
-      const res = await createChatCompletion(cfg, messages, signal, { crossFast: next !== undefined })
+      const res = await createChatCompletion(cfg, messages, signal, {
+        crossFast: next !== undefined,
+        // Offered to whichever gateway answers. The backup may well ignore the
+        // field — freemodel's tool support has never been probed — and that is
+        // survivable by construction: no `tool_calls` simply means the turn is
+        // answered as plain text, which is what it would have been anyway.
+        tools,
+      })
       if (i > 0) {
         console.warn('[failover] %s answered after %s failed', cfg.provider, providers[0].provider)
       }

@@ -29,7 +29,19 @@
  * `ctx.waitUntil`. It is a passive observer — it cannot change a frame, and a tap
  * that throws is swallowed, because a failed database write must not truncate a
  * reply the user is already reading.
+ *
+ * ## The tool peek
+ *
+ * `peekToolCalls` is the other half of this file, and it runs *before*
+ * `toClientStream` rather than inside it. It reads just enough of an upstream
+ * response to tell "the model wants to run a tool" from "the model is
+ * answering", and on the second it hands back a replay so nothing is lost. It
+ * lives here because it is stream surgery, and it is separate from the pumps for
+ * the same reason the failover loop lives above `createChatCompletion`: nothing
+ * that can restart a turn may sit downstream of the first byte to the client.
  */
+
+import type { ToolCall } from './agentrouter.ts'
 
 const encoder = new TextEncoder()
 
@@ -52,8 +64,13 @@ export function commentFrame(text: string): Uint8Array {
 
 interface UpstreamChunk {
   choices?: {
-    delta?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown }
-    message?: { content?: unknown }
+    delta?: {
+      content?: unknown
+      reasoning_content?: unknown
+      reasoning?: unknown
+      tool_calls?: unknown
+    }
+    message?: { content?: unknown; tool_calls?: unknown }
     finish_reason?: string | null
   }[]
   usage?: {
@@ -336,6 +353,251 @@ export function toClientStream(res: Response, onComplete?: StreamTap): ReadableS
   })()
 
   return readable
+}
+
+// ---------------------------------------------------------------------------
+// Tool calls
+// ---------------------------------------------------------------------------
+
+/**
+ * The model asked to run a tool. Nothing was shown to the client.
+ *
+ * There is no `res` to hand on: a tool-call response carries no prose, so the
+ * caller executes the tool and asks again rather than streaming this.
+ */
+export interface PeekedToolCalls {
+  kind: 'tool'
+  calls: ToolCall[]
+}
+
+/**
+ * The model answered normally.
+ *
+ * `res` is a *replay* of the original — the bytes already read, followed by the
+ * rest of the live stream — so the caller can hand it to `toClientStream` and
+ * nothing is lost or duplicated.
+ */
+export interface PeekedText {
+  kind: 'text'
+  res: Response
+}
+
+export type PeekResult = PeekedToolCalls | PeekedText
+
+/**
+ * Looks at an upstream response just far enough to tell a tool call from prose.
+ *
+ * ## Why this has to exist
+ *
+ * `routes/chat.ts` must know whether the model wants a tool *before*
+ * `toClientStream` writes its first frame, because once a byte reaches the
+ * client the turn is committed — that is the invariant `failover.ts` is built
+ * around. But the only way to know is to read the body, and reading the body is
+ * exactly what would consume it. So this reads, decides, and then hands back
+ * either the assembled calls or a response that replays what it read.
+ *
+ * The alternative — asking with `stream: false` on the tool-offering leg — was
+ * rejected: it would turn every reply into a single blob for whichever gateway
+ * genuinely streams, in exchange for deleting the twenty lines of replay below.
+ *
+ * ## The shape this parses, and how it was established
+ *
+ * `npm run probe:tools` phase 5, against `gpt-5.6-sol` through AgentRouter, 5/5
+ * runs. Two findings drive the code:
+ *
+ *  - The call arrives as **`delta.tool_calls`**, OpenAI's fragmented form, and
+ *    the first frame carries `id`, `type`, `index` and `function.name` with an
+ *    **empty** `function.arguments`. So the decision is available on frame one,
+ *    which is what makes peeking cheap.
+ *  - `function.arguments` is then split across roughly **150 further frames**,
+ *    one token each. They have to be concatenated before `JSON.parse` — a parse
+ *    of any single frame fails. This is the one place AgentRouter really does
+ *    stream, incidentally: ordinary text comes back as a single blob.
+ *
+ * `message.tool_calls` is accepted too, for a relay that sends a whole message
+ * on one frame, the same way `extractContent` already tolerates both.
+ *
+ * ## First signal wins
+ *
+ * Whichever appears first — content or a tool call — decides the turn. A model
+ * that wrote a sentence *and then* called a tool gets its sentence streamed and
+ * the call ignored, because the alternative is discarding text the user was
+ * about to read. The probe's restraint phase (5/5 quiet on a non-visual
+ * question) is the evidence that this is a corner and not the common case.
+ */
+export async function peekToolCalls(res: Response): Promise<PeekResult> {
+  const isEventStream = (res.headers.get('content-type') ?? '').includes('text/event-stream')
+
+  // A relay that ignored `stream: true`. One JSON body, so there is nothing to
+  // peek at — read it whole and rebuild it for the caller.
+  if (!isEventStream || !res.body) {
+    const text = await res.text()
+    const partials = new Map<number, PartialToolCall>()
+    try {
+      const chunk = JSON.parse(text) as UpstreamChunk
+      const raw = chunk.choices?.[0]?.message?.tool_calls ?? chunk.choices?.[0]?.delta?.tool_calls
+      if (Array.isArray(raw)) for (const call of raw) mergeToolCall(partials, call)
+    } catch {
+      /* not JSON; fall through to replaying it verbatim */
+    }
+    const calls = assembleToolCalls(partials)
+    if (calls.length > 0) return { kind: 'tool', calls }
+    return { kind: 'text', res: rebuild(res, text) }
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  /**
+   * Every raw chunk read, kept so the text path can replay byte-for-byte.
+   *
+   * Unbounded in principle, bounded in practice by `maxOutputTokens` — tens of
+   * kilobytes. Kept even after a tool call is spotted, so that a call which
+   * turns out to be unusable can still fall back to replaying the original.
+   */
+  const head: Uint8Array[] = []
+  const partials = new Map<number, PartialToolCall>()
+  let pending = ''
+  let sawTool = false
+
+  try {
+    let done = false
+    while (!done) {
+      const next = await reader.read()
+      if (next.done) break
+      head.push(next.value)
+      pending += decoder.decode(next.value, { stream: true })
+
+      const lines = pending.split('\n')
+      pending = lines.pop() ?? ''
+      for (const raw of lines) {
+        const verdict = inspectLine(raw.trim(), partials)
+        if (verdict === 'tool') sawTool = true
+        // Prose, and no tool call before it: stop reading and let the client
+        // have the stream. `reader` is handed on mid-flight, not restarted.
+        else if (verdict === 'text' && !sawTool) {
+          return { kind: 'text', res: replay(res, head, reader) }
+        }
+      }
+    }
+  } catch (err) {
+    // The stream broke while we were looking at it. Replaying is still the right
+    // move: `pumpEventStream` will hit the same failure and turn it into the
+    // error frame the client already knows how to render.
+    console.warn('[chatddb] tool peek failed, replaying stream: %s', err)
+    return { kind: 'text', res: replay(res, head, reader) }
+  }
+
+  const calls = sawTool ? assembleToolCalls(partials) : []
+  if (calls.length > 0) return { kind: 'tool', calls }
+  // Either plain text that never produced a content frame, or a tool call too
+  // mangled to use. Both are the pump's problem now, and it has answers for both.
+  return { kind: 'text', res: replay(res, head, reader) }
+}
+
+/** One `delta.tool_calls` slot, keyed by the `index` the stream assigns it. */
+interface PartialToolCall {
+  id: string
+  name: string
+  args: string
+}
+
+/** What one SSE line tells us about where this turn is going. */
+function inspectLine(line: string, partials: Map<number, PartialToolCall>): 'tool' | 'text' | null {
+  if (!line.startsWith('data:')) return null
+  const payload = line.slice(5).trim()
+  if (!payload || payload === '[DONE]') return null
+
+  let chunk: UpstreamChunk
+  try {
+    chunk = JSON.parse(payload) as UpstreamChunk
+  } catch {
+    return null
+  }
+  const choice = chunk.choices?.[0]
+  if (!choice) return null
+
+  const raw = choice.delta?.tool_calls ?? choice.message?.tool_calls
+  if (Array.isArray(raw) && raw.length > 0) {
+    for (const call of raw) mergeToolCall(partials, call)
+    return 'tool'
+  }
+
+  const content = choice.delta?.content ?? choice.message?.content
+  if (typeof content === 'string' && content.length > 0) return 'text'
+  return null
+}
+
+/** Folds one fragment into its slot. `arguments` concatenates; the rest wins once. */
+function mergeToolCall(partials: Map<number, PartialToolCall>, raw: unknown): void {
+  if (!raw || typeof raw !== 'object') return
+  const call = raw as { index?: unknown; id?: unknown; function?: { name?: unknown; arguments?: unknown } }
+  // Absent on a relay that sends whole calls; a single call is index 0.
+  const index = typeof call.index === 'number' ? call.index : 0
+  const slot = partials.get(index) ?? { id: '', name: '', args: '' }
+
+  if (typeof call.id === 'string' && call.id.length > 0) slot.id = call.id
+  if (typeof call.function?.name === 'string' && call.function.name.length > 0) {
+    slot.name = call.function.name
+  }
+  if (typeof call.function?.arguments === 'string') slot.args += call.function.arguments
+
+  partials.set(index, slot)
+}
+
+/** Slots to calls, in stream order. A slot with no name never became a call. */
+function assembleToolCalls(partials: Map<number, PartialToolCall>): ToolCall[] {
+  return [...partials.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .filter(([, slot]) => slot.name.length > 0)
+    .map(([index, slot]) => ({
+      // Synthesised only if the gateway omitted one: the id has to survive into
+      // the `tool_call_id` of the result message or the model cannot match them.
+      id: slot.id || `call_${index}`,
+      type: 'function' as const,
+      function: { name: slot.name, arguments: slot.args },
+    }))
+}
+
+/**
+ * The chunks already read, then the rest of the live stream.
+ *
+ * Only `content-type` is carried over: the body has been through a
+ * `ReadableStream` reader, so it is already decoded, and passing on a
+ * `content-encoding` header would describe bytes that no longer exist.
+ */
+function replay(
+  res: Response,
+  head: Uint8Array[],
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Response {
+  let sent = 0
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (sent < head.length) {
+        controller.enqueue(head[sent++])
+        return
+      }
+      try {
+        const { done, value } = await reader.read()
+        if (done) controller.close()
+        else controller.enqueue(value)
+      } catch (err) {
+        controller.error(err)
+      }
+    },
+    cancel(reason) {
+      reader.cancel(reason).catch(() => {})
+    },
+  })
+  return rebuild(res, stream)
+}
+
+function rebuild(res: Response, body: BodyInit): Response {
+  const contentType = res.headers.get('content-type')
+  return new Response(body, {
+    status: res.status,
+    headers: contentType ? { 'Content-Type': contentType } : {},
+  })
 }
 
 /** A stream that only carries one error, for failures found before streaming. */

@@ -39,6 +39,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 
 const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:8788'
 const TOKEN = process.env.CHATDDB_TOKEN
@@ -59,11 +60,25 @@ function check(label, condition, detail = '') {
   }
 }
 
-/** Queries the *local* D1 file that `wrangler dev` writes to. */
+/**
+ * Queries the *local* D1 file that `wrangler dev` writes to.
+ *
+ * Spawned as `node <literal path to wrangler.js>` rather than the obvious `npx
+ * wrangler`, because neither obvious form works here. Node 22 on Windows
+ * refuses to `execFileSync` a `.cmd` shim at all (EINVAL), and the `shell: true`
+ * escape hatch re-splits the SQL on spaces, so wrangler sees `SELECT` followed
+ * by a pile of unknown arguments. Passing the script to `process.execPath`
+ * sidesteps both: no shim, no shell, argv preserved. `require.resolve` cannot
+ * find it either — wrangler's `exports` map does not publish `./bin/wrangler.js`
+ * — hence the hard-coded path.
+ */
 function d1(sql) {
   const out = execFileSync(
-    process.platform === 'win32' ? 'npx.cmd' : 'npx',
-    ['wrangler', 'd1', 'execute', DB_NAME, '--local', '--json', '--command', sql],
+    process.execPath,
+    [
+      fileURLToPath(new URL('../node_modules/wrangler/bin/wrangler.js', import.meta.url)),
+      ...['d1', 'execute', DB_NAME, '--local', '--json', '--command', sql],
+    ],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
   )
   // Wrangler prints banner lines before the JSON on some versions.

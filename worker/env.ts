@@ -43,6 +43,15 @@ export interface WorkerEnv {
    * the backup.
    */
   FREEMODEL_API_KEY?: string
+  /**
+   * Pollinations API key — the backup image provider.
+   *
+   * A secret and never a var, for the same reason as every other key here: it
+   * is metered by account, so a value in `wrangler.jsonc` would be spendable
+   * credit in git history. Unset means image generation is Workers AI only,
+   * exactly as it was before the backup existed.
+   */
+  POLLINATIONS_API_KEY?: string
 
   // ---- AgentRouter (existing, unchanged) ----------------------------------
   AGENTROUTER_MODEL?: string
@@ -78,6 +87,24 @@ export interface WorkerEnv {
   IMAGE_STEPS?: string
   RATE_IMAGE_PER_MIN?: string
   RATE_IMAGE_PER_DAY?: string
+  /**
+   * Kill switch for the Pollinations backup, same convention as
+   * `FALLBACK_ENABLED`: only the exact string `'false'` disarms it, so a typo
+   * fails safe (armed) rather than silently removing the fallback.
+   */
+  POLLINATIONS_ENABLED?: string
+  /** Pollinations model id. Default `flux`. */
+  POLLINATIONS_MODEL?: string
+  /** Default `https://gen.pollinations.ai`. */
+  POLLINATIONS_BASE_URL?: string
+  /**
+   * Daily cap on images the *model* triggers via the `generate_image` tool.
+   *
+   * Separate from, and additional to, `RATE_IMAGE_PER_DAY`: a button press is a
+   * human deciding to spend the shared allowance, while a tool call is the model
+   * deciding. Prompting is a hint, not a budget — see `routes/chat.ts`.
+   */
+  RATE_TOOL_IMAGE_PER_DAY?: string
 
   // ---- Auth ---------------------------------------------------------------
   /** Firebase project id. A public identifier, so a var and not a secret. */
@@ -136,6 +163,7 @@ export interface Policy {
   rateAdminPerMin: number
   rateImagePerMin: number
   rateImagePerDay: number
+  rateToolImagePerDay: number
   imageSteps: number
   activityRetentionDays: number
 }
@@ -159,6 +187,11 @@ export function resolvePolicy(env: WorkerEnv): Policy {
     rateAdminPerMin: intVar(env.RATE_ADMIN_PER_MIN, 120),
     rateImagePerMin: intVar(env.RATE_IMAGE_PER_MIN, 3),
     rateImagePerDay: intVar(env.RATE_IMAGE_PER_DAY, 20),
+    // Deliberately a quarter of the button's daily budget. The tool fires on the
+    // model's judgement, and a model that decides to illustrate more often than
+    // intended should run out of its own allowance long before it can drain the
+    // one a human is queuing behind.
+    rateToolImagePerDay: intVar(env.RATE_TOOL_IMAGE_PER_DAY, 5),
     // Clamped, not just defaulted: flux-1-schnell rejects anything outside 1-8,
     // and a misconfigured var should cost a worse image, not every request.
     imageSteps: Math.min(8, Math.max(1, intVar(env.IMAGE_STEPS, 4))),
