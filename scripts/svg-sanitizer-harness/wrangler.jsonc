@@ -1,0 +1,9 @@
+{
+  // Test-only Worker. Deliberately minimal: no bindings, no vars, no assets --
+  // `sanitizeSvg` needs nothing but the runtime's HTMLRewriter, and giving the
+  // harness access to D1 or R2 would let a future test touch real data.
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "svg-sanitizer-harness",
+  "main": "worker.ts",
+  "compatibility_date": "2026-07-01"
+}

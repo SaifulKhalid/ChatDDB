@@ -188,6 +188,43 @@ body {
   border: 0;
   border-radius: 0;
 }
+
+/* Rendered SVG figure. Same frame as a code block, because it is one -- the
+   model writes it as a ```svg fence and SvgFigure.tsx draws it instead of
+   printing it. */
+.markdown .svg-figure {
+  margin: 1rem 0;
+  border: 1px solid var(--color-line);
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+.markdown .svg-figure pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+.markdown .svg-figure-canvas {
+  /* `currentColor` is what the model is told to draw with, so the figure
+     inherits the theme instead of assuming a white page. */
+  color: var(--color-ink);
+  padding: 1rem;
+  overflow-x: auto;
+}
+.markdown .svg-figure-canvas svg {
+  display: block;
+  margin: 0 auto;
+  /* Figures are authored with a viewBox and often a pixel width. Capping the
+     width and letting the height follow keeps the aspect ratio on a phone. */
+  max-width: 100%;
+  height: auto;
+}
+.markdown .svg-figure figcaption {
+  border-top: 1px solid var(--color-line);
+  background: var(--color-surface-2);
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8rem;
+  color: var(--color-ink-2);
+}
 .markdown table {
   border-collapse: collapse;
   margin: 1rem 0;

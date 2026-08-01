@@ -39,9 +39,24 @@
  * lives here because it is stream surgery, and it is separate from the pumps for
  * the same reason the failover loop lives above `createChatCompletion`: nothing
  * that can restart a turn may sit downstream of the first byte to the client.
+ *
+ * ## The figure gate
+ *
+ * Every byte of assistant text passes through a `FigureGate` on its way to both
+ * the client *and* `sink.parts`, so the copy persisted to D1 is the same
+ * sanitised text the reader saw. It holds back ```` ```svg ```` blocks until
+ * they are complete and cleaned; see `lib/figureGate.ts` for why that does not
+ * conflict with the no-restart invariant above.
+ *
+ * There is deliberately no switch for it. `SVG_DIAGRAMS` decides whether the
+ * *prompt* invites figures, but the gate runs regardless, because "no
+ * unsanitised svg fence ever reaches a browser" is worth keeping as an
+ * invariant with no off position — a user can always ask the model to echo SVG
+ * back at them, feature flag or not.
  */
 
 import type { ToolCall } from './agentrouter.ts'
+import { FigureGate } from './lib/figureGate.ts'
 
 const encoder = new TextEncoder()
 
@@ -111,10 +126,52 @@ interface Sink {
   finishReason: string | null
   usage: StreamUsage | null
   error: string | null
+  gate: FigureGate
 }
 
 function newSink(): Sink {
-  return { parts: [], finishReason: null, usage: null, error: null }
+  return { parts: [], finishReason: null, usage: null, error: null, gate: new FigureGate() }
+}
+
+/**
+ * The one way assistant text leaves this file.
+ *
+ * Both pumps go through here rather than writing `contentFrame` directly, so
+ * there is a single place where the figure gate can hold bytes back — and so
+ * `sink.parts`, which becomes the stored transcript, can never drift from what
+ * was actually sent.
+ */
+async function emit(
+  text: string,
+  out: WritableStreamDefaultWriter<Uint8Array>,
+  sink: Sink,
+): Promise<void> {
+  for (const piece of await sink.gate.push(text)) {
+    sink.parts.push(piece)
+    await out.write(contentFrame(piece))
+  }
+}
+
+/**
+ * Releases whatever the gate is still holding, at end of stream.
+ *
+ * Called before the terminating frame on every path, including the failure
+ * ones: a reply that died mid-figure should show a truncated figure and say so,
+ * not lose the figure and the prose that preceded it.
+ */
+async function drainGate(
+  out: WritableStreamDefaultWriter<Uint8Array>,
+  sink: Sink,
+): Promise<void> {
+  try {
+    for (const piece of await sink.gate.flush()) {
+      sink.parts.push(piece)
+      await out.write(contentFrame(piece))
+    }
+  } catch (err) {
+    // The client has usually just hung up. Nothing left to tell them.
+    console.warn('[chatddb] figure gate flush failed: %s', describe(err))
+  }
 }
 
 /** Pulls the assistant text out of one upstream SSE payload, if it has any. */
@@ -191,6 +248,9 @@ async function pumpEventStream(
     if (err) {
       sink.error = err
       sink.finishReason = 'error'
+      // Before the error frame, not after: a figure interrupted by an upstream
+      // failure should appear above the failure, in the order it happened.
+      await drainGate(out, sink)
       await out.write(errorFrame(err, 'upstream_error'))
       return true
     }
@@ -204,9 +264,11 @@ async function pumpEventStream(
 
     const text = extractContent(chunk)
     if (text !== null) {
+      // Tracks what *upstream* sent, not what the gate let through — a chunk
+      // that is entirely the start of a figure emits nothing yet, and must not
+      // be mistaken for an empty completion.
       sawContent = true
-      sink.parts.push(text)
-      await out.write(contentFrame(text))
+      await emit(text, out, sink)
     }
     return false
   }
@@ -235,6 +297,7 @@ async function pumpEventStream(
         if (await handleLine(raw.trim())) break
       }
     }
+    await drainGate(out, sink)
     if (!sawContent && sink.error === null) {
       const message = 'The model returned an empty response. Try again or rephrase the prompt.'
       sink.error = message
@@ -248,6 +311,9 @@ async function pumpEventStream(
       const message = `Stream interrupted: ${err instanceof Error ? err.message : String(err)}`
       sink.error = message
       sink.finishReason = 'error'
+      // The stream died mid-figure. Salvage the partial one — `flush()` closes,
+      // sanitises and labels it — then report the failure underneath.
+      await drainGate(out, sink)
       await out.write(errorFrame(message)).catch(() => {})
     }
   } finally {
@@ -280,8 +346,8 @@ async function pumpJsonBody(
 
     const text = extractContent(chunk)
     if (text) {
-      sink.parts.push(text)
-      await out.write(contentFrame(text))
+      await emit(text, out, sink)
+      await drainGate(out, sink)
     } else {
       const message = 'The model returned an empty response.'
       sink.error = message
@@ -295,6 +361,7 @@ async function pumpJsonBody(
       const message = `Could not read the model response: ${describe(err)}`
       sink.error = message
       sink.finishReason = 'error'
+      await drainGate(out, sink)
       await out.write(errorFrame(message)).catch(() => {})
     }
   }
@@ -331,6 +398,9 @@ export function toClientStream(res: Response, onComplete?: StreamTap): ReadableS
         const message = describe(err)
         sink.error = message
         sink.finishReason = 'error'
+        // Harmless if a pump already drained: a flushed gate holds nothing and
+        // returns no pieces the second time.
+        await drainGate(writer, sink)
         await writer.write(errorFrame(message)).catch(() => {})
         await writer.write(doneFrame()).catch(() => {})
       }

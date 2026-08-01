@@ -70,6 +70,7 @@ import { resolveModel, isKnownModel, NO_VISION_MESSAGE, MODELS, type ModelSpec }
 import { sha256Hex } from '../lib/hash.ts'
 import type { AuthedContext } from '../auth/middleware.ts'
 import type { FileRow } from '../db/files.ts'
+import type { WorkerEnv } from '../env.ts'
 
 const DEFAULT_SYSTEM_PROMPT = [
   'You are ChatDDB, a helpful, knowledgeable AI assistant.',
@@ -157,6 +158,103 @@ const TOOL_USE_CLAUSE = [
   'At most one image per reply — every call spends a small budget shared by all users.',
   'The image is attached to your reply automatically: introduce it in one short sentence,',
   'and never write a Markdown image link for it.',
+].join(' ')
+
+// ---------------------------------------------------------------------------
+// SVG diagrams
+// ---------------------------------------------------------------------------
+//
+// The other way to answer with a picture, and the one that works for the
+// audience this deployment actually has. Most image requests here are labelled
+// technical figures — pole-zero plots, Bode plots, circuits, free-body diagrams
+// — and no diffusion model can draw one. It has no symbolic model of an axis, so
+// it generates texture that resembles a diagram: the report that started this
+// was a pole-zero plot rendered as a vertical stroke, a stray arrow, and the
+// handwriting-shaped noise "= 2".
+//
+// Drawing in SVG inverts that. The model computes coordinates and the browser
+// renders them, so the figure is correct by construction or visibly wrong, never
+// plausibly wrong.
+//
+// ## Why this is not a tool
+//
+// `generate_image` needs to be one: only the Worker can call Workers AI and
+// write R2. A figure needs no server execution at all — the SVG *is* the reply
+// text. Making it a tool would buy nothing and cost a full extra round trip in
+// front of the user's first token, plus a rate limiter, an R2 write, a `files`
+// row and a `persistAssistant` change. As prose it also streams.
+//
+// What it does need is `worker/lib/figureGate.ts`, which holds the fenced block
+// back until it is complete and sanitised, and `src/components/SvgFigure.tsx`,
+// which draws it. Verified before any of this was written: `npm run probe:svg`.
+
+/** `'false'` disarms; anything else, including unset, leaves figures on. */
+function diagramsEnabled(env: WorkerEnv): boolean {
+  return env.SVG_DIAGRAMS !== 'false'
+}
+
+/**
+ * How to draw, appended to whichever system prompt resolves.
+ *
+ * Appended for the same reason `TOOL_USE_CLAUSE` is: `buildUpstreamMessages`
+ * picks `SYSTEM_PROMPT || DEFAULT_SYSTEM_PROMPT`, an either/or rather than a
+ * merge, so a clause written into the default would vanish for any deployment
+ * with a custom prompt. Here that would not cost money, but it would produce
+ * something worse than the feature being off: the renderer would still draw any
+ * ```` ```svg ```` block, so a model with no drawing rules would emit figures
+ * hard-coded to black-on-white, invisible in the dark theme.
+ *
+ * Every rule below earned its place in `npm run probe:svg` — each one's absence
+ * produced a specific defect across the five probe figures. `currentColor` for
+ * dark-theme legibility, `viewBox` against clipping, the offset instruction
+ * against labels landing on top of the marks they name, the explicit font-size
+ * against a default that renders at 16px in a 300-unit viewBox.
+ *
+ * The restraint paragraph is first because it is the part that matters most in
+ * production. A model that draws a figure for every question is worse than one
+ * that draws none.
+ */
+const DIAGRAM_CLAUSE = [
+  'When a figure would carry information your prose cannot — a plot, a circuit, a free-body',
+  'diagram, a signal-flow graph, a labelled geometry, a state machine — draw it as SVG inside a',
+  '```svg fenced code block. It is rendered as a real figure, not printed as code.',
+  'Draw only when the figure is the answer or a necessary part of it. Never to decorate, and never',
+  'for something Markdown already renders: a table, a list, or an equation.',
+  'Most questions need no figure at all.',
+  '',
+  'When you do draw:',
+  '- One `svg` block per figure, holding a single <svg> root with an explicit viewBox.',
+  '  Do not set width or height on it.',
+  '- Open the root with a <title> naming the figure. It becomes the caption and the accessible name.',
+  '- Use stroke="currentColor" and fill="currentColor" for axes, rules and text, so the figure is',
+  '  legible in both the light and dark themes. Use a named colour only to pick plotted data out',
+  '  from the axes, and never paint a background.',
+  '- Give every axis tick marks with numeric labels, and a name.',
+  '- Label every plotted feature, offset from the mark it names so nothing overlaps.',
+  '- Set font-size explicitly in user units, 11-14 for labels. Never rely on the default.',
+  '- No <script>, no event handlers, no <image>, no external references. They are stripped before',
+  '  the figure is shown, so a figure that depends on one arrives broken.',
+  '- Compute coordinates exactly. A pole at s = -3 belongs at the tick marked -3.',
+].join('\n')
+
+/**
+ * Which of the two visual paths to take, appended only when both are available.
+ *
+ * Without it the two clauses contradict each other — `TOOL_USE_CLAUSE` says to
+ * call the tool when the user asks to be shown something, which is also exactly
+ * when a diagram is wanted. The distinction is not "technical vs artistic" as
+ * such but whether the picture's coordinates carry meaning, and the wording says
+ * so plainly, including *why* the tool is the wrong instrument, because a model
+ * told only "don't" tends to find an exception.
+ */
+const VISUAL_ROUTING_CLAUSE = [
+  'You have two ways to produce a picture and they are not interchangeable.',
+  'Draw SVG whenever the positions in the picture mean something: plots, schematics, diagrams,',
+  'geometry, timelines, anything with an axis, a scale or a label.',
+  '`generate_image` cannot draw these — it is a diffusion model with no symbolic notion of an axis,',
+  'so it returns a convincing-looking figure with the numbers in the wrong places.',
+  'Call `generate_image` only for photographic, artistic or illustrative pictures,',
+  'where nothing depends on a value being at a particular coordinate.',
 ].join(' ')
 
 /** Handed back when the image exists. See the note on `TOOL_USE_CLAUSE`. */
@@ -773,16 +871,25 @@ async function imageParts(ctx: AuthedContext, files: FileRow[]): Promise<Content
  * body AgentRouter is known to accept — the multimodal form is only used when it
  * has to be, and only for a model whose `vision` flag was actually verified.
  *
- * `toolsArmed` appends `TOOL_USE_CLAUSE` to whichever base prompt resolved. The
- * base is still all-or-nothing — a custom `SYSTEM_PROMPT` replaces the default
- * outright — but the tool constraint is no longer part of that choice, because
- * an operator dropping it would leave the model holding a budget-spending tool
- * with no instruction about when to use it. See the note on the clause itself.
+ * The capability clauses are appended to whichever base prompt resolved, rather
+ * than written into the default. The base is still all-or-nothing — a custom
+ * `SYSTEM_PROMPT` replaces the default outright — but the constraints are no
+ * longer part of that choice, because an operator dropping them would leave the
+ * model holding a budget-spending tool with no instruction about when to use it,
+ * and a renderer that draws figures with no instruction about how. See the notes
+ * on the clauses themselves.
+ *
+ * The routing clause is appended only when both paths are live, since it exists
+ * purely to settle which one a request belongs to.
  */
 function buildUpstreamMessages(ctx: AuthedContext, turn: Turn, toolsArmed = false): ChatMessage[] {
-  const base = ctx.env.SYSTEM_PROMPT?.trim() || DEFAULT_SYSTEM_PROMPT
-  const system = toolsArmed ? `${base}\n\n${TOOL_USE_CLAUSE}` : base
-  const messages: ChatMessage[] = [{ role: 'system', content: system }]
+  const clauses = [ctx.env.SYSTEM_PROMPT?.trim() || DEFAULT_SYSTEM_PROMPT]
+  const drawing = diagramsEnabled(ctx.env)
+  if (toolsArmed) clauses.push(TOOL_USE_CLAUSE)
+  if (drawing) clauses.push(DIAGRAM_CLAUSE)
+  if (toolsArmed && drawing) clauses.push(VISUAL_ROUTING_CLAUSE)
+
+  const messages: ChatMessage[] = [{ role: 'system', content: clauses.join('\n\n') }]
 
   for (const entry of turn.history) {
     if (entry.role === 'system') continue

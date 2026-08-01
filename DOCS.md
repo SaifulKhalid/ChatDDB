@@ -111,6 +111,9 @@ committed.
 | `npm run secret` | `wrangler secret put AGENTROUTER_API_KEY` for the deployed Worker |
 | `npm run secret:pollinations` | Same, for the backup image provider's key |
 | `npm run probe:tools` | Measures whether the model actually calls tools, over 5 runs per case — see §10 |
+| `npm run probe:svg` | Measures whether the model draws usable figures *and* knows when not to — see §10 |
+| `npm run smoke:svg-sanitizer` | The HTMLRewriter allowlist, in workerd. No key needed |
+| `npm run smoke:figure-gate` | The streaming fence transform. No key needed |
 | `npm run stub:pollinations` | Fake Pollinations endpoint, so crossover tests spend no allowance |
 | `npm run smoke:image-failover` | End-to-end image crossover, both directions |
 | `npm run smoke:chat-image-tool` | End-to-end `generate_image` tool path |
@@ -126,7 +129,9 @@ worker/
   agentrouter.ts    upstream client: config, headers, retries, timeout, abort
   failover.ts       gateway chain: AgentRouter → freemodel.dev
   images.ts         image chain: Workers AI → Pollinations, and error classification
-  sse.ts            upstream stream → client SSE contract; the tool-call peek
+  sse.ts            upstream stream → client SSE contract; tool-call peek; figure gate
+  lib/figureGate.ts holds back a ```svg fence until it is whole and clean
+  lib/sanitizeSvg.ts HTMLRewriter allowlist — server-side SVG sanitiser
   tsconfig.json     workers-only TS project (ES2023 libs, no DOM)
 src/
   App.tsx           all conversation state and turn orchestration
@@ -139,6 +144,7 @@ src/
     MessageItem.tsx user + assistant bubbles, markdown, edit, regenerate
     Composer.tsx    auto-growing textarea, Send/Stop
     CodeBlock.tsx   framed code block with language label + copy
+    SvgFigure.tsx   renders a ```svg block as a figure (DOMPurify, id namespacing)
     CopyButton.tsx  copy-to-clipboard with copied state
     Logo.tsx        assistant avatar / brand mark
   index.css         Tailwind v4 theme tokens, markdown + cursor styles
@@ -178,6 +184,7 @@ per-machine in `.dev.vars`.
 | `POLLINATIONS_MODEL` | `flux` | Backup image model. `turbo` was retired |
 | `POLLINATIONS_BASE_URL` | `https://gen.pollinations.ai` | Backup base; trailing slashes trimmed |
 | `RATE_TOOL_IMAGE_PER_DAY` | `5` | Images the *model* may request per user per day, on top of `RATE_IMAGE_PER_DAY` |
+| `SVG_DIAGRAMS` | armed | `"false"` stops the prompt inviting figures. Does **not** disable the gate or the sanitisers — see §6 |
 
 The literal placeholder `sk-replace-me` counts as "not configured", so copying
 `.dev.vars.example` without editing it behaves the same as having no key.
@@ -218,6 +225,13 @@ the model a working image generator with no instruction about when to use it, an
 the budget behind that generator is shared by every user of the deployment and
 resets once a day. So the clause cannot be dropped by accident. It is guidance
 regardless; `RATE_TOOL_IMAGE_PER_DAY` is the enforcement.
+
+`buildUpstreamMessages` composes the system message from up to four clauses in
+order: the base prompt, `TOOL_USE_CLAUSE` if tools are armed, `DIAGRAM_CLAUSE` if
+`SVG_DIAGRAMS` is not `"false"`, and `VISUAL_ROUTING_CLAUSE` only when **both**
+are on — there is nothing to route between otherwise. `DIAGRAM_CLAUSE` leads with
+restraint (*when not to draw*) before its nine drawing rules, which is the
+ordering phase 2 of `probe:svg` measures.
 
 ---
 
@@ -463,6 +477,74 @@ If upstream answers with a plain JSON body instead of a stream — a relay
 ignoring `stream: true` — `pumpJsonBody` handles it and emits the same frames.
 If the stream ends without ever producing content, the client gets an
 `empty_completion` error frame rather than a silently blank message.
+
+### The figure gate
+
+Assistant text passes through `FigureGate` (`worker/lib/figureGate.ts`) on its
+way out. Prose is forwarded unchanged; a ` ```svg ` fence is **buffered** until
+its closing fence arrives, sanitised, and only then emitted.
+
+Buffering is necessary because half an `<svg>` is not markup any parser can
+judge safe, and it is cheap because AgentRouter delivers the whole completion in
+one frame anyway (see below) — there is no real stream being held up. It also
+does not violate the no-restart invariant in §5: the gate withholds bytes it has
+not yet written, it never rewrites bytes already sent.
+
+Three things fall out of that design:
+
+- **The placeholder is the opening fence.** Content frames append and cannot be
+  replaced, so a literal `rendering figure…` token would become permanent
+  message content. Instead the gate emits a bare ` ```svg ` the instant it sees
+  one, which is enough for `SvgFigure` to show its drawing skeleton. Final
+  stored content is exactly ` ```svg\n<sanitised>\n``` `.
+- **The buffer is bounded**, by `MAX_SVG_BYTES - 1024` and by a 30-second
+  deadline. `Date.now()` is pinned between I/O in workerd, but the gate only
+  advances on stream reads, which *are* I/O, so the clock does move here. On
+  overflow the figure is closed, repaired (`</svg>` appended), sanitised, and
+  captioned *"this figure was cut off before it finished drawing"*; the rest of
+  the abandoned block is discarded in a `skip` state so the model's own closing
+  fence cannot leak out as a stray unmatched one. Nothing is silently swallowed.
+- **`sawContent` keys off upstream text, not gate output.** A chunk that is
+  entirely the start of a figure emits nothing, and must not be mistaken for an
+  `empty_completion`.
+
+`drainGate()` runs before *every* error frame, so a figure interrupted by an
+upstream failure appears above the failure in the order it happened. `flush()`
+is idempotent, which is what makes the belt-and-braces drain in
+`toClientStream`'s outer catch harmless.
+
+Gated output goes into `sink.parts`, so the transcript persisted to D1 is the
+same sanitised text the reader saw — the database never holds markup the browser
+was not allowed to render.
+
+### Two SVG sanitisers, deliberately different
+
+`sanitizeSvg` in the Worker is the primary control: `HTMLRewriter` (lol-html) —
+a real parser, not a regex — over a strict allowlist of elements and attributes.
+Everything else is dropped with `element.remove()`, which takes the subtree with
+it and so closes the mXSS bypass where an attacker unwraps a disallowed element
+to promote its children.
+
+Two engine facts the allowlists depend on, both verified against a real build
+rather than assumed: lol-html reports `tagName` and attribute names
+**pre-lowercased**, so every entry in the allowlists is lowercase
+(`gradientunits`, not `gradientUnits`); and it passes untouched attribute *bytes*
+through verbatim, so the original casing survives into the output and camelCase
+SVG attributes keep working.
+
+`SvgFigure` then re-sanitises in the browser with DOMPurify before the fragment
+touches the DOM. This is defence in depth and it is a *different implementation
+on purpose* — sharing an allowlist between the two would mean a single bug
+defeats both layers. DOMPurify is loaded with a dynamic `import()` so it lands in
+its own ~27 kB chunk rather than the main bundle.
+
+The client pass also does one thing only it can: `namespaceIds` rewrites every
+`id` and matching `url(#…)` reference with a per-instance `useId()` prefix, so
+two figures in one reply cannot collide over a gradient or marker id.
+
+`react-markdown` runs **without `rehype-raw`**, so raw HTML in a reply is
+stripped as it always was. Routing SVG through a fenced code block rather than
+inline markup is what avoids ever needing to turn that off.
 
 ### AgentRouter does not really stream
 
@@ -712,6 +794,32 @@ completion through AgentRouter, and its first case draws a real image on the
 account's shared allowance. There is no way to test "does the model reach for the
 tool" against a stub.
 
+### The SVG tests run in workerd, not Node
+
+`smoke:svg-sanitizer` and `smoke:figure-gate` each boot a throwaway one-route
+Worker from `scripts/svg-sanitizer-harness/` and `scripts/figure-gate-harness/`
+(ports 8792 and 8793) and drive it over HTTP. Neither needs a key or spends
+anything.
+
+The harness imports the **shipped** module rather than a copy. That is the whole
+point: `HTMLRewriter` exists only in workerd, so a Node re-implementation would
+be testing a different parser from the one that runs in production — which for a
+sanitiser is testing nothing.
+
+| Script | Cases |
+| --- | --- |
+| `npm run smoke:svg-sanitizer` | 22: `<script>`, `on*` handlers, `<foreignObject>`, `<use href>`, `<image href>`, `<style>` with `url()`, `<animate>`, mXSS-by-unwrapping, camelCase attribute survival, oversize rejection |
+| `npm run smoke:figure-gate` | 35 across eight groups: prose untouched (4), placeholder timing (6), fence markers split across chunks (3), sanitisation (6), truncated fence (7), overflow (4), unusable figures (2), two figures in one reply (3) |
+
+The gate harness returns the pieces emitted *per push*, not just the
+concatenation, so the tests can assert **when** the placeholder appeared rather
+than only that it did.
+
+On Windows, both harnesses spawn Wrangler as `process.execPath` plus the literal
+`node_modules/wrangler/bin/wrangler.js` path. Node 22 cannot `execFileSync` a
+`.cmd` shim (EINVAL), and `shell: true` re-splits arguments on spaces, which
+breaks any path containing one.
+
 ### Probes
 
 Probes measure a provider's behaviour rather than this code's. They exist because
@@ -722,6 +830,7 @@ several decisions here turn on facts no amount of reading the docs establishes.
 | `npm run probe:vision` | Does `gpt-5.6-sol` accept image content parts? |
 | `npm run probe:freemodel` | What shape does the backup gateway want (`max_tokens` vs `max_completion_tokens`, reasoning effort)? |
 | `npm run probe:tools` | Does the model call tools reliably, *and* does it do so over a streaming request? |
+| `npm run probe:svg` | Can the model draw a usable technical figure — and does it know when not to? |
 
 `probe:tools` runs five phases, five runs each, and reports hit rates rather than
 a single result — a tool that fires four times out of five is a different feature
@@ -729,6 +838,25 @@ from one that fires five. Its phase 5 is why the tool-decision leg keeps
 `stream: true`: `tool_calls` arrive as `delta` fragments (~150 of them per call)
 over a streaming response, so they can be reassembled by `index` without giving
 up genuine streaming on the backup gateway.
+
+`probe:svg` has two phases, narrowable with `PHASE=1` / `PHASE=2` and `RUNS=n`.
+
+**Phase 1, quality** asks for five figures — pole-zero, Bode, RC low-pass, free
+body, z-plane — and checks each for: parses as XML, has a `viewBox`, has a
+`<title>` (which becomes the figcaption), carries text labels, uses
+`currentColor` so it survives the dark theme, is inert (no script, handler or
+external reference), and contains the specific numbers the prompt named. It then
+renders every result to `shots/svg-probe/*.png`. That last step is not
+decoration: structural checks cannot tell you whether a pole is in the right
+half-plane, so the probe prints a line saying so and expects a human to look.
+
+**Phase 2, restraint** is the one that justified the prompt clause. It sends
+three prompts that deserve a figure and four adversarially chosen ones that do
+not — a derivation, a TCP-vs-UDP comparison, a request for linked-list code, and
+plain prose — and asserts a figure appeared or did not. Its spec deliberately
+mirrors the shipped `DIAGRAM_CLAUSE` *including* the base ChatDDB system prompt;
+an earlier version told the model to "reply with ONLY a fenced block", which
+measures obedience and cannot measure judgement.
 
 ---
 
