@@ -106,6 +106,22 @@ export interface WorkerEnv {
    */
   RATE_TOOL_IMAGE_PER_DAY?: string
 
+  // ---- SVG diagrams -------------------------------------------------------
+  /**
+   * `'false'` stops the system prompt inviting the model to draw figures.
+   *
+   * Same convention as the other kill switches: only the exact string disarms
+   * it. Note what it does *not* turn off — the figure gate in `sse.ts` and the
+   * sanitiser behind it run regardless, because a user can ask the model to
+   * write SVG whatever the prompt says, and "no unsanitised markup reaches a
+   * browser" is not a thing worth having an off position for.
+   *
+   * There is no metered budget here, unlike `IMAGE_ENABLED`: drawing costs the
+   * output tokens of the reply and nothing else. The switch exists to turn the
+   * behaviour off if it proves annoying, not to stop it spending anything.
+   */
+  SVG_DIAGRAMS?: string
+
   // ---- Auth ---------------------------------------------------------------
   /** Firebase project id. A public identifier, so a var and not a secret. */
   FIREBASE_PROJECT_ID?: string

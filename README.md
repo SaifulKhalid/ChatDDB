@@ -43,6 +43,7 @@ Check wiring at any time with `curl http://localhost:5173/api/health` — `"conf
 
 - Streaming responses with blinking cursor, Stop / Regenerate
 - Markdown rendering (GFM tables, lists) with syntax-highlighted code blocks in a framed header carrying the language name and a copy button
+- Technical figures drawn as SVG: a ` ```svg ` block renders as a themed figure with a caption, a Source toggle and a download, instead of printing as code
 - Edit an earlier user message to re-ask it — later turns are dropped and the answer regenerates from that point (as in ChatGPT)
 - Copy buttons on every message and code block
 - Conversation history: create, rename, delete, search, grouped by date (Today / Yesterday / …), persisted to `localStorage` until D1 lands
@@ -75,7 +76,9 @@ data: [DONE]
 | `worker/agentrouter.ts` | AgentRouter HTTP client — headers, retries, timeout, abort |
 | `worker/failover.ts` | The gateway chain: AgentRouter, then freemodel.dev |
 | `worker/images.ts` | The image chain: Workers AI, then Pollinations |
-| `worker/sse.ts` | Normalises upstream SSE to the contract above; peeks for tool calls |
+| `worker/sse.ts` | Normalises upstream SSE to the contract above; peeks for tool calls; gates SVG figures |
+| `worker/lib/figureGate.ts` | Withholds a ` ```svg ` block until it is complete and sanitised |
+| `worker/lib/sanitizeSvg.ts` | HTMLRewriter allowlist — the server-side half of the SVG defence |
 
 Config lives in `wrangler.jsonc` `vars` (model, base URL, token cap, timeout) and can be overridden per-machine in `.dev.vars`. Full reference in [DOCS.md § 4](DOCS.md#4-configuration).
 
@@ -96,6 +99,20 @@ The model can attach one image to a reply by calling a `generate_image` tool, so
 The tool is offered on the first upstream request, and `peekToolCalls` in `worker/sse.ts` reads far enough into the response to tell a tool call from ordinary text before any byte reaches the client — a stream that turns out to be text is replayed intact, so the ordinary path loses nothing. Execution runs server-side through the same image chain, the same `limitImage` gate, and the same R2 write as the button, then the result goes back upstream for a final answer.
 
 `RATE_TOOL_IMAGE_PER_DAY` (default 5) caps it *on top of* the ordinary image budget, because the guidance about when to fire is a sentence in a prompt and a sentence in a prompt has never been a spending control. Probe measurements behind the design are in `scripts/probe-tool-calling.mjs`.
+
+### Diagrams are drawn, not generated
+
+Most of this app's users are engineering students, and most of what they ask to see is a pole-zero plot, a Bode sketch, a free-body diagram or a circuit — figures where the *coordinates carry the meaning*. A diffusion model has no symbolic model of an axis, so it produces something that looks like a plot and is wrong in every position that matters. Rated 2/10 by the user who reported it, and no provider swap fixes it, because the failure is the technique rather than the vendor.
+
+So the model draws these instead of generating them: it writes SVG into a ` ```svg ` fence and the browser renders it. Coordinates come from the same reasoning that writes the prose, which is the part that was already right.
+
+**This is not a tool.** Unlike `generate_image` there is nothing to execute server-side — the figure *is* the reply text. That means no second round trip, no rate limiter, no R2 write, no `files` row, and it streams like any other answer. Routing between the two paths is a prompt clause: SVG when position means something, `generate_image` for photographic or artistic imagery. The composer's image toggle is unchanged.
+
+**Two sanitisers, deliberately not shared.** `worker/lib/sanitizeSvg.ts` runs first, in the Worker, using `HTMLRewriter` — a real parser, not a regex — against a strict element/attribute allowlist, so nothing unsanitised is ever persisted or sent. `src/components/SvgFigure.tsx` then re-sanitises with DOMPurify before touching the DOM. The client pass is defence in depth, not the primary control, and it is a *different implementation* on purpose: a shared allowlist would mean one bug defeats both layers.
+
+Between them sits the **figure gate** (`worker/lib/figureGate.ts`): a fenced SVG block is withheld from the stream until it is complete and clean, because half an `<svg>` is not markup that can be judged safe. The moment the opening fence is seen the gate emits the bare fence, so the reader gets a drawing skeleton instead of dead air. The buffer is bounded by size and by a 30-second deadline — a figure that hits `max_tokens` or an upstream drop is closed, sanitised, and captioned *"this figure was cut off"* rather than buffered forever or silently swallowed.
+
+`SVG_DIAGRAMS=false` stops the prompt inviting figures. It does **not** disable the gate or either sanitiser: a user can ask for SVG whatever the prompt says, and "no unsanitised markup reaches a browser" has no useful off position. There is no metered budget behind the switch — drawing costs the output tokens of the reply and nothing more.
 
 ### Two AgentRouter quirks worth knowing
 
@@ -119,6 +136,8 @@ It also calls tools reliably, which is what the `generate_image` path depends on
 
 freemodel's tool support has never been probed. The backup is offered `tools` anyway and ignoring the field is survivable by construction: no `tool_calls` just means the turn is answered as plain text, which is what it would have been.
 
+It writes usable SVG, and — the part that actually needed measuring — it knows when not to. `npm run probe:svg` runs two phases. Phase 1 asked for five figures twice each: 10/10 came back as parseable SVG with a `viewBox`, a `<title>`, text labels, `currentColor` fills, and no script, handler or external reference; label counts ran 5–21 and sizes 1.3–3.8 kB. Phase 2 is restraint, three prompts that deserve a figure against four adversarially chosen ones that do not (a derivation, a TCP-vs-UDP comparison, a request for linked-list code, plain prose): 6/6 drew, 8/8 stayed quiet. Structural checks cannot tell you whether an axis is in the right place, so the probe also renders every figure to `shots/svg-probe/*.png` for a human to look at.
+
 ## Development
 
 ```bash
@@ -134,7 +153,17 @@ node smoke.mjs         # headless-Edge UI smoke test (needs dev server; screensh
 node smoke-backend.mjs # real gpt-5.6-sol reply, asserts it renders progressively
 node smoke-edit.mjs    # message-edit flow: rewrite, drop later turns, regenerate
 node smoke-mobile.mjs  # mobile viewport / overlay sidebar
+
+npm run smoke:svg-sanitizer  # HTMLRewriter allowlist, incl. mXSS + case-mangling cases
+npm run smoke:figure-gate    # the streaming fence transform: placeholder timing, truncation, overflow
+npm run probe:svg            # real model: can it draw, and does it know when not to
 ```
+
+Both SVG smoke tests run the *shipped* modules inside a throwaway one-route
+Worker (`scripts/*-harness/`), because `HTMLRewriter` only exists in workerd —
+testing a Node re-implementation would test the wrong parser. Neither needs a
+key. `PHASE=1` / `PHASE=2` and `RUNS=n` narrow the probe, which does spend
+tokens.
 
 The UI smoke tests key off the assistant bubble filling in rather than any fixed
 text, so they pass whether the Worker is live or the UI is on its mock fallback.

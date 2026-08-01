@@ -33,10 +33,14 @@
     "smoke:chat-image-tool": "node scripts/smoke-chat-image-tool.mjs",
     "stub:pollinations": "node scripts/stub-pollinations.mjs",
     "db:prune": "node scripts/prune.mjs",
-    "cf-typegen": "wrangler types"
+    "cf-typegen": "wrangler types",
+    "smoke:svg-sanitizer": "node scripts/smoke-svg-sanitizer.mjs",
+    "smoke:figure-gate": "node scripts/smoke-figure-gate.mjs",
+    "probe:svg": "node scripts/probe-svg-diagrams.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
+    "dompurify": "^3.4.12",
     "firebase": "^12.16.0",
     "highlight.js": "^11.11.1",
     "jose": "^6.2.4",

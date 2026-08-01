@@ -15,6 +15,7 @@ import { MarkdownErrorBoundary } from './MarkdownErrorBoundary'
 import { AttachmentChip, chipFromPublicFile } from './AttachmentChip'
 import { useSignedImageUrl } from '../lib/fileUrl'
 import { normalizeMathDelimiters } from '../lib/mathDelimiters'
+import { StreamingContext } from '../lib/streamingContext'
 
 const MARKDOWN_COMPONENTS: Components = { pre: CodeBlock }
 
@@ -248,13 +249,18 @@ function AssistantMessage({
               resetKey={message.content}
               fallback={<p className="whitespace-pre-wrap">{message.content}</p>}
             >
-              <ReactMarkdown
-                remarkPlugins={REMARK_PLUGINS}
-                rehypePlugins={REHYPE_PLUGINS}
-                components={MARKDOWN_COMPONENTS}
-              >
-                {source}
-              </ReactMarkdown>
+              {/* `SvgFigure` is reached through the static components map, so it
+                  has no props route back to the message. This is the one bit it
+                  needs: whether an unfinished figure is still coming. */}
+              <StreamingContext.Provider value={!!message.streaming}>
+                <ReactMarkdown
+                  remarkPlugins={REMARK_PLUGINS}
+                  rehypePlugins={REHYPE_PLUGINS}
+                  components={MARKDOWN_COMPONENTS}
+                >
+                  {source}
+                </ReactMarkdown>
+              </StreamingContext.Provider>
             </MarkdownErrorBoundary>
           </div>
         )}
