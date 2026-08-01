@@ -174,8 +174,16 @@ export function Composer({
                 ? 'bg-accent text-surface'
                 : 'text-ink-2 hover:bg-surface-3 hover:text-ink'
             }`}
-            title={imageMode ? 'Switch back to chat' : 'Generate an image'}
-            aria-label={imageMode ? 'Switch back to chat' : 'Generate an image'}
+            // "Generate an image" read as *the* way to get an image, which is
+            // wrong: the model also calls generate_image off a plain description
+            // in a normal message. The tooltip has room to say so; the
+            // aria-label stays short and describes the switch, not exclusivity.
+            title={
+              imageMode
+                ? 'Switch back to chat'
+                : 'Image mode — every message generates an image. You can also just describe a picture in a normal message.'
+            }
+            aria-label={imageMode ? 'Switch back to chat' : 'Switch to image mode'}
           >
             <ImagePlus size={18} />
           </button>

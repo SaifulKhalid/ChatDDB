@@ -12,11 +12,18 @@ interface ChatAreaProps {
   onSuggestion: (text: string) => void
 }
 
+// Kept at four so the sm:grid-cols-2 grid stays a clean 2x2 with no orphan tile.
+// The picture entry replaced "Summarize text" (the weakest of the four — it
+// overlapped "Explain a concept") because implicit image generation is the one
+// capability users don't believe exists: the model calls generate_image off a
+// plain description, but nothing in the UI said so, so people hunted for a
+// button or gave up. The prompt deliberately contains no "generate"/"draw" verb
+// — the tile only teaches its lesson if the example is ordinary language.
 const SUGGESTIONS = [
   { title: 'Explain a concept', prompt: 'Explain how databases index data, in simple terms.' },
   { title: 'Write some code', prompt: 'Write a TypeScript function that debounces another function.' },
   { title: 'Brainstorm ideas', prompt: 'Brainstorm five names for a weekend coding project.' },
-  { title: 'Summarize text', prompt: 'Summarize the key ideas of the CAP theorem in three bullets.' },
+  { title: 'Describe a picture', prompt: 'A fluffy orange cat asleep on a sunny windowsill.' },
 ]
 
 export function ChatArea({
