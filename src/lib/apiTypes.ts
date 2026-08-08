@@ -58,6 +58,9 @@ export interface Quota {
   maxAttachmentsPerMessage: number
   /** Generated images per day, per user. `0` disables the daily window. */
   imagePerDay: number
+  imageUsedToday: number
+  /** null when the daily image limit is disabled (`RATE_IMAGE_PER_DAY=0`). */
+  imageRemainingToday: number | null
 }
 
 export type PdfExtractMode = 'client' | 'worker'

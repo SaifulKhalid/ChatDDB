@@ -119,6 +119,16 @@ export async function getMe(ctx: AuthedContext): Promise<Response> {
   const today = dayStart()
   const usage = await users.usageFor(ctx.db, ctx.user.id, today)
   const usedToday = await ratelimit.peek(ctx.db, `user:${ctx.user.id}`, 'chat', 'day')
+  /**
+   * The `'image'` counter, which is the one the composer's toggle spends. Note
+   * that the model's `generate_image` tool consumes it too (see `limitImage`) --
+   * it is the user's whole image budget, not only the button's. The separate,
+   * stricter `'tool_image'` counter that caps the model's share of it is not
+   * surfaced: it bounds a decision the user did not make, so a second number
+   * next to this one would read as a second budget to ration rather than as a
+   * ceiling on the assistant.
+   */
+  const imageUsedToday = await ratelimit.peek(ctx.db, `user:${ctx.user.id}`, 'image', 'day')
 
   return json(
     {
@@ -134,6 +144,11 @@ export async function getMe(ctx: AuthedContext): Promise<Response> {
         maxPdfBytes: ctx.policy.maxPdfBytes,
         maxAttachmentsPerMessage: ctx.policy.maxAttachmentsPerMessage,
         imagePerDay: ctx.policy.rateImagePerDay,
+        imageUsedToday,
+        imageRemainingToday:
+          ctx.policy.rateImagePerDay > 0
+            ? Math.max(0, ctx.policy.rateImagePerDay - imageUsedToday)
+            : null,
       },
       models: MODELS,
       pdfExtractMode: ctx.policy.pdfExtractMode,
