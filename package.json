@@ -36,6 +36,7 @@
     "cf-typegen": "wrangler types",
     "smoke:svg-sanitizer": "node scripts/smoke-svg-sanitizer.mjs",
     "smoke:figure-gate": "node scripts/smoke-figure-gate.mjs",
+    "smoke:tool-peek": "node --experimental-strip-types scripts/smoke-tool-peek.mjs",
     "probe:svg": "node scripts/probe-svg-diagrams.mjs"
   },
   "dependencies": {

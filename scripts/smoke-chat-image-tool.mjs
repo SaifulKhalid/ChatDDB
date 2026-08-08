@@ -199,8 +199,10 @@ async function main() {
     check('the stream carried no error frame', !second.error, String(second.error))
     check('an image was generated for the turn', Boolean(second.fileId), String(second.fileId))
     check('the reply has text introducing it', second.text.trim().length > 0, `${second.text.length} chars`)
-    // The clause tells the model never to write one, because the attachment
-    // renders on its own and the link would point at nothing.
+    // `TOOL_RESULT_OK` tells the model never to write one, because the attachment
+    // renders on its own and the link would point at nothing. It owns that rule
+    // outright — `TOOL_USE_CLAUSE` deliberately says nothing about the reply's
+    // wording, only that no prose may precede the call.
     check(
       'the reply invents no Markdown image link',
       !/!\[[^\]]*\]\(/.test(second.text),

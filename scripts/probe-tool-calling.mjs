@@ -204,8 +204,7 @@ const TOOL_USE_CLAUSE = [
   'Compose the `prompt` argument yourself from the conversation: the image model reads that',
   'string and nothing else, so it must stand alone.',
   'At most one image per reply — every call spends a small budget shared by all users.',
-  'The image is attached to your reply automatically: introduce it in one short sentence,',
-  'and never write a Markdown image link for it.',
+  'Call the tool with no text before it — write nothing until the tool result comes back.',
 ].join(' ')
 
 const SYSTEM = {

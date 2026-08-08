@@ -487,13 +487,38 @@ export type PeekResult = PeekedToolCalls | PeekedText
  * `message.tool_calls` is accepted too, for a relay that sends a whole message
  * on one frame, the same way `extractContent` already tolerates both.
  *
- * ## First signal wins
+ * ## A tool call still wins when prose comes first
  *
- * Whichever appears first — content or a tool call — decides the turn. A model
- * that wrote a sentence *and then* called a tool gets its sentence streamed and
- * the call ignored, because the alternative is discarding text the user was
- * about to read. The probe's restraint phase (5/5 quiet on a non-visual
- * question) is the evidence that this is a corner and not the common case.
+ * The rule used to be "first signal wins": content before a call meant the call
+ * was dropped. Production showed what that costs — 29% of image-intent turns
+ * ended with the model promising a picture, the gateway billing ~273 completion
+ * tokens for the call, and nothing at all being attached. The model was obeying
+ * `TOOL_USE_CLAUSE`, which until now asked it to introduce the image in one
+ * sentence; writing that sentence first was enough to lose the call.
+ *
+ * So a content frame no longer decides the turn on its own. It starts a bounded
+ * lookahead instead, and the turn is prose only if no call appears within it.
+ * The bound is what keeps this honest, because the invariant above still holds:
+ * nothing may reach the client until the decision is made, so every frame read
+ * here is a frame the user waits for.
+ *
+ * Two things stop the lookahead early, and in practice one of them almost always
+ * fires first:
+ *
+ *  - **A terminal frame** — `finish_reason` or `[DONE]`. Nothing after it can
+ *    change the verdict. AgentRouter sends ordinary prose as a single blob (see
+ *    above), so this lands one frame after the content and the budget is never
+ *    touched: the common path pays one extra `read()` on an already-finished
+ *    stream.
+ *  - **`LOOKAHEAD_FRAMES`** — the backstop for a gateway that genuinely streams
+ *    prose token by token, where waiting for a terminal frame would mean
+ *    buffering the whole reply. It caps the added latency at that many frames.
+ *
+ * The preamble itself is discarded when a call is found. Keeping it would mean
+ * threading buffered bytes through `runToolLoop` and out the far side of a
+ * second upstream request, and it is not worth it: the second round writes its
+ * own introduction from `TOOL_RESULT_OK`, which is the sentence the user wanted
+ * in the first place.
  */
 export async function peekToolCalls(res: Response): Promise<PeekResult> {
   const isEventStream = (res.headers.get('content-type') ?? '').includes('text/event-stream')
@@ -528,10 +553,16 @@ export async function peekToolCalls(res: Response): Promise<PeekResult> {
   const partials = new Map<number, PartialToolCall>()
   let pending = ''
   let sawTool = false
+  /** A content frame has been seen, so the lookahead below is running. */
+  let sawText = false
+  /** Frames inspected since that content frame, against `LOOKAHEAD_FRAMES`. */
+  let looked = 0
 
   try {
-    let done = false
-    while (!done) {
+    // Labelled because the budget and the terminal frame are both decided while
+    // walking the lines of a chunk, and both have to leave the read loop, not
+    // just the line loop.
+    scan: while (true) {
       const next = await reader.read()
       if (next.done) break
       head.push(next.value)
@@ -540,13 +571,28 @@ export async function peekToolCalls(res: Response): Promise<PeekResult> {
       const lines = pending.split('\n')
       pending = lines.pop() ?? ''
       for (const raw of lines) {
-        const verdict = inspectLine(raw.trim(), partials)
-        if (verdict === 'tool') sawTool = true
-        // Prose, and no tool call before it: stop reading and let the client
-        // have the stream. `reader` is handed on mid-flight, not restarted.
-        else if (verdict === 'text' && !sawTool) {
-          return { kind: 'text', res: replay(res, head, reader) }
+        const line = raw.trim()
+        const verdict = inspectLine(line, partials)
+
+        if (verdict === 'tool') {
+          // Committed. Keep reading to the end of the stream: the name arrived on
+          // this frame but `function.arguments` is still ~150 frames away.
+          sawTool = true
+          continue
         }
+        if (sawTool) continue
+
+        if (!sawText) {
+          // Anything before the first content frame — a role frame, an empty
+          // delta — tells us nothing and does not start the clock.
+          if (verdict !== 'text') continue
+          sawText = true
+        } else if (++looked > LOOKAHEAD_FRAMES) {
+          break scan
+        }
+
+        // Prose that has finished is prose: no call can follow a terminal frame.
+        if (isTerminalFrame(line)) break scan
       }
     }
   } catch (err) {
@@ -559,9 +605,44 @@ export async function peekToolCalls(res: Response): Promise<PeekResult> {
 
   const calls = sawTool ? assembleToolCalls(partials) : []
   if (calls.length > 0) return { kind: 'tool', calls }
-  // Either plain text that never produced a content frame, or a tool call too
-  // mangled to use. Both are the pump's problem now, and it has answers for both.
+  // Plain text, a lookahead that expired without a call, or a call too mangled to
+  // use. All three are the pump's problem now, and it has answers for all three —
+  // `head` still holds every byte read, so the replay is exact either way.
   return { kind: 'text', res: replay(res, head, reader) }
+}
+
+/**
+ * How far past the first content frame to keep looking for a tool call.
+ *
+ * Only ever reached on a gateway that streams prose token by token, and it is
+ * the whole latency cost of the lookahead on one: at most this many frames
+ * before the user's first byte. AgentRouter blobs prose and then sends
+ * `finish_reason`, so `isTerminalFrame` ends the scan long before the count
+ * matters — 16 is chosen to be ample for the one case that binds (a short
+ * introducing sentence ahead of a call) while staying too small to be felt.
+ */
+const LOOKAHEAD_FRAMES = 16
+
+/**
+ * Does this line end the completion?
+ *
+ * `[DONE]` or any frame carrying a `finish_reason`. Parsed rather than
+ * string-matched so a model writing the words "finish_reason" in its prose
+ * cannot end the scan early; the cost is bounded by `LOOKAHEAD_FRAMES`, since
+ * this is only asked during the lookahead.
+ */
+function isTerminalFrame(line: string): boolean {
+  if (!line.startsWith('data:')) return false
+  const payload = line.slice(5).trim()
+  if (!payload) return false
+  if (payload === '[DONE]') return true
+  try {
+    const chunk = JSON.parse(payload) as UpstreamChunk
+    const reason = chunk.choices?.[0]?.finish_reason
+    return typeof reason === 'string' && reason.length > 0
+  } catch {
+    return false
+  }
 }
 
 /** One `delta.tool_calls` slot, keyed by the `index` the stream assigns it. */

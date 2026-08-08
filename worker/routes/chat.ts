@@ -144,10 +144,17 @@ const IMAGE_TOOL: ToolDefinition = {
  * It is *guidance*, not enforcement. `limitToolImage` is the enforcement, and it
  * exists because a sentence in a prompt has never been a spending control.
  *
- * The last two lines are not stylistic. The probe found that a model told the
- * image is "already attached" often answers with nothing at all, and a model
+ * The last line is not stylistic, and it is an ordering rule rather than a
+ * wording one. `peekToolCalls` commits to "this turn is prose" on the first
+ * content frame it sees (`sse.ts:547`), so a model that introduces the image
+ * *before* calling the tool has its call discarded and answers with a sentence
+ * promising a picture that never arrives. Production showed this on 29% of
+ * image-intent turns. Nothing about the introduction itself belongs here:
+ * `TOOL_RESULT_OK` carries it on the round where an image actually exists to
+ * introduce, which is also where the probe's phases 3 and 4 assert it — a model
+ * told the image is "already attached" often answers with nothing at all, and one
  * told only "ok" invents `![...](attachment://...)` for a file that does not
- * exist. Both were fixed by wording, and both are asserted by phases 3 and 4.
+ * exist. Both are fixed there, and were only ever duplicated here.
  */
 const TOOL_USE_CLAUSE = [
   'You can attach one generated image to a reply by calling the `generate_image` tool.',
@@ -156,8 +163,7 @@ const TOOL_USE_CLAUSE = [
   'Compose the `prompt` argument yourself from the conversation: the image model reads that',
   'string and nothing else, so it must stand alone.',
   'At most one image per reply — every call spends a small budget shared by all users.',
-  'The image is attached to your reply automatically: introduce it in one short sentence,',
-  'and never write a Markdown image link for it.',
+  'Call the tool with no text before it — write nothing until the tool result comes back.',
 ].join(' ')
 
 // ---------------------------------------------------------------------------
@@ -959,6 +965,12 @@ async function runToolLoop(
 
     // Echoed back verbatim before the results, as the protocol requires: the
     // model matches each result to its call by `tool_call_id`.
+    //
+    // `content: null` even when the model wrote a sentence before the call.
+    // `peekToolCalls` discards that preamble rather than streaming it, so the
+    // user never saw it and nothing stored it; claiming it here would leave the
+    // model believing it had already introduced an image it has not yet been
+    // told exists, and the round below would answer as if mid-sentence.
     messages.push({ role: 'assistant', content: null, tool_calls: peek.calls })
 
     for (const call of peek.calls) {
@@ -1160,6 +1172,29 @@ async function persistAssistant(
   const prompt = result.usage?.promptTokens ?? Math.ceil(turn.promptChars / 4)
   const completion = result.usage?.completionTokens ?? messagesDb.estimateTokens(result.text)
   const total = result.usage?.totalTokens ?? prompt + completion
+
+  // A turn that ended in `tool_calls` with nothing attached is not a turn that
+  // ran a tool and failed — every failure inside `runToolCall` logs `image_failed`
+  // or moves a rate counter. It means the call never produced an image at all,
+  // and in production the cause was always the same: `peekToolCalls` saw prose
+  // first, returned `kind: 'text'`, and replayed the upstream stream verbatim —
+  // carrying the abandoned `tool_calls` frames and this very finish reason
+  // through to here. The user reads a sentence promising an image that was
+  // generated, billed, and dropped. `TOOL_USE_CLAUSE` now forbids the preamble
+  // that triggers it; this is the check that says whether that held.
+  //
+  // The round-cap path above can reach the same state, and logs its own warning
+  // first, so the two are distinguishable in a log tail.
+  //
+  // Checked here because both values are already in hand: a comparison, not a
+  // query. Kept as a permanent detector rather than a one-off — the signature is
+  // exact, and the failure is otherwise silent by construction.
+  if (result.finishReason === 'tool_calls' && !file) {
+    console.error(
+      '[chatddb] image promised but not attached for session %s: finish_reason=tool_calls with attachment_count=0 — the tool call never ran (see peekToolCalls in sse.ts)',
+      sessionId,
+    )
+  }
 
   const inserted = messagesDb.insertStmt({
     sessionId,
