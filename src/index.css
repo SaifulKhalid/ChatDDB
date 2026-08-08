@@ -76,6 +76,21 @@ body {
   }
 }
 
+/* ---- Cycling "thinking" word ---- */
+/* An animation rather than a transition: the span is remounted on each new word
+   (it is keyed by the word), so there is no previous opacity to transition from
+   — a `transition` would simply never run. The lift is small enough to read as
+   the same line settling rather than as a new element arriving. */
+.thinking-word {
+  animation: thinking-word-in 260ms ease-out;
+}
+@keyframes thinking-word-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+}
+
 /* ---- Markdown content ---- */
 .markdown {
   line-height: 1.75;

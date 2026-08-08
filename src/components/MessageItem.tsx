@@ -5,7 +5,7 @@ import remarkMath from 'remark-math'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
 import type { Components, Options } from 'react-markdown'
-import { Loader2, Pencil, RotateCcw } from 'lucide-react'
+import { Download, Loader2, Pencil, RotateCcw } from 'lucide-react'
 import type { Message } from '../types'
 import type { PublicFile } from '../lib/apiTypes'
 import { Logo } from './Logo'
@@ -13,7 +13,8 @@ import { CopyButton } from './CopyButton'
 import { CodeBlock } from './CodeBlock'
 import { MarkdownErrorBoundary } from './MarkdownErrorBoundary'
 import { AttachmentChip, chipFromPublicFile } from './AttachmentChip'
-import { useSignedImageUrl } from '../lib/fileUrl'
+import { ThinkingIndicator } from './ThinkingIndicator'
+import { useSignedImageUrl, viewUrl } from '../lib/fileUrl'
 import { normalizeMathDelimiters } from '../lib/mathDelimiters'
 import { StreamingContext } from '../lib/streamingContext'
 
@@ -211,8 +212,77 @@ function GeneratedImage({ file }: { file: PublicFile }) {
       {file.genPrompt && (
         <figcaption className="mt-1.5 text-xs text-ink-2">{file.genPrompt}</figcaption>
       )}
+      {/* Only once there is something to save. During the loading box the signed
+          URL has not resolved, and in the `broken` branch above this whole
+          component is replaced — so the button is never offered for bytes that
+          cannot be fetched. */}
+      {src && <ImageDownloadButton file={file} onFailure={onError} />}
     </figure>
   )
+}
+
+/**
+ * Saves a generated image — these end up in lab reports, same as the SVG figures,
+ * so it wears the same button as `SvgFigure`'s download rather than inventing a
+ * second visual language for the same verb.
+ *
+ * Re-resolves through `viewUrl` on click instead of reusing the rendered `src`.
+ * A signed URL lives 300 seconds and a conversation stays open far longer, so by
+ * the time someone scrolls back and decides to keep an image, the link behind the
+ * still-displayed `<img>` is usually dead. `viewUrl` re-mints anything with under
+ * 30 seconds left, which makes the stale case a fresh download rather than a
+ * saved 403 body with a `.png` on the end.
+ */
+function ImageDownloadButton({ file, onFailure }: { file: PublicFile; onFailure: () => void }) {
+  const [failed, setFailed] = useState(false)
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        setFailed(false)
+        viewUrl(file.id)
+          .then((url) => {
+            const a = document.createElement('a')
+            a.href = url
+            // Not the server's `Content-Disposition` filename: that header is
+            // `inline` for images (so `<img>` renders rather than downloads),
+            // and its filename is whatever the row happens to carry. Naming it
+            // here means the saved file always has the right extension for its
+            // actual bytes.
+            a.download = `chatddb-${file.id}.${extensionFor(file.mimeType)}`
+            a.click()
+          })
+          .catch(() => {
+            // Same one-shot recovery the `<img>` itself gets: re-mint once, and
+            // if that fails too the figure flips to "no longer available" and
+            // takes this button with it. The caption covers the interim, so a
+            // failed save never looks like a completed one.
+            setFailed(true)
+            onFailure()
+          })
+      }}
+      className="mt-1.5 flex items-center gap-1 rounded-lg px-1.5 py-1 text-ink-2 hover:bg-surface-3 hover:text-ink"
+      aria-label={failed ? 'Saving failed — try again' : 'Download image'}
+      title={failed ? 'Saving failed — try again' : 'Download image'}
+    >
+      <Download size={13} />
+      <span className="text-xs">{failed ? 'Try again' : 'Save'}</span>
+    </button>
+  )
+}
+
+/**
+ * Filename extension for a generated image.
+ *
+ * Two cases is the entire domain — `worker/images.ts` sniffs exactly PNG and
+ * JPEG magic bytes and rejects anything else — so this is a pair of branches
+ * rather than a mime lookup. The fallback keeps an unexpected type from saving
+ * without an extension, which is the one outcome the OS cannot open.
+ */
+function extensionFor(mimeType: string): string {
+  if (mimeType === 'image/jpeg') return 'jpg'
+  return 'png'
 }
 
 function AssistantMessage({
@@ -240,9 +310,7 @@ function AssistantMessage({
       </div>
       <div className="min-w-0 flex-1">
         {message.content.length === 0 && message.streaming ? (
-          <div className="flex h-7 items-center" aria-label="Thinking">
-            <span className="inline-block size-2.5 animate-pulse rounded-full bg-ink" />
-          </div>
+          <ThinkingIndicator />
         ) : (
           <div className={`markdown ${message.streaming ? 'stream-cursor' : ''}`}>
             <MarkdownErrorBoundary
