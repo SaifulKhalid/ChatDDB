@@ -41,6 +41,7 @@ import {
   type UpstreamConfig,
 } from '../agentrouter.ts'
 import {
+  chainFor,
   completeWithFailover,
   resolveFallback,
   resolveProviders,
@@ -66,7 +67,13 @@ import * as filesDb from '../db/files.ts'
 import * as ratelimit from '../lib/ratelimit.ts'
 import * as suspicious from '../lib/suspicious.ts'
 import { buildDocumentContext, imageDataUrl } from '../lib/files/context.ts'
-import { resolveModel, isKnownModel, NO_VISION_MESSAGE, MODELS, type ModelSpec } from '../models.ts'
+import {
+  resolveModel,
+  isKnownModel,
+  NO_VISION_MESSAGE,
+  MODELS,
+  type ModelSpec,
+} from '../models.ts'
 import { sha256Hex } from '../lib/hash.ts'
 import type { AuthedContext } from '../auth/middleware.ts'
 import type { FileRow } from '../db/files.ts'
@@ -380,10 +387,9 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
   const toolsArmed = resolveImageProviders(ctx.env).length > 0
   const upstream = buildUpstreamMessages(ctx, turn, toolsArmed)
 
-  // The requested registry id applies to the primary only. The backup serves a
-  // different catalogue and keeps the model its own config named — see the
-  // "registry says requested, DB says served" note in PHASE2-2.md §5.
-  const chain = providers.map((cfg, i) => (i === 0 ? { ...cfg, model: model.id } : cfg))
+  // The requested id applies to the primary only, and an *explicit* pick drops
+  // any backup that would answer with another vendor's model. See `chainFor`.
+  const chain = chainFor(providers, model, body.model !== undefined)
 
   // Which gateway owns a failure below. Advanced on each crossover so
   // `persistFailure` blames the one that actually refused last.

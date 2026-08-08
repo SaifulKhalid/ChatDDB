@@ -1,6 +1,6 @@
 # ChatDDB
 
-A ChatGPT-style AI chatbot. React frontend + a Cloudflare Worker backend that streams **`gpt-5.6-sol`** through **AgentRouter**. **Cloudflare D1** (chat history) and **R2** (file storage) to follow.
+A ChatGPT-style AI chatbot. React frontend + a Cloudflare Worker backend that streams **`gpt-5.6-sol`** or **`claude-opus-5`** through **AgentRouter**. **Cloudflare D1** (chat history) and **R2** (file storage) to follow.
 
 📘 **[DOCS.md](DOCS.md)** — full technical documentation: architecture, API reference, configuration, streaming internals, error handling, deployment, troubleshooting.
 
@@ -17,7 +17,7 @@ The Cloudflare account already has a `chatddb` Pages project and a `chatddb` D1 
 ## Status
 
 - ✅ **Frontend** — ChatGPT-clone UI
-- ✅ **Backend** — Cloudflare Worker at `/api/chat` streaming `gpt-5.6-sol` via AgentRouter
+- ✅ **Backend** — Cloudflare Worker at `/api/chat` streaming `gpt-5.6-sol` or `claude-opus-5` via AgentRouter
 - 🔜 **Persistence** — D1 for conversations/messages, R2 for attachments
 
 ## Setup
@@ -84,13 +84,23 @@ Config lives in `wrangler.jsonc` `vars` (model, base URL, token cap, timeout) an
 
 ### Two failover chains, both silent
 
-Each of the two things this app asks an outside provider for has a backup behind it, and neither announces itself. There is no picker, no provider badge, and nothing in `src/` knows which one answered.
+Each of the two things this app asks an outside provider for has a backup behind it, and neither announces itself. There is no provider badge, and nothing in `src/` knows which one answered.
 
 **Text: AgentRouter → freemodel.dev.** AgentRouter fails often enough that users noticed. `completeWithFailover` in `worker/failover.ts` sits *above* the stream opener, so it cannot restart a stream that has already delivered bytes — a mid-flight death still surfaces as an SSE error frame. A crossover writes an `upstream_failover` activity row and sets `X-ChatDDB-Upstream`.
 
 **Images: Workers AI → Pollinations.** The Cloudflare free allowance is 10,000 neurons *per account per day*, shared by every signed-in user, so the first person to spend it used to take image generation down for everyone until 00:00 UTC. `generateImage` in `worker/images.ts` crosses over on exactly two error classes — `image_quota_exhausted` and `image_model_unavailable`, the two that mean *this provider cannot serve right now*. A refusal is deliberately **not** one of them: resubmitting a prompt one safety filter rejected to a provider with a different policy would make the deployment's effective content policy "whichever provider is last on the chain". Crossovers write an `image_failover` row, and `files.gen_model` records what actually drew the image (`pollinations/flux`, not the Cloudflare model id).
 
 Both backups are metered, so both are backups rather than peers: a missing primary is an error, not a reason to run entirely on the paid one. `FALLBACK_ENABLED` and `POLLINATIONS_ENABLED` switch them off, and only the exact string `"false"` does — a typo leaves the backup armed rather than silently removing it.
+
+### Picking a model, and what that costs
+
+The composer offers **Auto · ChatGPT · Claude**. Auto sends no `model` field, which is what the Worker reads as *you choose*: it resolves `AGENTROUTER_MODEL` (`gpt-5.6-sol`) and keeps the full failover chain. Naming a model is a different promise, so it gets different behaviour.
+
+The tension is that text failover crosses to a gateway serving a **different catalogue**. That was free while no client could name a model — nobody had asked for anything specific. Once a user picks "Claude", a crossover would answer with freemodel's `gpt-5.5` and log it under a reply the user believes came from Anthropic, which is the exact thing `models.ts` calls *"worse than an error."*
+
+So `chainFor` in `worker/failover.ts` scopes the chain by **vendor**, not by model: an explicit ChatGPT pick keeps the backup (both are OpenAI, so nothing is lost), and an explicit Claude pick drops it and fails loudly instead. That is a deliberate trade of reliability for honesty, and it applies only to explicit picks — Auto is the default, so the reliability of the common path is unchanged. `scripts/test-failover.mjs` pins both directions.
+
+`claude-opus-5` was measured with the same probes as the default model, not assumed: vision 3/3, tool calling 10/10 trigger and 5/5 on restraint, round trip, refusal and streaming. One regression is real and is disclosed in the picker rather than hidden — on `probe:svg` phase 2 it stays quiet on 1/8 prompts that deserve no figure where `gpt-5.6-sol` manages 8/8. `DIAGRAM_CLAUSE` was tuned against the other model and does not transfer.
 
 ### Generating images mid-conversation
 

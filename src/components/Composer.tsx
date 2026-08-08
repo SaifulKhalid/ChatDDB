@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowUp, ImagePlus, Paperclip, Square } from 'lucide-react'
 import type { PendingAttachment } from './AttachmentChip'
+import type { ModelSpec } from '../lib/apiTypes'
 import { AttachmentTray } from './AttachmentTray'
+import { ModelPicker } from './ModelPicker'
 
 interface ComposerProps {
   disabled?: boolean
@@ -19,6 +21,11 @@ interface ComposerProps {
   /** When true, submitting generates an image instead of sending a message. */
   imageMode?: boolean
   onToggleImageMode?: () => void
+  /** The registry. The picker is hidden below two entries — nothing to choose. */
+  models?: ModelSpec[]
+  /** `null` is Auto. */
+  model?: string | null
+  onModelChange?: (modelId: string | null) => void
 }
 
 export function Composer({
@@ -35,6 +42,9 @@ export function Composer({
   canGenerateImages,
   imageMode,
   onToggleImageMode,
+  models,
+  model = null,
+  onModelChange,
 }: ComposerProps) {
   const [text, setText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -105,6 +115,23 @@ export function Composer({
 
   return (
     <div className="mx-auto w-full max-w-3xl px-3 pb-3 md:px-4 md:pb-5">
+      {/* Above the tray, not below it: the tray belongs to the message being
+          composed and reads best next to the input, while this is a setting that
+          outlives the message. */}
+      {models && models.length > 1 && onModelChange && (
+        <ModelPicker
+          models={models}
+          value={model}
+          onChange={onModelChange}
+          disabled={disabled || imageMode}
+          disabledReason={
+            imageMode
+              ? 'Image mode does not use a chat model — switch back to chat to pick one.'
+              : undefined
+          }
+        />
+      )}
+
       {attachments && attachments.length > 0 && onRemoveAttachment && (
         <AttachmentTray items={attachments} onRemove={onRemoveAttachment} />
       )}

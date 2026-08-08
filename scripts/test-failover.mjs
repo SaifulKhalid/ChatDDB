@@ -19,8 +19,9 @@
  * ships.
  */
 
-import { completeWithFailover, resolveFallback, resolveProviders } from '../worker/failover.ts'
+import { chainFor, completeWithFailover, resolveFallback, resolveProviders } from '../worker/failover.ts'
 import { UpstreamError } from '../worker/agentrouter.ts'
+import { findModel } from '../worker/models.ts'
 
 const PRIMARY = 'agentrouter.org'
 const BACKUP = 'freemodel.dev'
@@ -116,6 +117,39 @@ console.log('\nresolveProviders')
   check('single provider without a freemodel key', resolveProviders({ AGENTROUTER_API_KEY: 'sk-x' }).length === 1)
   const err = await expectThrow(async () => resolveProviders({ FREEMODEL_API_KEY: 'fm-only' }))
   check('a backup alone is not a configuration', err?.name === 'NotConfiguredError', String(err))
+}
+
+// The picker's half of the contract. Auto may cross vendors because nobody named
+// one; an explicit pick may not, because `model_used` would then record a vendor
+// the user did not choose. Both directions are pinned — dropping the backup for
+// *every* request would pass a one-sided test and quietly halve reliability.
+console.log('\nchainFor — an explicit pick is never answered by another vendor')
+{
+  const gpt = findModel('gpt-5.6-sol')
+  const claude = findModel('claude-opus-5')
+  const providers = resolveProviders(env)
+  check('both registry ids resolve', gpt?.vendor === 'openai' && claude?.vendor === 'anthropic')
+
+  const auto = chainFor(providers, gpt, false)
+  check('Auto keeps the backup', auto.map((c) => c.provider).join(',') === 'agentrouter,freemodel')
+  check('Auto still overrides the primary model', auto[0].model === 'gpt-5.6-sol')
+
+  const pickedGpt = chainFor(providers, gpt, true)
+  check('an explicit ChatGPT pick keeps the backup', pickedGpt.length === 2, `${pickedGpt.length}`)
+
+  const pickedClaude = chainFor(providers, claude, true)
+  check('an explicit Claude pick drops the backup', pickedClaude.length === 1, `${pickedClaude.length}`)
+  check('and still asks for Claude', pickedClaude[0].model === 'claude-opus-5')
+
+  // Auto is the default, so a regression here breaks every existing user.
+  const autoClaude = chainFor(providers, claude, false)
+  check('Auto is unfiltered even for a Claude default', autoClaude.length === 2)
+
+  // The primary is never filtered, so an unrecognised FREEMODEL_MODEL cannot
+  // empty the chain — `vendorOf` guessing `openai` only ever widens GPT's reach.
+  const odd = resolveProviders({ ...env, FREEMODEL_MODEL: 'some-new-model' })
+  check('an unknown backup model still serves an explicit GPT pick', chainFor(odd, gpt, true).length === 2)
+  check('but not an explicit Claude pick', chainFor(odd, claude, true).length === 1)
 }
 
 console.log('\ncompleteWithFailover — happy path')

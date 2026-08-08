@@ -1,8 +1,10 @@
 # ChatDDB — Technical Documentation
 
 ChatDDB is a ChatGPT-style chat application. A React SPA talks to a Cloudflare
-Worker, which streams completions from **`gpt-5.6-sol`** through the
-**AgentRouter** gateway. Both halves ship as a single Worker deployment.
+Worker, which streams completions from **`gpt-5.6-sol`** or **`claude-opus-5`**
+through the **AgentRouter** gateway — the composer picks between them, and `Auto`
+means the Worker's configured default. Both halves ship as a single Worker
+deployment.
 
 - [1. Architecture](#1-architecture)
 - [2. Getting started](#2-getting-started)
@@ -127,7 +129,9 @@ committed.
 worker/
   index.ts          routes, validation, system prompt, error mapping
   agentrouter.ts    upstream client: config, headers, retries, timeout, abort
-  failover.ts       gateway chain: AgentRouter → freemodel.dev
+  failover.ts       gateway chain: AgentRouter → freemodel.dev, and `chainFor`,
+                    which scopes that chain by vendor for an explicit model pick
+  models.ts         the model registry: ids, vendors, measured capabilities
   images.ts         image chain: Workers AI → Pollinations, and error classification
   sse.ts            upstream stream → client SSE contract; tool-call peek; figure gate
   lib/figureGate.ts holds back a ```svg fence until it is whole and clean
@@ -143,6 +147,7 @@ src/
     ChatArea.tsx    scroll container, welcome screen, scroll-to-bottom
     MessageItem.tsx user + assistant bubbles, markdown, edit, regenerate
     Composer.tsx    auto-growing textarea, Send/Stop
+    ModelPicker.tsx Auto / ChatGPT / Claude segmented control
     CodeBlock.tsx   framed code block with language label + copy
     SvgFigure.tsx   renders a ```svg block as a figure (DOMPurify, id namespacing)
     CopyButton.tsx  copy-to-clipboard with copied state
@@ -608,7 +613,7 @@ Requests also carry `X-App: cli`.
 
 | Field | Value |
 | --- | --- |
-| `model` | `AGENTROUTER_MODEL` |
+| `model` | the request's `model`, or `AGENTROUTER_MODEL` when it names none |
 | `messages` | validated history, system prompt first |
 | `stream` | `true` |
 | `max_completion_tokens` | `MAX_OUTPUT_TOKENS`, omitted when `0` |
@@ -616,6 +621,14 @@ Requests also carry `X-App: cli`.
 
 No `temperature`, `top_p`, or `max_tokens` — reasoning models reject a
 non-default `temperature`, and `max_tokens` is not the parameter they read.
+
+`buildBody` has no per-vendor branch, and does not need one. AgentRouter reaches
+Anthropic natively and re-serialises the result, so `claude-opus-5` takes this
+same body — and the gateway is *looser* than Anthropic's own API, accepting
+`temperature`, `max_tokens` and a `system` message role where `POST /v1/messages`
+answers 400. The native ids leak through (`msg_01…`, `toolu_01…` inside an
+otherwise ordinary OpenAI-compatible envelope), which `peekToolCalls` parses
+unchanged.
 
 ### Retries and timeouts
 
@@ -828,6 +841,7 @@ several decisions here turn on facts no amount of reading the docs establishes.
 | Script | Question it answers |
 | --- | --- |
 | `npm run probe:vision` | Does `gpt-5.6-sol` accept image content parts? |
+| `AGENTROUTER_MODEL=claude-opus-5 node scripts/probe-*.mjs` | The same four questions, asked of the other registry model. Every probe reads that env var, so a second model is a variable rather than a fork — results in `worker/models.ts` |
 | `npm run probe:freemodel` | What shape does the backup gateway want (`max_tokens` vs `max_completion_tokens`, reasoning effort)? |
 | `npm run probe:tools` | Does the model call tools reliably, *and* does it do so over a streaming request? |
 | `npm run probe:svg` | Can the model draw a usable technical figure — and does it know when not to? |

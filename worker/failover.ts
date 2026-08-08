@@ -4,9 +4,12 @@
  * ChatDDB spoke to exactly one gateway, and AgentRouter fails often enough that
  * users noticed. This module puts a second gateway behind the first:
  * AgentRouter answers as it always has, and when it cannot, freemodel.dev
- * answers instead. Nobody is told. There is no picker, no provider badge, and
- * `src/` is untouched — the only externally visible difference is an
+ * answers instead. Nobody is told — the only externally visible difference is an
  * `X-ChatDDB-Upstream` response header that appears when the backup fired.
+ *
+ * That silence had no cost while no client could name a model. The model picker
+ * gave it one, so it is now conditional: see `chainFor`, which is the boundary
+ * between "any gateway may answer" and "only this vendor may answer".
  *
  * ## Why the loop lives here and nowhere else
  *
@@ -44,6 +47,7 @@ import {
   type UpstreamConfig,
 } from './agentrouter.ts'
 import { intVar, type WorkerEnv } from './env.ts'
+import { vendorOf, type ModelSpec } from './models.ts'
 
 /** freemodel's top tier. It does not serve `gpt-5.6-sol` — see PHASE2-2.md §5. */
 export const DEFAULT_FALLBACK_MODEL = 'gpt-5.5'
@@ -92,6 +96,38 @@ export function resolveProviders(env: WorkerEnv, modelId?: string): UpstreamConf
   const fallback = resolveFallback(env)
   if (fallback) providers.push(fallback)
   return providers
+}
+
+/**
+ * Narrows a resolved chain to the gateways allowed to answer for one model.
+ *
+ * `explicit` is what changed when the model picker shipped. Failover was designed
+ * when no client could name a model: substituting `gpt-5.5` for `gpt-5.6-sol`
+ * swaps one OpenAI model for another that nobody asked for either, so the silence
+ * is kind. Once a user picks *Claude*, that same silence answers an Anthropic
+ * request with an OpenAI model — the thing `models.ts` calls worse than an error.
+ *
+ * So an explicit pick keeps only same-vendor links:
+ *
+ *   Auto             -> AgentRouter, then freemodel. Unchanged.
+ *   ChatGPT (picked) -> AgentRouter, then freemodel. Same vendor, so the backup
+ *                       still covers a gateway outage.
+ *   Claude (picked)  -> AgentRouter only. No configured backup serves Anthropic,
+ *                       so this is the request that trades reliability for truth.
+ *
+ * The primary is never filtered: index 0 carries `model.id`, so its vendor
+ * matches by construction and a bad `FREEMODEL_MODEL` cannot empty the chain.
+ * That is also why `vendorOf` guesses `openai` for ids it cannot place — see its
+ * comment in `models.ts`.
+ */
+export function chainFor(
+  providers: UpstreamConfig[],
+  model: ModelSpec,
+  explicit: boolean,
+): UpstreamConfig[] {
+  const chain = providers.map((cfg, i) => (i === 0 ? { ...cfg, model: model.id } : cfg))
+  if (!explicit) return chain
+  return chain.filter((cfg, i) => i === 0 || vendorOf(cfg.model) === model.vendor)
 }
 
 /**

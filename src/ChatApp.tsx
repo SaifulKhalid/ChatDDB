@@ -6,7 +6,7 @@ import type { Theme } from './lib/theme'
 import { useAuth } from './lib/auth'
 import { apiFetch, errorText, isRateLimit } from './lib/apiClient'
 import { type ChatRequest, streamChat, generateImage, listSessions, getTranscript, createSession, renameSession, deleteSession, importSessions } from './lib/api'
-import { loadConversations, localHistoryImported, markLocalHistoryImported } from './lib/storage'
+import { loadConversations, localHistoryImported, markLocalHistoryImported, loadModelChoice, saveModelChoice } from './lib/storage'
 import type { PublicFile, SessionSummary, TranscriptMessage } from './lib/apiTypes'
 import { prepareImage } from './lib/image'
 import { uploadFile } from './lib/upload'
@@ -19,7 +19,25 @@ import { navigate } from './lib/router'
 
 export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => void }) {
   const { quota, models, isAdmin, imageGeneration } = useAuth()
-  const activeModel = models.find((m) => m.default) ?? models[0]
+
+  // `null` is Auto: no `model` field on the request, so the Worker resolves its
+  // configured default *and* keeps its backup gateway. Naming a model instead
+  // pins the answer to that model — see `chainFor` in `worker/routes/chat.ts`.
+  const [model, setModel] = useState<string | null>(() => loadModelChoice())
+
+  // A stored id the registry no longer lists would earn a 400 on every send, so
+  // it decays to Auto. Runs once `models` arrives, since it starts out empty.
+  useEffect(() => {
+    if (model !== null && models.length > 0 && !models.some((m) => m.id === model)) {
+      setModel(null)
+      saveModelChoice(null)
+    }
+  }, [model, models])
+
+  // What the composer gates attachments on. Auto has no single answer before the
+  // request is made, so it falls back to the entry the registry flags as the
+  // default — the model the Worker will in fact resolve.
+  const activeModel = models.find((m) => m.id === model) ?? models.find((m) => m.default) ?? models[0]
 
   // ---- 3.1 State shape ---------------------------------------------------
   const [conversations, setConversations] = useState<Conversation[]>([])
@@ -211,12 +229,17 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
     let targetId = assistantLocalId
 
     try {
-      const req: ChatRequest =
-        input.kind === 'regenerate'
+      // `model` rides on all three kinds, regenerate included: re-rolling a reply
+      // under the model now selected is the point of picking one. Omitted for
+      // Auto, and an omitted field is what the Worker reads as "you choose".
+      const req: ChatRequest = {
+        ...(input.kind === 'regenerate'
           ? { sessionId: sid, regenerate: true }
           : input.kind === 'edit'
             ? { sessionId: sid, content: input.content, replaceFromMessageId: input.replaceFromMessageId }
-            : { sessionId: sid, content: input.content, attachments: input.attachments }
+            : { sessionId: sid, content: input.content, attachments: input.attachments }),
+        ...(model ? { model } : {}),
+      }
 
       for await (const delta of streamChat(req, ctrl.signal, (meta) => {
         if (meta.messageId) {
@@ -611,6 +634,9 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
           canGenerateImages={imageGeneration}
           imageMode={imageMode}
           onToggleImageMode={() => setImageMode((v) => !v)}
+          models={models}
+          model={model}
+          onModelChange={(id) => { setModel(id); saveModelChoice(id) }}
         />
       </div>
     </div>
