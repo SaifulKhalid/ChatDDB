@@ -89,7 +89,14 @@ export async function* streamChat(
         delta?: unknown
       }
       try {
-        frame = JSON.parse(data)
+        const parsed: unknown = JSON.parse(data)
+        // `JSON.parse('null')` returns null instead of throwing, so the catch
+        // below does not cover it and `frame.error` would be a TypeError. Our
+        // Worker never emits `data: null` — it writes its own frames — but this is
+        // the bug that took Claude streams down inside `worker/sse.ts`, and the
+        // reader is a cheaper place to be wrong than the relay.
+        if (typeof parsed !== 'object' || parsed === null) continue
+        frame = parsed
       } catch {
         // Keep-alives and comments are not JSON; a malformed frame is not fatal.
         continue

@@ -174,6 +174,37 @@ async function drainGate(
   }
 }
 
+/**
+ * Parses one SSE payload into a chunk, or null when it does not carry one.
+ *
+ * `try { JSON.parse(x) }` is not the guard it looks like. `JSON.parse('null')`
+ * *succeeds* and returns `null`, so the catch only ever fires on malformed JSON
+ * — and every reader below then does `chunk.error` or `chunk.choices` on null and
+ * throws a `TypeError` that kills the stream mid-answer.
+ *
+ * That is not hypothetical. AgentRouter emits a literal `data: null` frame
+ * mid-stream for `claude-opus-5` and never for `gpt-5.6-sol`: its
+ * Anthropic-to-OpenAI re-serialiser has no OpenAI shape for one of Anthropic's
+ * native events (a `ping`, on the evidence of where it lands) and writes the
+ * JSON for "nothing" instead of dropping the frame.
+ *
+ * So anything that is not a non-null object is reported the same way an
+ * unparseable frame is: a frame with nothing in it, to be skipped. Every parse of
+ * an upstream payload in this file goes through here — a bare `JSON.parse` at any
+ * of them is the bug coming back.
+ */
+function parseChunk(payload: string): UpstreamChunk | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(payload)
+  } catch {
+    return null
+  }
+  // Arrays pass, and harmlessly: every read below is a miss on one. Excluding
+  // them would only add a branch that no upstream has ever exercised.
+  return typeof parsed === 'object' && parsed !== null ? (parsed as UpstreamChunk) : null
+}
+
 /** Pulls the assistant text out of one upstream SSE payload, if it has any. */
 function extractContent(chunk: UpstreamChunk): string | null {
   const choice = chunk.choices?.[0]
@@ -237,12 +268,11 @@ async function pumpEventStream(
     if (!payload) return false
     if (payload === '[DONE]') return true
 
-    let chunk: UpstreamChunk
-    try {
-      chunk = JSON.parse(payload) as UpstreamChunk
-    } catch {
-      return false
-    }
+    // A frame carrying nothing — unparseable, or the `data: null` AgentRouter
+    // sends for Claude. Skipping it is right either way: it is not content, not
+    // an error, and not the end of the stream.
+    const chunk = parseChunk(payload)
+    if (!chunk) return false
 
     const err = extractError(chunk)
     if (err) {
@@ -331,7 +361,16 @@ async function pumpJsonBody(
   sink: Sink,
 ): Promise<void> {
   try {
-    const chunk = (await res.json()) as UpstreamChunk
+    // Via text, not `res.json()`: a body of `null` parses to null, and the same
+    // TypeError that used to kill the streaming path would kill this one.
+    const chunk = parseChunk(await res.text())
+    if (!chunk) {
+      const message = 'The model returned an empty response.'
+      sink.error = message
+      sink.finishReason = 'error'
+      await out.write(errorFrame(message, 'empty_completion'))
+      return
+    }
     const err = extractError(chunk)
     if (err) {
       sink.error = err
@@ -528,12 +567,12 @@ export async function peekToolCalls(res: Response): Promise<PeekResult> {
   if (!isEventStream || !res.body) {
     const text = await res.text()
     const partials = new Map<number, PartialToolCall>()
-    try {
-      const chunk = JSON.parse(text) as UpstreamChunk
+    // Not JSON, or JSON carrying nothing: either way there is no call in it, and
+    // replaying it verbatim lets the pump decide what it was.
+    const chunk = parseChunk(text)
+    if (chunk) {
       const raw = chunk.choices?.[0]?.message?.tool_calls ?? chunk.choices?.[0]?.delta?.tool_calls
       if (Array.isArray(raw)) for (const call of raw) mergeToolCall(partials, call)
-    } catch {
-      /* not JSON; fall through to replaying it verbatim */
     }
     const calls = assembleToolCalls(partials)
     if (calls.length > 0) return { kind: 'tool', calls }
@@ -636,13 +675,10 @@ function isTerminalFrame(line: string): boolean {
   const payload = line.slice(5).trim()
   if (!payload) return false
   if (payload === '[DONE]') return true
-  try {
-    const chunk = JSON.parse(payload) as UpstreamChunk
-    const reason = chunk.choices?.[0]?.finish_reason
-    return typeof reason === 'string' && reason.length > 0
-  } catch {
-    return false
-  }
+  const chunk = parseChunk(payload)
+  if (!chunk) return false
+  const reason = chunk.choices?.[0]?.finish_reason
+  return typeof reason === 'string' && reason.length > 0
 }
 
 /** One `delta.tool_calls` slot, keyed by the `index` the stream assigns it. */
@@ -658,12 +694,8 @@ function inspectLine(line: string, partials: Map<number, PartialToolCall>): 'too
   const payload = line.slice(5).trim()
   if (!payload || payload === '[DONE]') return null
 
-  let chunk: UpstreamChunk
-  try {
-    chunk = JSON.parse(payload) as UpstreamChunk
-  } catch {
-    return null
-  }
+  const chunk = parseChunk(payload)
+  if (!chunk) return null
   const choice = chunk.choices?.[0]
   if (!choice) return null
 

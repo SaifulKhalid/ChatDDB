@@ -124,7 +124,7 @@ Between them sits the **figure gate** (`worker/lib/figureGate.ts`): a fenced SVG
 
 `SVG_DIAGRAMS=false` stops the prompt inviting figures. It does **not** disable the gate or either sanitiser: a user can ask for SVG whatever the prompt says, and "no unsanitised markup reaches a browser" has no useful off position. There is no metered budget behind the switch — drawing costs the output tokens of the reply and nothing more.
 
-### Two AgentRouter quirks worth knowing
+### Three AgentRouter quirks worth knowing
 
 **1. It enforces a client whitelist.** A request with an ordinary `User-Agent` is rejected at the edge before it reaches the router:
 
@@ -137,6 +137,10 @@ The same request with a `claude-cli/<version> (external, ...)` User-Agent is acc
 **2. It does not really stream.** AgentRouter waits for the full completion upstream, then synthesises a single-frame SSE response (the chunk arrives as `"id":"chatcmpl_temp"` carrying the whole answer). The Worker relays that faithfully and adds no delay; the progressive typing effect is produced client-side by `paced()` in `src/lib/api.ts`, which reveals a buffered delta over ~700 ms. Short deltas pass through untouched, so if AgentRouter ever starts real streaming the pacing stops applying on its own.
 
 Pacing was tried in the Worker first and removed: Workers pin `Date.now()` between I/O, so a paced loop cannot measure its own drift and overshot its budget by 2–4×, while billing the sleep as wall-clock time.
+
+**3. For Claude, it sends a `data: null` frame.** Measured live: one null frame in twelve for `claude-opus-5`, none in forty-two for `gpt-5.6-sol`. Its Anthropic-to-OpenAI re-serialiser has no OpenAI shape for one of Anthropic's native events and writes the JSON for *nothing* rather than dropping the frame.
+
+This is worth knowing because `try { JSON.parse(x) }` does not defend against it. `JSON.parse('null')` **succeeds**, so the catch never fires and the next line reads `.error` off null — a `TypeError` that killed the stream mid-answer and surfaced as *"Stream interrupted: Cannot read properties of null."* Every parse of an upstream payload in `worker/sse.ts` therefore goes through one `parseChunk` helper that treats a non-object exactly as it treats unparseable JSON. `npm run smoke:sse-null` replays a captured Claude stream through the shipped module to pin it; a bare `JSON.parse` at any of those sites is the bug coming back.
 
 ### Notes on the model
 
@@ -166,6 +170,7 @@ node smoke-mobile.mjs  # mobile viewport / overlay sidebar
 
 npm run smoke:svg-sanitizer  # HTMLRewriter allowlist, incl. mXSS + case-mangling cases
 npm run smoke:figure-gate    # the streaming fence transform: placeholder timing, truncation, overflow
+npm run smoke:sse-null       # the `data: null` frame AgentRouter sends for Claude
 npm run probe:svg            # real model: can it draw, and does it know when not to
 ```
 
