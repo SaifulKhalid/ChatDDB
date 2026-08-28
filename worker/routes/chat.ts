@@ -43,7 +43,6 @@ import {
 import {
   chainFor,
   completeWithFailover,
-  resolveFallback,
   resolveProviders,
   titleWithFailover,
   type CrossoverReporter,
@@ -458,36 +457,27 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
       Connection: 'keep-alive',
       // Stops intermediate proxies buffering the stream into one blob.
       'X-Accel-Buffering': 'no',
-      // Still the model that was *asked for*, even on a crossover: the frontend
-      // must not be able to tell, and it keys its own state off this.
       'X-ChatDDB-Model': model.id,
-      // Present only when the backup answered, and deliberately *not* added to
-      // `Access-Control-Expose-Headers` in `lib/http.ts`: a cross-origin
-      // browser client cannot read it, so the UI cannot start depending on it.
-      // Under curl it is the fastest way to confirm failover fired.
       ...(attempt.crossedOver
         ? { 'X-ChatDDB-Upstream': attempt.provider, 'X-ChatDDB-Upstream-Model': attempt.model }
         : {}),
-      // How a client that sent no `sessionId` learns which chat it just started,
-      // without waiting for the stream to finish.
       'X-ChatDDB-Session-Id': session.id,
       ...(turn.userMessageId ? { 'X-ChatDDB-Message-Id': turn.userMessageId } : {}),
-      // Set when the model generated an image for this turn. Like
-      // `X-ChatDDB-Upstream` it is deliberately *not* in
-      // `Access-Control-Expose-Headers`, so no browser client can read it yet —
-      // it is here for smoke tests and for whatever renders the attachment
-      // live, which does not exist yet. Until it does, the image appears when
-      // the transcript is next loaded; see the follow-up note in DOCS.md.
-      ...(attached ? { 'X-ChatDDB-Generated-File': attached.id } : {}),
+      ...(attached
+        ? {
+            'X-ChatDDB-Generated-File': attached.id,
+            'X-ChatDDB-Generated-File-JSON': encodeURIComponent(JSON.stringify(attached)),
+          }
+        : {}),
       ...corsHeaders(ctx.request, ctx.env),
     },
   })
 }
 
-/** `GET /api/models` — the registry, not AgentRouter's raw list. */
+/** `GET /api/models` — the registry. */
 export function getModels(ctx: AuthedContext): Response {
   return json(
-    { models: MODELS, default: resolveModel(undefined, ctx.env.AGENTROUTER_MODEL ?? '').id },
+    { models: MODELS, default: resolveModel(undefined, ctx.env.API_PROVIDER_MODEL ?? ctx.env.AGENTROUTER_MODEL ?? '').id },
     200,
     ctx.request,
     ctx.env,
@@ -495,43 +485,18 @@ export function getModels(ctx: AuthedContext): Response {
 }
 
 /**
- * `GET /api/admin/models` — a gateway's raw model list, verbatim.
- *
- * A debugging tool, behind the admin guard, and separate from `/api/models` on
- * purpose: this is *their* catalogue, which is much longer than what ChatDDB
- * supports and says nothing about whether a given model works here. Answering an
- * ordinary user with it would invite picking one that the registry has no entry
- * for, and `pickModel` would then reject it.
- *
- * AgentRouter by default; `?provider=freemodel` asks the backup instead. This
- * route deliberately does *not* fail over — the question it answers is "what did
- * this specific gateway say", and silently answering about a different one would
- * make it useless for diagnosing the gateway that is broken.
+ * `GET /api/admin/models` — provider's raw model list.
  */
 export async function getUpstreamModels(ctx: AuthedContext): Promise<Response> {
-  const wanted = new URL(ctx.request.url).searchParams.get('provider')?.trim()
   let config
   try {
-    if (wanted === 'freemodel') {
-      const fallback = resolveFallback(ctx.env)
-      if (!fallback) {
-        throw notConfigured(
-          'No fallback gateway is configured. Set FREEMODEL_API_KEY (npm run secret:freemodel) ' +
-            'and leave FALLBACK_ENABLED unset or "true".',
-        )
-      }
-      config = fallback
-    } else {
-      config = resolveConfig(ctx.env)
-    }
+    config = resolveConfig(ctx.env)
   } catch (err) {
     if (err instanceof NotConfiguredError) throw notConfigured(err.message)
     throw err
   }
   const res = await listModels(config, ctx.request.signal)
   const text = await res.text()
-  // Passed through as bytes rather than re-serialised: the point of this route is
-  // to see exactly what the provider said, including a shape we did not expect.
   return new Response(text, {
     status: res.ok ? 200 : 502,
     headers: {

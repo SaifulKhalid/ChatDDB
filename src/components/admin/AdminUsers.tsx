@@ -1,5 +1,15 @@
 import { useEffect, useState } from 'react'
-import { Loader2, Search } from 'lucide-react'
+import {
+  Activity,
+  ChevronRight,
+  Loader2,
+  MessageSquare,
+  Search,
+  Shield,
+  UserCheck,
+  UserX,
+  X,
+} from 'lucide-react'
 import { useAuth } from '../../lib/auth'
 import { adminApi } from '../../lib/adminApi'
 import { errorText } from '../../lib/apiClient'
@@ -25,14 +35,12 @@ export function AdminUsers({ onOpenSession }: { onOpenSession?: (sessionId: stri
   const [busyId, setBusyId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // Debounce the search box only; the selects and pager apply immediately.
+  // Debounce search box
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 300)
     return () => clearTimeout(t)
   }, [search])
 
-  // One fetch path for mount, filters and paging — the previous version had a
-  // mount effect and a `load()` helper that could disagree about the filters.
   useEffect(() => {
     let cancelled = false
     setLoading(true)
@@ -44,13 +52,29 @@ export function AdminUsers({ onOpenSession }: { onOpenSession?: (sessionId: stri
       limit: LIMIT,
       offset,
     })
-      .then((res) => { if (!cancelled) { setRows(res.users); setTotal(res.total) } })
-      .catch((e) => { if (!cancelled) setError(errorText(e)) })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
+      .then((res) => {
+        if (!cancelled) {
+          setRows(res.users)
+          setTotal(res.total)
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) setError(errorText(e))
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [debouncedSearch, statusFilter, roleFilter, offset])
 
   async function selectUser(id: string) {
+    if (selectedId === id) {
+      setSelectedId(null)
+      setDetail(null)
+      return
+    }
     setSelectedId(id)
     setDetail(null)
     try {
@@ -60,11 +84,17 @@ export function AdminUsers({ onOpenSession }: { onOpenSession?: (sessionId: stri
     }
   }
 
-  async function patchUser(id: string, body: { status?: 'active' | 'suspended'; role?: 'user' | 'admin' }) {
+  async function patchUser(
+    id: string,
+    body: { status?: 'active' | 'suspended'; role?: 'user' | 'admin' },
+  ) {
     const label =
-      body.status === 'suspended' ? 'suspend'
-        : body.status === 'active' ? 'reactivate'
-          : body.role === 'admin' ? 'grant admin to'
+      body.status === 'suspended'
+        ? 'suspend'
+        : body.status === 'active'
+          ? 'reactivate'
+          : body.role === 'admin'
+            ? 'grant admin to'
             : 'remove admin from'
     if (!window.confirm(`Are you sure you want to ${label} this user?`)) return
 
@@ -82,146 +112,197 @@ export function AdminUsers({ onOpenSession }: { onOpenSession?: (sessionId: stri
   }
 
   return (
-    <div className="flex h-full flex-col md:flex-row">
+    <div className="flex h-full flex-col lg:flex-row overflow-hidden bg-surface">
       {/* Table pane */}
       <div className="flex min-w-0 flex-1 flex-col border-r border-line">
-        {/* Filters */}
-        <div className="flex items-center gap-2 border-b border-line px-4 py-2">
-          <div className="flex flex-1 items-center gap-2 rounded-lg bg-surface-2 px-3 py-1.5 text-sm">
+        {/* Filters bar */}
+        <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3 bg-surface-2/40">
+          <div className="flex flex-1 min-w-[200px] items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2 text-sm shadow-sm">
             <Search size={15} className="shrink-0 text-ink-2" />
             <input
               value={search}
-              onChange={(e) => { setSearch(e.target.value); setOffset(0) }}
-              placeholder="Search by name or email…"
-              className="flex-1 bg-transparent text-ink outline-none placeholder:text-ink-2"
+              onChange={(e) => {
+                setSearch(e.target.value)
+                setOffset(0)
+              }}
+              placeholder="Search users by email or display name…"
+              className="flex-1 bg-transparent text-xs text-ink outline-none placeholder:text-ink-2"
             />
+            {search && (
+              <button
+                onClick={() => {
+                  setSearch('')
+                  setOffset(0)
+                }}
+                className="text-ink-2 hover:text-ink"
+              >
+                <X size={13} />
+              </button>
+            )}
           </div>
-          <select
-            value={statusFilter}
-            onChange={(e) => { setStatusFilter(e.target.value); setOffset(0) }}
-            aria-label="Filter by status"
-            className="rounded-lg border border-line bg-surface-2 px-2 py-1.5 text-xs text-ink outline-none"
-          >
-            <option value="">All statuses</option>
-            <option value="active">Active</option>
-            <option value="suspended">Suspended</option>
-          </select>
-          <select
-            value={roleFilter}
-            onChange={(e) => { setRoleFilter(e.target.value); setOffset(0) }}
-            aria-label="Filter by role"
-            className="rounded-lg border border-line bg-surface-2 px-2 py-1.5 text-xs text-ink outline-none"
-          >
-            <option value="">All roles</option>
-            <option value="user">User</option>
-            <option value="admin">Admin</option>
-          </select>
+
+          <div className="flex items-center gap-2">
+            <select
+              value={statusFilter}
+              onChange={(e) => {
+                setStatusFilter(e.target.value)
+                setOffset(0)
+              }}
+              aria-label="Filter by status"
+              className="rounded-xl border border-line bg-surface px-3 py-2 text-xs font-medium text-ink outline-none shadow-sm"
+            >
+              <option value="">All Statuses</option>
+              <option value="active">Active Only</option>
+              <option value="suspended">Suspended Only</option>
+            </select>
+            <select
+              value={roleFilter}
+              onChange={(e) => {
+                setRoleFilter(e.target.value)
+                setOffset(0)
+              }}
+              aria-label="Filter by role"
+              className="rounded-xl border border-line bg-surface px-3 py-2 text-xs font-medium text-ink outline-none shadow-sm"
+            >
+              <option value="">All Roles</option>
+              <option value="user">Standard Users</option>
+              <option value="admin">Administrators</option>
+            </select>
+          </div>
         </div>
 
-        {error && <p className="border-b border-line px-4 py-2 text-sm text-red-500">{error}</p>}
+        {error && (
+          <p className="border-b border-red-500/30 bg-red-500/10 px-4 py-2 text-xs text-red-500">
+            {error}
+          </p>
+        )}
 
         {/* Table */}
         <div className="flex-1 overflow-y-auto">
           {loading ? (
-            <div className="flex items-center justify-center py-8"><Loader2 size={20} className="animate-spin text-ink-2" /></div>
+            <div className="flex flex-col items-center justify-center py-20 gap-2">
+              <Loader2 size={24} className="animate-spin text-ink-2" />
+              <p className="text-xs text-ink-2">Loading user directory…</p>
+            </div>
           ) : rows.length === 0 ? (
-            <p className="p-4 text-center text-sm text-ink-2">No users found.</p>
+            <div className="py-16 text-center text-xs text-ink-2">
+              No users match the search criteria.
+            </div>
           ) : (
-            <table className="w-full text-sm">
+            <table className="w-full text-xs">
               <thead>
-                <tr className="sticky top-0 bg-surface text-xs text-ink-2">
-                  <th className="px-3 py-2 text-left font-medium">User</th>
-                  <th className="px-3 py-2 text-left font-medium">Role</th>
-                  <th className="px-3 py-2 text-left font-medium">Status</th>
-                  <th className="px-3 py-2 text-right font-medium">Sessions</th>
-                  <th className="px-3 py-2 text-right font-medium">Messages</th>
-                  <th className="px-3 py-2 text-right font-medium">Files</th>
-                  <th className="px-3 py-2 text-right font-medium">Last login</th>
-                  <th className="px-3 py-2" />
+                <tr className="sticky top-0 z-10 border-b border-line bg-surface-2 text-[11px] font-semibold text-ink-2">
+                  <th className="px-4 py-2.5 text-left">User</th>
+                  <th className="px-3 py-2.5 text-left">Role</th>
+                  <th className="px-3 py-2.5 text-left">Status</th>
+                  <th className="px-3 py-2.5 text-right">Chats</th>
+                  <th className="px-3 py-2.5 text-right">Messages</th>
+                  <th className="px-3 py-2.5 text-right">Files</th>
+                  <th className="px-4 py-2.5 text-right">Last Login</th>
+                  <th className="px-4 py-2.5 text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody className="divide-y divide-line">
                 {rows.map((row) => (
                   <tr
                     key={row.id}
                     onClick={() => void selectUser(row.id)}
-                    className={`cursor-pointer border-t border-line hover:bg-surface-2 ${
-                      selectedId === row.id ? 'bg-surface-2' : ''
+                    className={`cursor-pointer transition-colors hover:bg-surface-2 ${
+                      selectedId === row.id ? 'bg-surface-2 font-medium' : ''
                     }`}
                   >
-                    <td className="px-3 py-2">
-                      <div className="flex items-center gap-2">
-                        <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-[10px] font-medium text-white">
+                    <td className="px-4 py-2.5">
+                      <div className="flex items-center gap-2.5">
+                        <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-[11px] font-bold text-white shadow-sm">
                           {(row.name ?? row.email).charAt(0).toUpperCase()}
                         </span>
                         <div className="min-w-0">
-                          <p className="truncate font-medium text-ink">{row.name ?? '—'}</p>
-                          <p className="truncate text-xs text-ink-2">{row.email}</p>
+                          <p className="truncate font-medium text-ink">{row.name ?? 'Anonymous'}</p>
+                          <p className="truncate text-[11px] text-ink-2 font-mono">{row.email}</p>
                         </div>
                       </div>
                     </td>
-                    <td className="px-3 py-2 text-xs">
-                      <span className={`rounded-full px-2 py-0.5 font-medium ${
-                        row.role === 'admin' ? 'bg-accent/10 text-accent' : 'text-ink-2'
-                      }`}>
+                    <td className="px-3 py-2.5">
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                          row.role === 'admin'
+                            ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400'
+                            : 'bg-surface-3 text-ink-2'
+                        }`}
+                      >
+                        {row.role === 'admin' && <Shield size={10} />}
                         {row.role}
                       </span>
                     </td>
-                    <td className="px-3 py-2 text-xs">
-                      <span className={`rounded-full px-2 py-0.5 ${
-                        row.status === 'suspended' ? 'bg-red-500/10 text-red-500' : 'text-ink-2'
-                      }`}>
+                    <td className="px-3 py-2.5">
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                          row.status === 'suspended'
+                            ? 'bg-red-500/10 text-red-500'
+                            : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                        }`}
+                      >
+                        {row.status === 'suspended' ? <UserX size={10} /> : <UserCheck size={10} />}
                         {row.status}
                       </span>
                     </td>
-                    <td className="px-3 py-2 text-right text-ink-2">{row.counts.sessions}</td>
-                    <td className="px-3 py-2 text-right text-ink-2">{row.counts.messages}</td>
-                    <td className="px-3 py-2 text-right text-ink-2">{row.counts.files}</td>
-                    <td className="px-3 py-2 text-right text-xs text-ink-2">
-                      {row.lastLogin ? new Date(row.lastLogin).toLocaleDateString() : '—'}
+                    <td className="px-3 py-2.5 text-right font-medium text-ink tabular-nums">
+                      {row.counts.sessions}
                     </td>
-                    <td className="px-3 py-2">
-                      {/* No self-suspend, no self-demote: an admin locking themselves
-                          out would need a manual D1 write to recover. */}
+                    <td className="px-3 py-2.5 text-right text-ink-2 tabular-nums">
+                      {row.counts.messages}
+                    </td>
+                    <td className="px-3 py-2.5 text-right text-ink-2 tabular-nums">
+                      {row.counts.files}
+                    </td>
+                    <td className="px-4 py-2.5 text-right text-[11px] text-ink-2 whitespace-nowrap">
+                      {row.lastLogin ? new Date(row.lastLogin).toLocaleDateString() : 'Never'}
+                    </td>
+                    <td className="px-4 py-2.5 text-right">
                       {row.id !== currentId && busyId !== row.id && (
-                        <div className="flex gap-1">
+                        <div className="flex justify-end gap-1" onClick={(e) => e.stopPropagation()}>
                           {row.status === 'active' ? (
                             <button
-                              onClick={(e) => { e.stopPropagation(); void patchUser(row.id, { status: 'suspended' }) }}
-                              className="rounded px-2 py-1 text-xs text-ink-2 hover:bg-red-500/10 hover:text-red-500"
-                              title="Suspend user"
+                              onClick={() => void patchUser(row.id, { status: 'suspended' })}
+                              className="rounded-md border border-line bg-surface px-2 py-1 text-[11px] font-medium text-ink-2 hover:border-red-500/40 hover:bg-red-500/10 hover:text-red-500"
+                              title="Suspend user access"
                             >
                               Suspend
                             </button>
                           ) : (
                             <button
-                              onClick={(e) => { e.stopPropagation(); void patchUser(row.id, { status: 'active' }) }}
-                              className="rounded px-2 py-1 text-xs text-ink-2 hover:bg-accent/10 hover:text-accent"
-                              title="Reactivate user"
+                              onClick={() => void patchUser(row.id, { status: 'active' })}
+                              className="rounded-md border border-line bg-surface px-2 py-1 text-[11px] font-medium text-ink-2 hover:border-emerald-500/40 hover:bg-emerald-500/10 hover:text-emerald-500"
+                              title="Reactivate user access"
                             >
                               Reactivate
                             </button>
                           )}
                           {row.role === 'user' ? (
                             <button
-                              onClick={(e) => { e.stopPropagation(); void patchUser(row.id, { role: 'admin' }) }}
-                              className="rounded px-2 py-1 text-xs text-ink-2 hover:bg-accent/10 hover:text-accent"
-                              title="Make admin"
+                              onClick={() => void patchUser(row.id, { role: 'admin' })}
+                              className="rounded-md border border-line bg-surface px-2 py-1 text-[11px] font-medium text-ink-2 hover:border-purple-500/40 hover:bg-purple-500/10 hover:text-purple-500"
+                              title="Grant admin privileges"
                             >
-                              Make admin
+                              Promote
                             </button>
                           ) : (
                             <button
-                              onClick={(e) => { e.stopPropagation(); void patchUser(row.id, { role: 'user' }) }}
-                              className="rounded px-2 py-1 text-xs text-ink-2 hover:bg-red-500/10 hover:text-red-500"
-                              title="Remove admin"
+                              onClick={() => void patchUser(row.id, { role: 'user' })}
+                              className="rounded-md border border-line bg-surface px-2 py-1 text-[11px] font-medium text-ink-2 hover:border-red-500/40 hover:bg-red-500/10 hover:text-red-500"
+                              title="Demote to standard user"
                             >
-                              Remove admin
+                              Demote
                             </button>
                           )}
                         </div>
                       )}
-                      {busyId === row.id && <Loader2 size={14} className="animate-spin text-ink-2" />}
+                      {row.id === currentId && (
+                        <span className="text-[10px] text-ink-2 italic">You</span>
+                      )}
+                      {busyId === row.id && (
+                        <Loader2 size={13} className="animate-spin text-ink-2 ml-auto" />
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -230,23 +311,23 @@ export function AdminUsers({ onOpenSession }: { onOpenSession?: (sessionId: stri
           )}
         </div>
 
-        {/* Pagination */}
-        <div className="flex items-center justify-between border-t border-line px-4 py-2 text-xs text-ink-2">
+        {/* Pagination Bar */}
+        <div className="flex items-center justify-between border-t border-line bg-surface-2/40 px-4 py-2.5 text-xs text-ink-2">
           <span>
-            {total === 0 ? '0 total' : `${offset + 1}–${Math.min(offset + LIMIT, total)} of ${total}`}
+            {total === 0 ? '0 users' : `${offset + 1}–${Math.min(offset + LIMIT, total)} of ${total} users`}
           </span>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
             <button
               disabled={offset === 0 || loading}
               onClick={() => setOffset((o) => Math.max(0, o - LIMIT))}
-              className="rounded px-2 py-1 hover:bg-surface-3 disabled:opacity-30"
+              className="rounded-lg border border-line bg-surface px-3 py-1 text-xs font-medium text-ink hover:bg-surface-3 disabled:opacity-30"
             >
               Previous
             </button>
             <button
               disabled={offset + LIMIT >= total || loading}
               onClick={() => setOffset((o) => o + LIMIT)}
-              className="rounded px-2 py-1 hover:bg-surface-3 disabled:opacity-30"
+              className="rounded-lg border border-line bg-surface px-3 py-1 text-xs font-medium text-ink hover:bg-surface-3 disabled:opacity-30"
             >
               Next
             </button>
@@ -254,64 +335,154 @@ export function AdminUsers({ onOpenSession }: { onOpenSession?: (sessionId: stri
         </div>
       </div>
 
-      {/* Detail pane */}
+      {/* Detail Pane / Drawer */}
       {selectedId && (
-        <div className="w-full border-t border-line md:w-80 md:shrink-0 md:border-t-0">
+        <div className="w-full border-t border-line lg:w-96 lg:shrink-0 lg:border-t-0 lg:border-l bg-surface-2/30 flex flex-col h-full overflow-hidden">
+          <div className="flex items-center justify-between border-b border-line px-4 py-3 bg-surface">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-ink">
+              User Profile & Usage
+            </h3>
+            <button
+              onClick={() => {
+                setSelectedId(null)
+                setDetail(null)
+              }}
+              className="rounded-md p-1 text-ink-2 hover:bg-surface-3 hover:text-ink"
+            >
+              <X size={15} />
+            </button>
+          </div>
+
           {!detail ? (
-            <div className="flex items-center justify-center py-8"><Loader2 size={18} className="animate-spin text-ink-2" /></div>
+            <div className="flex flex-col items-center justify-center py-20 gap-2">
+              <Loader2 size={22} className="animate-spin text-ink-2" />
+              <p className="text-xs text-ink-2">Loading user breakdown…</p>
+            </div>
           ) : (
-            <div className="max-h-full overflow-y-auto p-4 text-sm">
-              <h3 className="mb-3 font-semibold text-ink">User detail</h3>
-              <div className="space-y-2 text-xs">
-                <p><span className="text-ink-2">Email:</span> {detail.user.email}</p>
-                <p><span className="text-ink-2">Name:</span> {detail.user.name ?? '—'}</p>
-                <p><span className="text-ink-2">Role:</span> {detail.user.role}</p>
-                <p><span className="text-ink-2">Status:</span> {detail.user.status}</p>
-                <p><span className="text-ink-2">Joined:</span> {new Date(detail.user.createdAt).toLocaleDateString()}</p>
-                <p><span className="text-ink-2">Last login:</span> {detail.user.lastLogin ? new Date(detail.user.lastLogin).toLocaleString() : '—'}</p>
-                <p><span className="text-ink-2">Login count:</span> {detail.user.loginCount}</p>
-                <hr className="border-line" />
-                <p><span className="text-ink-2">Sessions:</span> {detail.usage.sessions}</p>
-                <p><span className="text-ink-2">Messages:</span> {detail.usage.messages}</p>
-                <p><span className="text-ink-2">Messages today:</span> {detail.usage.messagesToday}</p>
-                <p><span className="text-ink-2">Files:</span> {detail.usage.files}</p>
-                <p><span className="text-ink-2">Storage:</span> {formatBytes(detail.usage.storageBytes)}</p>
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
+              {/* Header card */}
+              <div className="rounded-2xl border border-line bg-surface p-4 text-center">
+                <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-accent text-base font-bold text-white shadow-sm">
+                  {(detail.user.name ?? detail.user.email).charAt(0).toUpperCase()}
+                </div>
+                <h4 className="mt-2 font-semibold text-ink text-sm">
+                  {detail.user.name ?? 'Anonymous User'}
+                </h4>
+                <p className="font-mono text-[11px] text-ink-2">{detail.user.email}</p>
+
+                <div className="mt-3 flex items-center justify-center gap-2">
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                      detail.user.role === 'admin'
+                        ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400'
+                        : 'bg-surface-3 text-ink-2'
+                    }`}
+                  >
+                    {detail.user.role}
+                  </span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                      detail.user.status === 'suspended'
+                        ? 'bg-red-500/10 text-red-500'
+                        : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                    }`}
+                  >
+                    {detail.user.status}
+                  </span>
+                </div>
               </div>
 
-              {detail.sessions.length > 0 && (
-                <>
-                  <h4 className="mb-2 mt-4 text-xs font-semibold text-ink-2">Recent conversations</h4>
-                  <div className="space-y-1">
+              {/* Account stats grid */}
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-xl border border-line bg-surface p-2.5">
+                  <span className="text-[10px] text-ink-2">Joined</span>
+                  <p className="font-semibold text-ink mt-0.5">
+                    {new Date(detail.user.createdAt).toLocaleDateString()}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-line bg-surface p-2.5">
+                  <span className="text-[10px] text-ink-2">Total Logins</span>
+                  <p className="font-semibold text-ink mt-0.5">{detail.user.loginCount}</p>
+                </div>
+                <div className="rounded-xl border border-line bg-surface p-2.5">
+                  <span className="text-[10px] text-ink-2">Messages Today</span>
+                  <p className="font-semibold text-ink mt-0.5">{detail.usage.messagesToday}</p>
+                </div>
+                <div className="rounded-xl border border-line bg-surface p-2.5">
+                  <span className="text-[10px] text-ink-2">Storage Usage</span>
+                  <p className="font-semibold text-ink mt-0.5">
+                    {formatBytes(detail.usage.storageBytes)}
+                  </p>
+                </div>
+              </div>
+
+              {/* Recent Conversations */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h5 className="font-semibold text-ink text-xs flex items-center gap-1.5">
+                    <MessageSquare size={13} className="text-accent" />
+                    Recent Conversations ({detail.sessions.length})
+                  </h5>
+                </div>
+                {detail.sessions.length === 0 ? (
+                  <p className="rounded-xl border border-dashed border-line p-3 text-center text-ink-2">
+                    No conversations found.
+                  </p>
+                ) : (
+                  <div className="space-y-1.5 max-h-48 overflow-y-auto">
                     {detail.sessions.slice(0, 10).map((s) => (
                       <button
                         key={s.id}
                         onClick={() => onOpenSession?.(s.id)}
                         disabled={!onOpenSession}
-                        title={onOpenSession ? `Open transcript — ${s.title}` : s.title}
-                        className="flex w-full items-center gap-2 rounded bg-surface-2 px-2 py-1 text-left text-xs text-ink-2 enabled:hover:bg-surface-3 enabled:hover:text-ink"
+                        className="group flex w-full items-center justify-between rounded-xl border border-line bg-surface p-2 text-left transition-colors hover:border-accent hover:bg-surface-3"
                       >
-                        <span className="min-w-0 flex-1 truncate">{s.title}</span>
-                        {s.deletedAt && <span className="shrink-0 text-[10px] text-red-500">deleted</span>}
-                        <span className="shrink-0 text-[10px] tabular-nums">{s.messageCount}</span>
+                        <div className="min-w-0 flex-1 pr-2">
+                          <p className="truncate text-xs font-medium text-ink group-hover:text-accent">
+                            {s.title}
+                          </p>
+                          <span className="text-[10px] text-ink-2">
+                            {new Date(s.updatedAt).toLocaleDateString()} · {s.messageCount} msgs
+                          </span>
+                        </div>
+                        {s.deletedAt && (
+                          <span className="rounded bg-red-500/10 px-1 py-0.5 text-[9px] text-red-500">
+                            deleted
+                          </span>
+                        )}
+                        <ChevronRight size={13} className="text-ink-2 group-hover:text-accent" />
                       </button>
                     ))}
                   </div>
-                </>
-              )}
+                )}
+              </div>
 
-              {detail.activity.length > 0 && (
-                <>
-                  <h4 className="mb-2 mt-4 text-xs font-semibold text-ink-2">Recent activity</h4>
-                  <div className="space-y-1">
+              {/* Recent Activity Audit */}
+              <div>
+                <h5 className="font-semibold text-ink text-xs mb-2 flex items-center gap-1.5">
+                  <Activity size={13} className="text-accent" />
+                  Recent Activity Logs
+                </h5>
+                {detail.activity.length === 0 ? (
+                  <p className="rounded-xl border border-dashed border-line p-3 text-center text-ink-2">
+                    No activity logs recorded.
+                  </p>
+                ) : (
+                  <div className="space-y-1.5 max-h-48 overflow-y-auto">
                     {detail.activity.slice(0, 15).map((a) => (
-                      <p key={a.id} className="flex items-baseline gap-2 text-xs text-ink-2">
-                        <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{a.action}</span>
-                        <span className="shrink-0 text-[10px]">{new Date(a.timestamp).toLocaleDateString()}</span>
-                      </p>
+                      <div
+                        key={a.id}
+                        className="flex items-center justify-between rounded-lg border border-line/60 bg-surface px-2.5 py-1.5"
+                      >
+                        <span className="font-mono text-[10px] text-ink">{a.action}</span>
+                        <span className="text-[10px] text-ink-2">
+                          {new Date(a.timestamp).toLocaleDateString()}
+                        </span>
+                      </div>
                     ))}
                   </div>
-                </>
-              )}
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -325,3 +496,4 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
+

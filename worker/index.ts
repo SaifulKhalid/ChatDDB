@@ -24,7 +24,6 @@
  */
 
 import { NotConfiguredError, resolveConfig } from './agentrouter.ts'
-import { resolveFallback } from './failover.ts'
 import { imageFallbackReady, imageReady, resolvePollinations } from './images.ts'
 import { bucketReady, dbReady } from './db/client.ts'
 import { errorResponse, json, methodNotAllowed, preflight } from './lib/http.ts'
@@ -214,14 +213,6 @@ async function health(ctx: RequestContext): Promise<Response> {
 
   const [db, r2] = await Promise.all([dbReady(ctx.env.DB), bucketReady(ctx.env.FILES)])
 
-  // The silent backup gateway. Not part of `configured`/`ok`: it is optional by
-  // design, and a deployment without it is healthy, just less resilient.
-  const fallback = resolveFallback(ctx.env)
-  // The backup image provider, reported the same way for the same reason.
-  // `resolvePollinations` returns null for both "no key" and "switched off", so
-  // there is no third "unconfigured" state to represent here either — an unarmed
-  // backup is `false` with no `imageFallbackProvider` beside it, exactly as an
-  // unarmed gateway is. What is missing shows up in `missing` below.
   const imageFallback = resolvePollinations(ctx.env)
 
   const missing: string[] = []
@@ -229,13 +220,7 @@ async function health(ctx: RequestContext): Promise<Response> {
   if (!ctx.env.FILES) missing.push('FILES binding')
   if (!ctx.env.FIREBASE_PROJECT_ID) missing.push('FIREBASE_PROJECT_ID')
   if (!ctx.env.FILE_URL_SECRET) missing.push('FILE_URL_SECRET')
-  // Not fatal: without a salt, `ipHash` returns undefined and the audit log
-  // simply records no origin, which is a privacy-safe degradation.
   if (!ctx.env.IP_HASH_SALT) missing.push('IP_HASH_SALT (optional)')
-  // Named only when the switch says the backup should be armed and the key is
-  // what is stopping it. Silence here means "nobody asked for a backup"; this
-  // line means "a backup was asked for and cannot run", which is a
-  // misconfiguration rather than a choice.
   if (ctx.env.POLLINATIONS_ENABLED?.trim() !== 'false' && !ctx.env.POLLINATIONS_API_KEY?.trim()) {
     missing.push('POLLINATIONS_API_KEY (optional; image fallback unconfigured)')
   }
@@ -244,36 +229,21 @@ async function health(ctx: RequestContext): Promise<Response> {
     {
       ok: true,
       service: 'chat',
-      model: ctx.env.AGENTROUTER_MODEL ?? 'gpt-5.6-sol',
-      provider: 'agentrouter',
+      model: ctx.env.API_PROVIDER_MODEL ?? ctx.env.AGENTROUTER_MODEL ?? 'deepseek-v4-flash',
+      provider: 'provider',
       configured,
       ...(detail ? { detail } : {}),
       ready: {
         upstream: configured,
         db,
         r2,
-        // "Can a token be verified at all?" — the project id is the only auth
-        // config there is, since verification uses Google's public JWKS.
         auth: Boolean(ctx.env.FIREBASE_PROJECT_ID),
         signedUrls: Boolean(ctx.env.FILE_URL_SECRET),
-        /** Is a second gateway armed to take over silently? */
-        fallback: fallback !== null,
-        /**
-         * Can `POST /api/images` serve? Also what the frontend reads to decide
-         * whether to show the composer's image toggle at all — a deployment
-         * without the AI binding should not offer a button that always 503s.
-         */
+        fallback: false,
         image: imageReady(ctx.env),
-        /**
-         * Is a second image provider armed to draw silently when the shared
-         * Cloudflare allowance runs out? False when the key is absent, when the
-         * kill switch is off, *and* when image generation itself is off — a
-         * backup behind a disabled feature is not armed in any useful sense.
-         */
         imageFallback: imageFallbackReady(ctx.env),
       },
       ...(missing.length > 0 ? { missing } : {}),
-      ...(fallback ? { fallbackProvider: fallback.provider, fallbackModel: fallback.model } : {}),
       ...(imageFallback
         ? { imageFallbackProvider: imageFallback.provider, imageFallbackModel: imageFallback.model }
         : {}),

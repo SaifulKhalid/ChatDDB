@@ -25,6 +25,7 @@ import type {
   ImageResponse,
   ImportResponse,
   ModelsResponse,
+  PublicFile,
   SessionListResponse,
   SessionSummary,
   TranscriptResponse,
@@ -43,6 +44,8 @@ export interface StreamMeta {
   sessionId: string | null
   messageId: string | null
   model: string | null
+  generatedFileId: string | null
+  generatedFile: PublicFile | null
 }
 
 export async function* streamChat(
@@ -54,10 +57,22 @@ export async function* streamChat(
 
   if (!res.ok || !res.body) throw await toApiError(res)
 
+  const genFileJson = res.headers.get('X-ChatDDB-Generated-File-JSON')
+  let generatedFile: PublicFile | null = null
+  if (genFileJson) {
+    try {
+      generatedFile = JSON.parse(decodeURIComponent(genFileJson))
+    } catch {
+      generatedFile = null
+    }
+  }
+
   onMeta?.({
     sessionId: res.headers.get('X-ChatDDB-Session-Id'),
     messageId: res.headers.get('X-ChatDDB-Message-Id'),
     model: res.headers.get('X-ChatDDB-Model'),
+    generatedFileId: res.headers.get('X-ChatDDB-Generated-File'),
+    generatedFile,
   })
 
   const reader = res.body.getReader()

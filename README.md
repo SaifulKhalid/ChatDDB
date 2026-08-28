@@ -1,6 +1,6 @@
 # ChatDDB
 
-A ChatGPT-style AI chatbot. React frontend + a Cloudflare Worker backend that streams **`gpt-5.6-sol`** or **`claude-opus-5`** through **AgentRouter**. **Cloudflare D1** (chat history) and **R2** (file storage) to follow.
+A ChatGPT-style AI chatbot. React frontend + a Cloudflare Worker backend that streams **`gpt-5.6-sol`** or **`claude-opus-5`** through **AgentRouter**, with **Cloudflare D1** (chat history), **R2** (file storage) and Firebase auth.
 
 📘 **[DOCS.md](DOCS.md)** — full technical documentation: architecture, API reference, configuration, streaming internals, error handling, deployment, troubleshooting.
 
@@ -11,14 +11,14 @@ The Cloudflare account already has a `chatddb` Pages project and a `chatddb` D1 
 | Resource | Name |
 | --- | --- |
 | Pages/Workers project | `chatddb-f5` |
-| D1 database (planned) | `chatddb-f5-db` |
-| R2 bucket (planned) | `chatddb-f5-storage` |
+| D1 database | `chatddb-f5-db` |
+| R2 bucket | `chatddb-f5-storage` |
 
 ## Status
 
 - ✅ **Frontend** — ChatGPT-clone UI
 - ✅ **Backend** — Cloudflare Worker at `/api/chat` streaming `gpt-5.6-sol` or `claude-opus-5` via AgentRouter
-- 🔜 **Persistence** — D1 for conversations/messages, R2 for attachments
+- ✅ **Persistence** — D1 for conversations/messages, R2 for attachments, Firebase auth in front of both
 
 ## Setup
 
@@ -46,10 +46,10 @@ Check wiring at any time with `curl http://localhost:5173/api/health` — `"conf
 - Technical figures drawn as SVG: a ` ```svg ` block renders as a themed figure with a caption, a Source toggle and a download, instead of printing as code
 - Edit an earlier user message to re-ask it — later turns are dropped and the answer regenerates from that point (as in ChatGPT)
 - Copy buttons on every message and code block
-- Conversation history: create, rename, delete, search, grouped by date (Today / Yesterday / …), persisted to `localStorage` until D1 lands
+- Conversation history: create, rename, delete, search, grouped by date (Today / Yesterday / …), stored in D1 against your account
 - Dark / light theme (system default, toggle, no flash on load)
 - Responsive: overlay sidebar + hamburger on mobile, ChatGPT-style layout on desktop
-- Mock streaming fallback: if the Worker is unreachable or has no key (404/502/503), the UI streams a demo reply so it stays testable standalone
+- Pick the model per turn: **Auto · ChatGPT · Claude**, remembered across sessions, with each model's unproven capabilities disclosed on the segment itself
 
 ## Backend
 
@@ -57,10 +57,10 @@ Check wiring at any time with `curl http://localhost:5173/api/health` — `"conf
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /api/chat` | Stream a completion. Body: `{ "messages": [{ "role", "content" }] }` |
+| `POST /api/chat` | Stream a completion. Body: `{ "sessionId"?, "content", "model"? }` — one turn, not a history; the Worker rebuilds context from D1 |
 | `POST /api/images` | Generate an image from a prompt. Body: `{ "prompt", "sessionId"? }`. JSON, not SSE |
 | `GET /api/health` | Config check — reports the model and whether the key is loaded |
-| `GET /api/models` | Model list the key can reach, for debugging |
+| `GET /api/models` | The model registry the picker renders |
 
 `/api/chat` responds with `text/event-stream`:
 
@@ -74,9 +74,10 @@ data: [DONE]
 | --- | --- |
 | `worker/index.ts` | Routing, request validation, system prompt, error mapping |
 | `worker/agentrouter.ts` | AgentRouter HTTP client — headers, retries, timeout, abort |
-| `worker/failover.ts` | The gateway chain: AgentRouter, then freemodel.dev |
+| `worker/failover.ts` | The gateway chain: AgentRouter, then freemodel.dev — and `chainFor`, which scopes it by vendor for an explicit model pick |
+| `worker/models.ts` | The model registry: ids, vendors, measured capabilities |
 | `worker/images.ts` | The image chain: Workers AI, then Pollinations |
-| `worker/sse.ts` | Normalises upstream SSE to the contract above; peeks for tool calls; gates SVG figures |
+| `worker/sse.ts` | Normalises upstream SSE to the contract above; peeks for tool calls; gates SVG figures; `parseChunk` guards every upstream parse |
 | `worker/lib/figureGate.ts` | Withholds a ` ```svg ` block until it is complete and sanitised |
 | `worker/lib/sanitizeSvg.ts` | HTMLRewriter allowlist — the server-side half of the SVG defence |
 
@@ -181,7 +182,7 @@ key. `PHASE=1` / `PHASE=2` and `RUNS=n` narrow the probe, which does spend
 tokens.
 
 The UI smoke tests key off the assistant bubble filling in rather than any fixed
-text, so they pass whether the Worker is live or the UI is on its mock fallback.
+text, so they pass against the real Worker whatever it answers.
 `smoke-backend.mjs` is the exception: it fails if the key is missing, since a
-mock reply would make a broken backend look healthy.
+reply from anywhere else would make a broken backend look healthy.
 

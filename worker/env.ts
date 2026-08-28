@@ -25,35 +25,32 @@ export interface WorkerEnv {
   AI?: Ai
 
   // ---- Secrets (`wrangler secret put` / .dev.vars) ------------------------
-  /** Primary AgentRouter API key. */
+  /** Primary upstream API key. */
+  PROVIDER_API_KEY?: string
+  /** Fallback API key 2. */
+  PROVIDER_API_KEY_2?: string
+  /** Fallback API key 3. */
+  PROVIDER_API_KEY_3?: string
+  /** Legacy alias for primary API key. */
   AGENTROUTER_API_KEY?: string
-  /** Fallback AgentRouter API key (tried when the primary fails). */
+  /** Legacy alias for secondary API key. */
   AGENTROUTER_API_KEY_2?: string
-  /** Secondary fallback AgentRouter API key. */
+  /** Legacy alias for tertiary API key. */
   AGENTROUTER_API_KEY_3?: string
   /** Salt for `ip_hash`. Rotating it deliberately breaks old correlations. */
   IP_HASH_SALT?: string
   /** HMAC key for short-lived signed file-view URLs. */
   FILE_URL_SECRET?: string
   /**
-   * freemodel.dev API key — the silent fallback gateway.
-   *
-   * Optional on purpose: with it unset the Worker behaves exactly as it did
-   * before failover existed, single-provider and all. Setting it is what arms
-   * the backup.
-   */
-  FREEMODEL_API_KEY?: string
-  /**
    * Pollinations API key — the backup image provider.
-   *
-   * A secret and never a var, for the same reason as every other key here: it
-   * is metered by account, so a value in `wrangler.jsonc` would be spendable
-   * credit in git history. Unset means image generation is Workers AI only,
-   * exactly as it was before the backup existed.
    */
   POLLINATIONS_API_KEY?: string
 
-  // ---- AgentRouter (existing, unchanged) ----------------------------------
+  // ---- API Provider Configuration -----------------------------------------
+  API_PROVIDER_MODEL?: string
+  API_PROVIDER_BASE_URL?: string
+  API_PROVIDER_USER_AGENT?: string
+  /** Legacy aliases */
   AGENTROUTER_MODEL?: string
   AGENTROUTER_BASE_URL?: string
   AGENTROUTER_USER_AGENT?: string
@@ -61,22 +58,6 @@ export interface WorkerEnv {
   UPSTREAM_TIMEOUT_MS?: string
   REASONING_EFFORT?: string
   SYSTEM_PROMPT?: string
-
-  // ---- Fallback gateway ---------------------------------------------------
-  /** Which freemodel model answers when AgentRouter cannot. Default `gpt-5.5`. */
-  FREEMODEL_MODEL?: string
-  /** Default `https://freemodel.dev/v1`. Note: *not* the `api.` host. */
-  FREEMODEL_BASE_URL?: string
-  /**
-   * Kill switch. `'false'` disables crossover even with a key present, so a
-   * runaway failover can be stopped without unsetting the secret — the fallback
-   * is metered, and a primary that fails on every request would spend it.
-   */
-  FALLBACK_ENABLED?: string
-  /** `max_completion_tokens` (default) or `max_tokens` — set from the probe. */
-  FREEMODEL_TOKEN_PARAM?: string
-  /** `'false'` to stop sending `reasoning_effort` — set from the probe. */
-  FREEMODEL_REASONING_EFFORT?: string
 
   // ---- Image generation ---------------------------------------------------
   /** Workers AI model id. Default `@cf/black-forest-labs/flux-1-schnell`. */

@@ -1,51 +1,21 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
-import { Code, Download, Image as ImageIcon } from 'lucide-react'
+import {
+  Code,
+  Download,
+  FileImage,
+  Image as ImageIcon,
+  Maximize2,
+  RotateCcw,
+  X,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react'
 import { CopyButton } from './CopyButton'
 import { useStreaming } from '../lib/streamingContext'
-
-/**
- * Renders a ```` ```svg ```` block as an actual figure.
- *
- * This is the display half of the diagram path. The model draws in SVG because
- * a diffusion model cannot: it has no symbolic notion of an axis, so a pole-zero
- * plot or a labelled schematic comes back as plausible-looking nonsense. Drawing
- * with coordinates makes the figure correct by construction, and it costs one
- * fenced code block.
- *
- * ## The sanitiser here is the second one, not the only one
- *
- * `worker/lib/sanitizeSvg.ts` has already cleaned this markup with
- * HTMLRewriter, before it was streamed or persisted. That is the primary
- * control. This pass exists because the page holds a live Firebase session, so
- * one bug in one sanitiser should not be enough — and it is deliberately a
- * *different* implementation rather than a shared allowlist, because two layers
- * that share their rules also share their blind spots.
- *
- * DOMPurify is loaded dynamically so that readers who never see a figure never
- * download it.
- *
- * ## Ids have to be rewritten, and only this side can do it
- *
- * `url(#grad)` is how a gradient, clip path or arrowhead is applied. The Worker
- * sanitiser allows `id` for that reason, and notes that it cannot solve
- * collisions: it sees one figure at a time with no idea what else is on the
- * page. Two figures in one reply that both call their gradient `g` would
- * otherwise resolve to whichever landed in the DOM first — silently, and
- * differently depending on scroll order. Here there is a unique id per instance
- * to prefix with, so both the `id` attributes and every `url(#…)` that points at
- * them are rewritten together.
- */
 
 /** How the figure should currently be presented. */
 type Status = 'drawing' | 'ready' | 'unrenderable'
 
-/**
- * Belt and braces over DOMPurify's SVG profile, which is broader than ours.
- *
- * Its defaults would keep `<use>` and `<image>`, which fetch — leaking the
- * reader's IP to whatever host the model named, even though neither executes.
- * The Worker already drops them; restating it costs one array.
- */
 const FORBID_TAGS = ['foreignObject', 'style', 'image', 'use', 'a', 'set']
 const FORBID_ATTR = ['href', 'xlink:href']
 
@@ -62,15 +32,9 @@ export function SvgFigure({ source, highlighted }: SvgFigureProps) {
   const [status, setStatus] = useState<Status>('drawing')
   const [caption, setCaption] = useState<string | null>(null)
   const [showSource, setShowSource] = useState(false)
+  const [fullscreen, setFullscreen] = useState(false)
 
-  // `useId` is unique per component instance and stable across re-renders, which
-  // is exactly the scope an id prefix needs. Stripping React's delimiters keeps
-  // it valid inside `url(#…)`.
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, '')
-
-  // The gate in `worker/sse.ts` withholds a figure until its closing fence
-  // arrives, so an unterminated root here means the stream is still open (or
-  // ended badly), never that the next token is about to complete it.
   const complete = /<\/svg\s*>/i.test(source)
 
   useEffect(() => {
@@ -99,9 +63,6 @@ export function SvgFigure({ source, highlighted }: SvgFigureProps) {
 
       namespaceIds(fragment, uid)
 
-      // The model is asked to open every figure with a <title>; it is the only
-      // description of the drawing that exists, so it serves as both the
-      // accessible name and the printed caption.
       const title = root.querySelector('title')?.textContent?.trim() ?? null
       root.setAttribute('role', 'img')
 
@@ -117,69 +78,162 @@ export function SvgFigure({ source, highlighted }: SvgFigureProps) {
     }
   }, [source, complete, uid])
 
-  // Nothing to draw and nothing still coming: the gate emits its own visible
-  // note in this case, so a second empty frame would only add noise.
   if (!complete && !streaming && source.trim().length === 0) return null
 
-  // A figure that stopped mid-tag after the stream ended. Showing the source is
-  // the honest fallback — the same rule `sanitizeSvg` follows when it returns
-  // null. A spinner here would wait forever.
   const stalled = !complete && !streaming
   const sourceShown = showSource || stalled || status === 'unrenderable'
 
   return (
-    <figure className="svg-figure">
-      <div className="code-block-header">
-        <span className="text-xs text-ink-2">{stalled ? 'Figure (incomplete)' : 'Figure'}</span>
-        <div className="flex items-center">
-          {complete && (
-            <button
-              type="button"
-              onClick={() => setShowSource((v) => !v)}
-              className="flex items-center gap-1 rounded-lg px-1.5 py-1 text-ink-2 hover:bg-surface-3 hover:text-ink"
-              aria-label={showSource ? 'Show the figure' : 'Show the SVG source'}
-              title={showSource ? 'Show the figure' : 'Show the SVG source'}
-            >
-              {showSource ? <ImageIcon size={13} /> : <Code size={13} />}
-              <span className="text-xs">{showSource ? 'Figure' : 'Source'}</span>
-            </button>
-          )}
-          {status === 'ready' && <DownloadButton source={source} name={caption} />}
-          <CopyButton text={source} label="Copy SVG source" withCaption size={13} />
+    <>
+      <figure className="svg-figure relative group">
+        <div className="code-block-header flex items-center justify-between">
+          <span className="text-xs text-ink-2 font-medium">
+            {stalled ? 'Figure (incomplete)' : 'Figure · Interactive Diagram'}
+          </span>
+          <div className="flex items-center gap-0.5">
+            {complete && (
+              <button
+                type="button"
+                onClick={() => setShowSource((v) => !v)}
+                className="flex items-center gap-1 rounded-lg px-2 py-1 text-ink-2 hover:bg-surface-3 hover:text-ink transition-colors"
+                aria-label={showSource ? 'Show the figure' : 'Show the SVG source'}
+                title={showSource ? 'Show the figure' : 'Show the SVG source'}
+              >
+                {showSource ? <ImageIcon size={13} /> : <Code size={13} />}
+                <span className="text-xs">{showSource ? 'Figure' : 'Source'}</span>
+              </button>
+            )}
+            {status === 'ready' && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setFullscreen(true)}
+                  className="flex items-center gap-1 rounded-lg px-2 py-1 text-ink-2 hover:bg-surface-3 hover:text-ink transition-colors"
+                  aria-label="Fullscreen zoom view"
+                  title="Fullscreen zoom & pan"
+                >
+                  <Maximize2 size={13} />
+                  <span className="text-xs">Expand</span>
+                </button>
+                <DownloadActions source={source} name={caption} />
+              </>
+            )}
+            <CopyButton text={source} label="Copy SVG source" withCaption size={13} />
+          </div>
         </div>
-      </div>
 
-      {/* Kept mounted even while the source is shown, so toggling back does not
-          re-run the sanitiser or lose the rendered tree. */}
-      <div className="svg-figure-canvas" hidden={sourceShown}>
-        <div ref={hostRef} />
-        {status === 'drawing' && <FigureSkeleton />}
-      </div>
+        <div className="svg-figure-canvas" hidden={sourceShown}>
+          <div ref={hostRef} className="overflow-x-auto py-2" />
+          {status === 'drawing' && <FigureSkeleton />}
+        </div>
 
-      {sourceShown && (
-        <>
-          {status === 'unrenderable' && (
-            <p className="border-b border-line bg-surface-2 px-3 py-2 text-xs text-ink-2">
-              This block could not be drawn as a figure, so its source is shown instead.
-            </p>
-          )}
-          <pre>{highlighted}</pre>
-        </>
+        {sourceShown && (
+          <>
+            {status === 'unrenderable' && (
+              <p className="border-b border-line bg-surface-2 px-3 py-2 text-xs text-ink-2">
+                This block could not be drawn as a figure, so its source is shown instead.
+              </p>
+            )}
+            <pre>{highlighted}</pre>
+          </>
+        )}
+
+        {caption && !sourceShown && <figcaption>{caption}</figcaption>}
+      </figure>
+
+      {/* Fullscreen Zoom / Pan Modal */}
+      {fullscreen && (
+        <FullscreenViewer
+          source={source}
+          caption={caption}
+          onClose={() => setFullscreen(false)}
+        />
       )}
-
-      {caption && !sourceShown && <figcaption>{caption}</figcaption>}
-    </figure>
+    </>
   )
 }
 
-/**
- * A fixed-height placeholder, matching the reserved box `GeneratedImage` uses.
- *
- * The point is that it has a height. The gate opens the fence the moment it sees
- * one, so this appears immediately and the figure fills in underneath it; a
- * zero-height placeholder would let the transcript jump when the drawing lands,
- * moving whatever the reader was looking at.
- */
+function FullscreenViewer({
+  source,
+  caption,
+  onClose,
+}: {
+  source: string
+  caption: string | null
+  onClose: () => void
+}) {
+  const [scale, setScale] = useState(1)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col bg-surface/95 backdrop-blur-md p-4 sm:p-6 animate-in fade-in duration-200">
+      <div className="flex items-center justify-between border-b border-line pb-3">
+        <div>
+          <h3 className="text-sm font-bold text-ink">{caption ?? 'SVG Diagram Viewer'}</h3>
+          <p className="text-xs text-ink-2">Zoom & inspect vector details</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center rounded-xl border border-line bg-surface-2 p-1 gap-1">
+            <button
+              onClick={() => setScale((s) => Math.max(0.4, Number((s - 0.2).toFixed(1))))}
+              className="rounded-lg p-1.5 text-ink-2 hover:bg-surface-3 hover:text-ink"
+              title="Zoom out"
+            >
+              <ZoomOut size={15} />
+            </button>
+            <span className="px-2 text-xs font-mono text-ink tabular-nums">
+              {Math.round(scale * 100)}%
+            </span>
+            <button
+              onClick={() => setScale((s) => Math.min(3, Number((s + 0.2).toFixed(1))))}
+              className="rounded-lg p-1.5 text-ink-2 hover:bg-surface-3 hover:text-ink"
+              title="Zoom in"
+            >
+              <ZoomIn size={15} />
+            </button>
+            <button
+              onClick={() => setScale(1)}
+              className="rounded-lg p-1.5 text-ink-2 hover:bg-surface-3 hover:text-ink"
+              title="Reset zoom"
+            >
+              <RotateCcw size={14} />
+            </button>
+          </div>
+
+          <DownloadActions source={source} name={caption} />
+
+          <button
+            onClick={onClose}
+            className="rounded-xl border border-line bg-surface-2 p-2 text-ink-2 hover:bg-surface-3 hover:text-ink"
+            title="Close viewer (Esc)"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      </div>
+
+      <div
+        ref={containerRef}
+        className="flex-1 overflow-auto flex items-center justify-center p-4 select-none"
+      >
+        <div
+          style={{ transform: `scale(${scale})`, transformOrigin: 'center center' }}
+          className="transition-transform duration-150 flex items-center justify-center max-w-full"
+          dangerouslySetInnerHTML={{ __html: source }}
+        />
+      </div>
+    </div>
+  )
+}
+
 function FigureSkeleton() {
   return (
     <div className="flex h-48 items-center justify-center gap-2 text-sm text-ink-2">
@@ -189,26 +243,91 @@ function FigureSkeleton() {
   )
 }
 
-/** Saves the figure as a `.svg` file — these end up in lab reports. */
-function DownloadButton({ source, name }: { source: string; name: string | null }) {
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        const url = URL.createObjectURL(new Blob([source], { type: 'image/svg+xml' }))
+function DownloadActions({ source, name }: { source: string; name: string | null }) {
+  const [downloadingPng, setDownloadingPng] = useState(false)
+
+  function saveSvg() {
+    const url = URL.createObjectURL(new Blob([source], { type: 'image/svg+xml' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${slug(name) || 'figure'}.svg`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function savePng() {
+    setDownloadingPng(true)
+    try {
+      const svgBlob = new Blob([source], { type: 'image/svg+xml;charset=utf-8' })
+      const url = URL.createObjectURL(svgBlob)
+      const img = new Image()
+      img.crossOrigin = 'anonymous'
+
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve()
+        img.onerror = (e) => reject(e)
+        img.src = url
+      })
+
+      const canvas = document.createElement('canvas')
+      // Render at 2x resolution for retina sharpness
+      const scale = 2
+      const width = (img.width || 800) * scale
+      const height = (img.height || 600) * scale
+      canvas.width = width
+      canvas.height = height
+
+      const ctx = canvas.getContext('2d')
+      if (!ctx) throw new Error('Canvas 2D unsupported')
+
+      // White background for PNG export
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(0, 0, width, height)
+      ctx.drawImage(img, 0, 0, width, height)
+
+      URL.revokeObjectURL(url)
+
+      canvas.toBlob((blob) => {
+        if (!blob) return
+        const pngUrl = URL.createObjectURL(blob)
         const a = document.createElement('a')
-        a.href = url
-        a.download = `${slug(name) || 'figure'}.svg`
+        a.href = pngUrl
+        a.download = `${slug(name) || 'figure'}.png`
         a.click()
-        URL.revokeObjectURL(url)
-      }}
-      className="flex items-center gap-1 rounded-lg px-1.5 py-1 text-ink-2 hover:bg-surface-3 hover:text-ink"
-      aria-label="Download SVG"
-      title="Download SVG"
-    >
-      <Download size={13} />
-      <span className="text-xs">Save</span>
-    </button>
+        URL.revokeObjectURL(pngUrl)
+      }, 'image/png')
+    } catch {
+      // Fallback to SVG download on rasterization failure
+      saveSvg()
+    } finally {
+      setDownloadingPng(false)
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-0.5">
+      <button
+        type="button"
+        onClick={saveSvg}
+        className="flex items-center gap-1 rounded-lg px-2 py-1 text-ink-2 hover:bg-surface-3 hover:text-ink transition-colors"
+        aria-label="Download SVG"
+        title="Download SVG vector"
+      >
+        <Download size={13} />
+        <span className="text-xs">SVG</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => void savePng()}
+        disabled={downloadingPng}
+        className="flex items-center gap-1 rounded-lg px-2 py-1 text-ink-2 hover:bg-surface-3 hover:text-ink transition-colors disabled:opacity-50"
+        aria-label="Export PNG"
+        title="Export as high-res PNG image"
+      >
+        <FileImage size={13} />
+        <span className="text-xs">{downloadingPng ? '…' : 'PNG'}</span>
+      </button>
+    </div>
   )
 }
 
@@ -221,17 +340,6 @@ function slug(name: string | null): string {
     .slice(0, 60)
 }
 
-/**
- * Prefixes every `id` in the fragment, then repoints everything that referenced
- * one.
- *
- * Both halves are required and neither is sufficient. Renaming the ids alone
- * breaks every gradient and arrowhead in the figure; rewriting the references
- * alone points them at nothing. The reference scan covers all attributes rather
- * than a fixed list (`fill`, `clip-path`, `marker-end`, …) because the set of
- * attributes that can hold a `url(#…)` is longer than it looks, and missing one
- * fails silently.
- */
 function namespaceIds(fragment: DocumentFragment, uid: string): void {
   const renamed = new Map<string, string>()
 

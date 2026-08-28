@@ -244,8 +244,36 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
       for await (const delta of streamChat(req, ctrl.signal, (meta) => {
         if (meta.messageId) {
           targetId = meta.messageId
+        }
+        if (meta.generatedFile) {
+          const gen = meta.generatedFile
           setMessages(sid, (m) =>
-            m.map((x) => (x.id === assistantLocalId ? { ...x, id: meta.messageId! } : x)))
+            m.map((x) =>
+              x.id === assistantLocalId || x.id === targetId
+                ? { ...x, id: meta.messageId ?? x.id, attachments: [gen] }
+                : x,
+            ),
+          )
+        } else if (meta.generatedFileId) {
+          const fileId = meta.generatedFileId
+          apiFetch(`/api/files/${fileId}`)
+            .then((r) => r.json() as Promise<{ file: PublicFile }>)
+            .then((res) => {
+              if (res?.file) {
+                setMessages(sid, (m) =>
+                  m.map((x) =>
+                    x.id === assistantLocalId || x.id === targetId
+                      ? { ...x, attachments: [res.file] }
+                      : x,
+                  ),
+                )
+              }
+            })
+            .catch(() => {})
+        } else if (meta.messageId) {
+          setMessages(sid, (m) =>
+            m.map((x) => (x.id === assistantLocalId ? { ...x, id: meta.messageId! } : x)),
+          )
         }
         // Only a `send` consumed the tray. Clearing it on edit/regenerate would
         // silently discard files the user had queued for their next message.

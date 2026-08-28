@@ -46,24 +46,8 @@ import {
   type ToolDefinition,
   type UpstreamConfig,
 } from './agentrouter.ts'
-import { intVar, type WorkerEnv } from './env.ts'
-import { vendorOf, type ModelSpec } from './models.ts'
-
-/** freemodel's top tier. It does not serve `gpt-5.6-sol` — see PHASE2-2.md §5. */
-export const DEFAULT_FALLBACK_MODEL = 'gpt-5.5'
-/**
- * Note the bare host. `api.freemodel.dev` answered
- * `Failed to start container: Container service is restarting` while
- * `freemodel.dev` served the same route fine, so do not "tidy" this into an
- * `api.` subdomain.
- */
-export const DEFAULT_FALLBACK_BASE_URL = 'https://freemodel.dev/v1'
-/**
- * Shorter than the primary's 180 s. By the time the backup is asked, the user
- * has already spent whatever the primary wasted before giving up; a backup that
- * is also slow is not worth waiting three minutes for.
- */
-export const FALLBACK_TIMEOUT_MS = 120_000
+import type { WorkerEnv } from './env.ts'
+import type { ModelSpec } from './models.ts'
 
 /** Which gateway answered, and with what. */
 export interface UpstreamAttempt {
@@ -72,9 +56,8 @@ export interface UpstreamAttempt {
   /** The config that won — `generateTitle` reuses it so the titler agrees. */
   cfg: UpstreamConfig
   provider: ProviderId
-  /** What actually served the turn. `gpt-5.5` on a crossover, not `gpt-5.6-sol`. */
   model: string
-  /** True when the primary failed first. Drives the header and the audit row. */
+  /** True when a secondary key/gateway answered. */
   crossedOver: boolean
 }
 
@@ -82,86 +65,27 @@ export interface UpstreamAttempt {
 export type CrossoverReporter = (from: ProviderId, to: ProviderId, err: UpstreamError) => void
 
 /**
- * Builds the gateway chain: primary first, backup second, both optional-tail.
- *
- * `modelId` overrides the primary's model only — the registry id the user asked
- * for is meaningless to the backup, which serves a different catalogue.
+ * Builds the provider configuration.
  */
 export function resolveProviders(env: WorkerEnv, modelId?: string): UpstreamConfig[] {
-  // Throws NotConfiguredError when AgentRouter has no key. Deliberately not
-  // caught: the backup does not substitute for a missing primary.
   const primary = resolveConfig(env)
-  const providers: UpstreamConfig[] = [modelId ? { ...primary, model: modelId } : primary]
-
-  const fallback = resolveFallback(env)
-  if (fallback) providers.push(fallback)
-  return providers
+  return [modelId ? { ...primary, model: modelId } : primary]
 }
 
 /**
  * Narrows a resolved chain to the gateways allowed to answer for one model.
- *
- * `explicit` is what changed when the model picker shipped. Failover was designed
- * when no client could name a model: substituting `gpt-5.5` for `gpt-5.6-sol`
- * swaps one OpenAI model for another that nobody asked for either, so the silence
- * is kind. Once a user picks *Claude*, that same silence answers an Anthropic
- * request with an OpenAI model — the thing `models.ts` calls worse than an error.
- *
- * So an explicit pick keeps only same-vendor links:
- *
- *   Auto             -> AgentRouter, then freemodel. Unchanged.
- *   ChatGPT (picked) -> AgentRouter, then freemodel. Same vendor, so the backup
- *                       still covers a gateway outage.
- *   Claude (picked)  -> AgentRouter only. No configured backup serves Anthropic,
- *                       so this is the request that trades reliability for truth.
- *
- * The primary is never filtered: index 0 carries `model.id`, so its vendor
- * matches by construction and a bad `FREEMODEL_MODEL` cannot empty the chain.
- * That is also why `vendorOf` guesses `openai` for ids it cannot place — see its
- * comment in `models.ts`.
  */
 export function chainFor(
   providers: UpstreamConfig[],
   model: ModelSpec,
-  explicit: boolean,
+  _explicit: boolean,
 ): UpstreamConfig[] {
-  const chain = providers.map((cfg, i) => (i === 0 ? { ...cfg, model: model.id } : cfg))
-  if (!explicit) return chain
-  return chain.filter((cfg, i) => i === 0 || vendorOf(cfg.model) === model.vendor)
+  return providers.map((cfg) => ({ ...cfg, model: model.id }))
 }
 
-/**
- * The freemodel config, or null when it is unset or switched off.
- *
- * `tokenParam` and `sendReasoningEffort` are overridable from env because they
- * are properties of the *gateway*, discovered by `npm run probe:freemodel`, not
- * facts this code can know. Defaults match AgentRouter's reasoning-model shape;
- * if the probe disagrees, set the vars rather than editing the client.
- */
-export function resolveFallback(env: WorkerEnv): UpstreamConfig | null {
-  const apiKey = env.FREEMODEL_API_KEY?.trim()
-  if (!apiKey || apiKey === 'fm-replace-me') return null
-  // Kill switch: only the exact string disables it, so a typo fails safe (armed).
-  if (env.FALLBACK_ENABLED?.trim() === 'false') return null
-
-  return {
-    provider: 'freemodel',
-    apiKeys: [apiKey],
-    baseUrl: (env.FREEMODEL_BASE_URL?.trim() || DEFAULT_FALLBACK_BASE_URL).replace(/\/+$/, ''),
-    model: env.FREEMODEL_MODEL?.trim() || DEFAULT_FALLBACK_MODEL,
-    // No `userAgent`: freemodel has no client whitelist, and sending a
-    // claude-cli UA to a gateway that never asked for one is just noise.
-    tokenParam: env.FREEMODEL_TOKEN_PARAM?.trim() === 'max_tokens' ? 'max_tokens' : 'max_completion_tokens',
-    maxOutputTokens: intVar(env.MAX_OUTPUT_TOKENS, 8192),
-    reasoningEffort: env.REASONING_EFFORT?.trim() || undefined,
-    sendReasoningEffort: env.FREEMODEL_REASONING_EFFORT?.trim() !== 'false',
-    timeoutMs: intVar(env.UPSTREAM_TIMEOUT_MS, FALLBACK_TIMEOUT_MS) || FALLBACK_TIMEOUT_MS,
-  }
-}
-
-/** True when a fallback gateway is armed — reported by `/api/health`. */
-export function fallbackReady(env: WorkerEnv): boolean {
-  return resolveFallback(env) !== null
+/** Reports if a fallback gateway is armed (always false now). */
+export function fallbackReady(_env: WorkerEnv): boolean {
+  return false
 }
 
 /**

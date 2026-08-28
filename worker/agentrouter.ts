@@ -25,12 +25,12 @@
  */
 
 export const DEFAULT_BASE_URL = 'https://agentrouter.org/v1'
-export const DEFAULT_MODEL = 'gpt-5.6-sol'
+export const DEFAULT_MODEL = 'deepseek-v4-flash'
 export const DEFAULT_USER_AGENT = 'claude-cli/2.1.158 (external, sdk-cli)'
 export const DEFAULT_TIMEOUT_MS = 180_000
 
 /** Which gateway a config points at. Labels logs and `chat_messages.model_provider`. */
-export type ProviderId = 'agentrouter' | 'freemodel'
+export type ProviderId = 'provider' | 'agentrouter'
 
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool'
 
@@ -38,8 +38,7 @@ export type ChatRole = 'system' | 'user' | 'assistant' | 'tool'
  * A multimodal content part, in OpenAI's shape.
  *
  * Only used when a turn actually carries an image. A text-only turn keeps
- * `content` as a plain string, because that is the form AgentRouter is known to
- * accept — see the note on `vision` in `models.ts`.
+ * `content` as a plain string.
  */
 export type ContentPart =
   | { type: 'text'; text: string }
@@ -47,10 +46,6 @@ export type ContentPart =
 
 /**
  * A tool the model may call, in OpenAI's `tools` shape.
- *
- * Sent only when the caller supplies one — a request with no tools keeps exactly
- * the body every gateway here is known to accept, which is the same rule
- * `ContentPart` follows for images.
  */
 export interface ToolDefinition {
   type: 'function'
@@ -71,15 +66,8 @@ export interface ToolCall {
 
 export interface ChatMessage {
   role: ChatRole
-  /**
-   * Null on an assistant turn that is purely a tool call — the model said
-   * nothing, it only asked for something. Gateways reject `undefined` here but
-   * accept an explicit null.
-   */
   content: string | ContentPart[] | null
-  /** Present on an assistant turn the model answered with tool calls. */
   tool_calls?: ToolCall[]
-  /** Required on a `role: 'tool'` message: which call this is the result of. */
   tool_call_id?: string
 }
 
@@ -116,16 +104,9 @@ export class NotConfiguredError extends Error {
 
 /** A gateway (or the provider behind it) returned a failure. */
 export class UpstreamError extends Error {
-  /** Status the Worker should reply with — never 404/502/503. */
   readonly status: number
   readonly upstreamStatus: number | undefined
   readonly type: string
-  /**
-   * Whether trying a *different gateway* could plausibly succeed.
-   *
-   * False for a request we malformed: another gateway would reject the same
-   * body, so crossing over would only spend money on a second refusal.
-   */
   readonly crossable: boolean
 
   constructor(
@@ -145,6 +126,12 @@ export class UpstreamError extends Error {
 }
 
 interface EnvLike {
+  PROVIDER_API_KEY?: string
+  PROVIDER_API_KEY_2?: string
+  PROVIDER_API_KEY_3?: string
+  API_PROVIDER_BASE_URL?: string
+  API_PROVIDER_MODEL?: string
+  API_PROVIDER_USER_AGENT?: string
   AGENTROUTER_API_KEY?: string
   AGENTROUTER_API_KEY_2?: string
   AGENTROUTER_API_KEY_3?: string
@@ -163,9 +150,19 @@ function intVar(raw: string | undefined, fallback: number): number {
 
 function collectApiKeys(env: EnvLike): string[] {
   const keys: string[] = []
-  for (const raw of [env.AGENTROUTER_API_KEY, env.AGENTROUTER_API_KEY_2, env.AGENTROUTER_API_KEY_3]) {
+  const candidates = [
+    env.PROVIDER_API_KEY,
+    env.PROVIDER_API_KEY_2,
+    env.PROVIDER_API_KEY_3,
+    env.AGENTROUTER_API_KEY,
+    env.AGENTROUTER_API_KEY_2,
+    env.AGENTROUTER_API_KEY_3,
+  ]
+  for (const raw of candidates) {
     const trimmed = raw?.trim()
-    if (trimmed && trimmed !== 'sk-replace-me') keys.push(trimmed)
+    if (trimmed && trimmed !== 'sk-replace-me' && !keys.includes(trimmed)) {
+      keys.push(trimmed)
+    }
   }
   return keys
 }
@@ -174,17 +171,20 @@ export function resolveConfig(env: EnvLike): UpstreamConfig {
   const apiKeys = collectApiKeys(env)
   if (apiKeys.length === 0) {
     throw new NotConfiguredError(
-      'No AGENTROUTER_API_KEY is set. Locally: copy .dev.vars.example to ' +
-        '.dev.vars and paste your key(s). Deployed: npx wrangler secret put AGENTROUTER_API_KEY (and optionally AGENTROUTER_API_KEY_2, AGENTROUTER_API_KEY_3).',
+      'No PROVIDER_API_KEY is set. Locally: copy .dev.vars.example to ' +
+        '.dev.vars and paste your key(s). Deployed: npx wrangler secret put PROVIDER_API_KEY.',
     )
   }
+  const baseUrl = (env.API_PROVIDER_BASE_URL?.trim() || env.AGENTROUTER_BASE_URL?.trim() || DEFAULT_BASE_URL).replace(/\/+$/, '')
+  const model = env.API_PROVIDER_MODEL?.trim() || env.AGENTROUTER_MODEL?.trim() || DEFAULT_MODEL
+  const userAgent = env.API_PROVIDER_USER_AGENT?.trim() || env.AGENTROUTER_USER_AGENT?.trim() || DEFAULT_USER_AGENT
+
   return {
-    provider: 'agentrouter',
+    provider: 'provider',
     apiKeys,
-    baseUrl: (env.AGENTROUTER_BASE_URL?.trim() || DEFAULT_BASE_URL).replace(/\/+$/, ''),
-    model: env.AGENTROUTER_MODEL?.trim() || DEFAULT_MODEL,
-    userAgent: env.AGENTROUTER_USER_AGENT?.trim() || DEFAULT_USER_AGENT,
-    // GPT-5.6 is a reasoning model: it takes `max_completion_tokens`.
+    baseUrl,
+    model,
+    userAgent,
     tokenParam: 'max_completion_tokens',
     maxOutputTokens: intVar(env.MAX_OUTPUT_TOKENS, 8192),
     reasoningEffort: env.REASONING_EFFORT?.trim() || undefined,
@@ -239,7 +239,7 @@ const RETRY_IN_PLACE = new Set([408, 429])
  * configured they fall back to the old in-place ladder, because retrying a bad
  * minute is then the only move left.
  */
-const CROSS_NOW = new Set([500, 502, 503, 504, 522, 524])
+const CROSS_NOW = new Set([402, 500, 502, 503, 504, 522, 524])
 const MAX_ATTEMPTS = 3
 
 export interface CompletionOptions {
@@ -621,29 +621,21 @@ async function readError(cfg: UpstreamConfig, res: Response): Promise<UpstreamEr
 }
 
 /** Human name for messages the user may end up reading. */
-function label(cfg: UpstreamConfig): string {
-  return cfg.provider === 'agentrouter' ? 'AgentRouter' : 'freemodel.dev'
+function label(_cfg: UpstreamConfig): string {
+  return 'API Provider'
 }
 
 /**
  * Classifies an upstream HTTP failure.
- *
- * Two rules to preserve. First, never return 404/502/503 — the frontend treats
- * those as "no backend yet" and quietly swaps in a mock reply, which would hide
- * a real error. Second, `crossable` is false only when *we* built a bad request:
- * a second gateway would reject the same body, so crossing over would spend
- * money on a second refusal and delay the error the user needs to see.
  */
 function toUpstreamError(
   cfg: UpstreamConfig,
   upstreamStatus: number,
   detail: UpstreamErrorBody,
 ): UpstreamError {
-  // AgentRouter's client whitelist. Our UA is wrong *for this gateway*; a
-  // gateway without a whitelist would have taken the same request happily.
   if (detail.type === 'unauthorized_client_error') {
     return new UpstreamError(
-      `${label(cfg)} rejected this client. Its edge only accepts claude-cli-shaped User-Agents — check the AGENTROUTER_USER_AGENT var.`,
+      `${label(cfg)} rejected this client. Check the API_PROVIDER_USER_AGENT variable.`,
       500,
       upstreamStatus,
       detail.type,
@@ -651,10 +643,19 @@ function toUpstreamError(
   }
   if (upstreamStatus === 401 || upstreamStatus === 403) {
     return new UpstreamError(
-      `${label(cfg)} rejected the API key (${detail.message}). Regenerate it at https://agentrouter.org/console/token.`,
+      `${label(cfg)} rejected the API key (${detail.message}). Please verify your PROVIDER_API_KEY.`,
       500,
       upstreamStatus,
       'invalid_api_key',
+    )
+  }
+  if (upstreamStatus === 402) {
+    return new UpstreamError(
+      `${label(cfg)} quota or budget pool exhausted: ${detail.message}`,
+      402,
+      upstreamStatus,
+      'quota_exhausted',
+      true,
     )
   }
   if (upstreamStatus === 429) {

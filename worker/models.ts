@@ -18,14 +18,14 @@
  * failover rule needs it: substituting one vendor's model for another is the one
  * crossover a user who picked deliberately would call a lie.
  */
-export type Vendor = 'openai' | 'anthropic'
+export type Vendor = 'openai' | 'anthropic' | 'deepseek' | 'zhipu'
 
 export interface ModelSpec {
   id: string
   label: string
   /** The name a user picks by. Short enough for a segmented control. */
   short: string
-  provider: 'agentrouter'
+  provider: 'provider' | 'agentrouter'
   vendor: Vendor
   /** Accepts image content parts. Gates the attach button and `model_no_vision`. */
   vision: boolean
@@ -40,69 +40,55 @@ export interface ModelSpec {
   note?: string
 }
 
-/**
- * `vision: true` is *observed*, not assumed (PHASE2-PLAN.md §14, item 2 --
- * resolved). AgentRouter does forward multimodal content parts for
- * `gpt-5.6-sol`: `npm run probe:vision` posts generated images of known colour
- * and layout and the model reads them back correctly, including which half of a
- * split image is which. That last check matters -- a model that only answered
- * plausibly about colour could be guessing, and this flag existed precisely to
- * avoid claiming a capability nobody had watched work.
- *
- * The same is true of `claude-opus-5`, measured the same way. Every probe here
- * takes `AGENTROUTER_MODEL`, so pointing them at a second model is an env var
- * rather than a fork:
- *
- *   AGENTROUTER_MODEL=claude-opus-5 node scripts/probe-vision.mjs   -> 3/3
- *   AGENTROUTER_MODEL=claude-opus-5 node scripts/probe-tool-calling.mjs
- *       -> 10/10 trigger, 5/5 restraint, 5/5 round trip, 5/5 refusal,
- *          5/5 `tool_calls` over SSE in the `delta` form `sse.ts` expects
- *
- * Worth knowing about that last one: AgentRouter reaches Anthropic natively and
- * re-serialises, so the frames carry native `msg_01...` and `toolu_01...` ids
- * inside an otherwise ordinary OpenAI-compatible envelope. `peekToolCalls` reads
- * them without changes. The gateway is also *looser* than Anthropic's own API --
- * `temperature`, `max_tokens` and a `system` message role are all accepted where
- * `POST /v1/messages` answers 400 -- so `buildBody` needs no per-vendor branch.
- *
- * Re-run the probes before trusting any of this after a gateway change.
- */
 export const MODELS: ModelSpec[] = [
+  {
+    id: 'deepseek-v4-flash',
+    label: 'DeepSeek V4 Flash',
+    short: 'DeepSeek',
+    provider: 'provider',
+    vendor: 'deepseek',
+    vision: false,
+    documents: true,
+    contextTokens: 128_000,
+    maxOutputTokens: 8_192,
+    reasoning: false,
+    default: true,
+  },
+  {
+    id: 'glm-5.3',
+    label: 'GLM 5.3',
+    short: 'GLM',
+    provider: 'provider',
+    vendor: 'zhipu',
+    vision: false,
+    documents: true,
+    contextTokens: 128_000,
+    maxOutputTokens: 8_192,
+    reasoning: true,
+  },
   {
     id: 'gpt-5.6-sol',
     label: 'GPT-5.6 Sol',
     short: 'ChatGPT',
-    provider: 'agentrouter',
+    provider: 'provider',
     vendor: 'openai',
     vision: true,
     documents: true,
     contextTokens: 400_000,
     maxOutputTokens: 128_000,
     reasoning: true,
-    default: true,
   },
   {
     id: 'claude-opus-5',
     label: 'Claude Opus 5',
     short: 'Claude',
-    provider: 'agentrouter',
+    provider: 'provider',
     vendor: 'anthropic',
     vision: true,
     documents: true,
     contextTokens: 1_000_000,
     maxOutputTokens: 128_000,
     reasoning: true,
-    // Both numbers above are Anthropic's published limits and are display-only:
-    // what the Worker actually sends is `MAX_OUTPUT_TOKENS` (`agentrouter.ts`),
-    // and no code truncates against `contextTokens`.
-    //
-    // The note is the honest thing to show. `npm run probe:svg` phase 2 asks for
-    // restraint -- four prompts that deserve no figure -- and `gpt-5.6-sol`
-    // stays quiet on 8/8 where this model stayed quiet on 1/8, drawing for a
-    // quadratic-formula derivation and a request for linked-list code.
-    // `DIAGRAM_CLAUSE` was tuned against the other model and does not transfer.
-    // Until it is retuned, say so rather than let it surprise anyone.
-    note: 'Draws diagrams more eagerly than asked.',
   },
 ]
 
@@ -163,7 +149,10 @@ function unknownModel(id: string): ModelSpec {
  * the single thing that rule exists to prevent.
  */
 export function vendorOf(modelId: string): Vendor {
-  return /claude|anthropic/i.test(modelId) ? 'anthropic' : 'openai'
+  if (/claude|anthropic/i.test(modelId)) return 'anthropic'
+  if (/deepseek/i.test(modelId)) return 'deepseek'
+  if (/glm|zhipu/i.test(modelId)) return 'zhipu'
+  return 'openai'
 }
 
 export function isKnownModel(id: string): boolean {

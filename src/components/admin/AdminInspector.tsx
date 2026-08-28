@@ -1,5 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Loader2 } from 'lucide-react'
+import {
+  Activity,
+  ExternalLink,
+  Eye,
+  FileCode,
+  FileText,
+  HardDrive,
+  ImageIcon,
+  Loader2,
+  MessageSquare,
+  Search,
+  ShieldAlert,
+  X,
+} from 'lucide-react'
 import {
   adminApi,
   type AdminActivityList,
@@ -14,11 +27,6 @@ type View = 'activity' | 'sessions' | 'files' | 'transcript'
 const LIMIT = 50
 const DAY_MS = 86_400_000
 
-/**
- * `<input type="date">` yields `YYYY-MM-DD`, which `Date.parse` reads as UTC
- * midnight. Passing that straight through as `to` would exclude the whole day the
- * user picked, so the end of the range is pushed to the last millisecond of it.
- */
 function dateToMs(value: string, edge: 'start' | 'end'): number | undefined {
   if (!value) return undefined
   const ms = new Date(`${value}T00:00:00Z`).getTime()
@@ -45,13 +53,15 @@ export function AdminInspector({ initialSessionId }: { initialSessionId?: string
   const [includeDeleted, setIncludeDeleted] = useState(false)
   const [fileUserId, setFileUserId] = useState('')
 
-  // Offsets, one per paged view
+  // Offsets
   const [activityOffset, setActivityOffset] = useState(0)
   const [sessionOffset, setSessionOffset] = useState(0)
   const [fileOffset, setFileOffset] = useState(0)
 
   const loadActivity = useCallback((offset = 0) => {
-    setBusy('activity'); setError(null); setActivityOffset(offset)
+    setBusy('activity')
+    setError(null)
+    setActivityOffset(offset)
     adminApi.activity({
       userId: userIdFilter || undefined,
       action: actionFilter || undefined,
@@ -66,7 +76,9 @@ export function AdminInspector({ initialSessionId }: { initialSessionId?: string
   }, [userIdFilter, actionFilter, fromDate, toDate])
 
   const loadSessions = useCallback((offset = 0) => {
-    setBusy('sessions'); setError(null); setSessionOffset(offset)
+    setBusy('sessions')
+    setError(null)
+    setSessionOffset(offset)
     adminApi.sessions({
       userId: sessionUserId || undefined,
       search: sessionSearch || undefined,
@@ -80,7 +92,9 @@ export function AdminInspector({ initialSessionId }: { initialSessionId?: string
   }, [sessionUserId, sessionSearch, includeDeleted])
 
   const loadFiles = useCallback((offset = 0) => {
-    setBusy('files'); setError(null); setFileOffset(offset)
+    setBusy('files')
+    setError(null)
+    setFileOffset(offset)
     adminApi.files({ userId: fileUserId || undefined, limit: LIMIT, offset })
       .then(setFiles)
       .catch((e) => setError(errorText(e)))
@@ -90,15 +104,14 @@ export function AdminInspector({ initialSessionId }: { initialSessionId?: string
   const loadTranscript = useCallback((id: string) => {
     setView('transcript')
     setTranscript(null)
-    setBusy('transcript'); setError(null)
+    setBusy('transcript')
+    setError(null)
     adminApi.session(id)
       .then(setTranscript)
       .catch((e) => setError(errorText(e)))
       .finally(() => setBusy((b) => (b === 'transcript' ? null : b)))
   }, [])
 
-  // Fetch on first arrival at each tab. Without this the pane renders empty
-  // until the user thinks to press Search.
   const fetched = useRef<Set<View>>(new Set())
   useEffect(() => {
     if (view === 'transcript' || fetched.current.has(view)) return
@@ -108,8 +121,6 @@ export function AdminInspector({ initialSessionId }: { initialSessionId?: string
     if (view === 'files') loadFiles(0)
   }, [view, loadActivity, loadSessions, loadFiles])
 
-  // Deep link from the Users tab. Tracks the id rather than a boolean so that
-  // clicking a second conversation over there re-opens rather than no-ops.
   const opened = useRef<string | null>(null)
   useEffect(() => {
     if (!initialSessionId || opened.current === initialSessionId) return
@@ -117,45 +128,57 @@ export function AdminInspector({ initialSessionId }: { initialSessionId?: string
     loadTranscript(initialSessionId)
   }, [initialSessionId, loadTranscript])
 
-  // ---- Render -----------------------------------------------------------
   return (
-    <div className="flex h-full flex-col">
-      {/* View tabs */}
-      <div className="flex gap-1 border-b border-line px-4 py-2">
-        {([
-          { key: 'activity' as View, label: 'Activity' },
-          { key: 'sessions' as View, label: 'Conversations' },
-          { key: 'files' as View, label: 'Files' },
-        ]).map((v) => (
-          <button
-            key={v.key}
-            onClick={() => { setView(v.key); setError(null) }}
-            className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
-              view === v.key ? 'bg-ink text-surface' : 'text-ink-2 hover:bg-surface-3 hover:text-ink'
-            }`}
-          >
-            {v.label}
-          </button>
-        ))}
-        {(view === 'transcript' || transcript) && (
-          <button
-            onClick={() => setView('transcript')}
-            className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
-              view === 'transcript' ? 'bg-ink text-surface' : 'text-ink-2 hover:bg-surface-3 hover:text-ink'
-            }`}
-          >
-            Transcript
-          </button>
-        )}
+    <div className="flex h-full flex-col overflow-hidden bg-surface">
+      {/* Subnav tabs */}
+      <div className="flex items-center justify-between border-b border-line bg-surface-2/40 px-4 py-2.5">
+        <div className="flex items-center gap-1">
+          {(
+            [
+              { key: 'activity' as View, label: 'Audit Activity', icon: <Activity size={13} /> },
+              { key: 'sessions' as View, label: 'Conversations', icon: <MessageSquare size={13} /> },
+              { key: 'files' as View, label: 'Storage & Files', icon: <HardDrive size={13} /> },
+            ] as const
+          ).map((v) => (
+            <button
+              key={v.key}
+              onClick={() => {
+                setView(v.key)
+                setError(null)
+              }}
+              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                view === v.key
+                  ? 'bg-ink text-surface shadow-sm'
+                  : 'text-ink-2 hover:bg-surface-3 hover:text-ink'
+              }`}
+            >
+              {v.icon}
+              <span>{v.label}</span>
+            </button>
+          ))}
+          {(view === 'transcript' || transcript) && (
+            <button
+              onClick={() => setView('transcript')}
+              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                view === 'transcript'
+                  ? 'bg-ink text-surface shadow-sm'
+                  : 'text-ink-2 hover:bg-surface-3 hover:text-ink'
+              }`}
+            >
+              <Eye size={13} />
+              <span>Transcript</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {error && (
-        <div className="mx-4 mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">
+        <div className="mx-4 mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-xs text-red-500">
           {error}
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="flex-1 overflow-y-auto p-4 md:p-6">
         {view === 'activity' && (
           <ActivityView
             data={activity}
@@ -204,39 +227,54 @@ export function AdminInspector({ initialSessionId }: { initialSessionId?: string
           />
         )}
 
-        {view === 'transcript' && <TranscriptView data={transcript} loading={busy === 'transcript'} />}
+        {view === 'transcript' && (
+          <TranscriptView
+            data={transcript}
+            loading={busy === 'transcript'}
+            onBack={() => setView('sessions')}
+          />
+        )}
       </div>
     </div>
   )
 }
 
-// ---- Shared bits ---------------------------------------------------------
-
 function Spinner() {
-  return <div className="flex items-center justify-center py-8"><Loader2 size={20} className="animate-spin text-ink-2" /></div>
+  return (
+    <div className="flex flex-col items-center justify-center py-16 gap-2">
+      <Loader2 size={24} className="animate-spin text-ink-2" />
+      <p className="text-xs text-ink-2">Loading data…</p>
+    </div>
+  )
 }
 
 function Pager({
-  offset, total, onPage,
-}: { offset: number; total: number; onPage: (offset: number) => void }) {
+  offset,
+  total,
+  onPage,
+}: {
+  offset: number
+  total: number
+  onPage: (offset: number) => void
+}) {
   if (total <= LIMIT) return null
   return (
-    <div className="mt-3 flex items-center justify-between text-xs text-ink-2">
+    <div className="mt-4 flex items-center justify-between border-t border-line pt-3 text-xs text-ink-2">
       <span>
-        {offset + 1}–{Math.min(offset + LIMIT, total)} of {total}
+        Showing {offset + 1}–{Math.min(offset + LIMIT, total)} of {total} records
       </span>
-      <div className="flex gap-2">
+      <div className="flex items-center gap-2">
         <button
           disabled={offset === 0}
           onClick={() => onPage(Math.max(0, offset - LIMIT))}
-          className="rounded px-2 py-1 hover:bg-surface-3 disabled:opacity-30"
+          className="rounded-lg border border-line bg-surface px-3 py-1 text-xs font-medium text-ink hover:bg-surface-3 disabled:opacity-30"
         >
           Previous
         </button>
         <button
           disabled={offset + LIMIT >= total}
           onClick={() => onPage(offset + LIMIT)}
-          className="rounded px-2 py-1 hover:bg-surface-3 disabled:opacity-30"
+          className="rounded-lg border border-line bg-surface px-3 py-1 text-xs font-medium text-ink hover:bg-surface-3 disabled:opacity-30"
         >
           Next
         </button>
@@ -246,165 +284,328 @@ function Pager({
 }
 
 const FILTER_INPUT =
-  'rounded-lg border border-line bg-surface-2 px-3 py-1.5 text-xs text-ink outline-none placeholder:text-ink-2'
-const SEARCH_BUTTON = 'rounded-lg bg-ink px-3 py-1.5 text-xs text-surface hover:opacity-80'
+  'rounded-xl border border-line bg-surface px-3 py-2 text-xs text-ink outline-none placeholder:text-ink-2 shadow-sm'
+const SEARCH_BUTTON =
+  'rounded-xl bg-ink px-4 py-2 text-xs font-medium text-surface hover:opacity-85 shadow-sm transition-opacity'
+
+// ---- Sub-views -----------------------------------------------------------
 
 // ---- Sub-views -----------------------------------------------------------
 
 function ActivityView({
-  data, loading, offset, userIdFilter, actionFilter, fromDate, toDate,
-  onUserIdChange, onActionChange, onFromChange, onToChange, onSearch, onPage,
+  data,
+  loading,
+  offset,
+  userIdFilter,
+  actionFilter,
+  fromDate,
+  toDate,
+  onUserIdChange,
+  onActionChange,
+  onFromChange,
+  onToChange,
+  onSearch,
+  onPage,
 }: {
-  data: AdminActivityList | null; loading: boolean; offset: number
-  userIdFilter: string; actionFilter: string; fromDate: string; toDate: string
-  onUserIdChange: (v: string) => void; onActionChange: (v: string) => void
-  onFromChange: (v: string) => void; onToChange: (v: string) => void
-  onSearch: () => void; onPage: (offset: number) => void
+  data: AdminActivityList | null
+  loading: boolean
+  offset: number
+  userIdFilter: string
+  actionFilter: string
+  fromDate: string
+  toDate: string
+  onUserIdChange: (v: string) => void
+  onActionChange: (v: string) => void
+  onFromChange: (v: string) => void
+  onToChange: (v: string) => void
+  onSearch: () => void
+  onPage: (offset: number) => void
 }) {
+  const [expandedMetaId, setExpandedMetaId] = useState<string | null>(null)
+
   return (
-    <div>
+    <div className="space-y-4">
       {/* Filters */}
-      <div className="mb-3 flex flex-wrap gap-2">
-        <input placeholder="User ID" value={userIdFilter} onChange={(e) => onUserIdChange(e.target.value)}
-          className={`min-w-32 flex-1 ${FILTER_INPUT}`} />
-        {/* A select, not a text box: the Worker 400s on any action outside
-            ACTIVITY_ACTIONS, and it ships the list in every response. */}
-        <select value={actionFilter} onChange={(e) => onActionChange(e.target.value)} className={FILTER_INPUT}>
-          <option value="">All actions</option>
-          {(data?.actions ?? []).map((a) => <option key={a} value={a}>{a}</option>)}
+      <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-line bg-surface-2/40 p-3">
+        <input
+          placeholder="Filter by User ID…"
+          value={userIdFilter}
+          onChange={(e) => onUserIdChange(e.target.value)}
+          className={`min-w-[150px] flex-1 ${FILTER_INPUT}`}
+        />
+        <select
+          value={actionFilter}
+          onChange={(e) => onActionChange(e.target.value)}
+          className={FILTER_INPUT}
+        >
+          <option value="">All Action Types</option>
+          {(data?.actions ?? []).map((a) => (
+            <option key={a} value={a}>
+              {a}
+            </option>
+          ))}
         </select>
-        <input type="date" aria-label="From date" value={fromDate}
-          onChange={(e) => onFromChange(e.target.value)} className={FILTER_INPUT} />
-        <input type="date" aria-label="To date" value={toDate}
-          onChange={(e) => onToChange(e.target.value)} className={FILTER_INPUT} />
-        <button onClick={onSearch} className={SEARCH_BUTTON}>Search</button>
+        <div className="flex items-center gap-1">
+          <input
+            type="date"
+            aria-label="From date"
+            value={fromDate}
+            onChange={(e) => onFromChange(e.target.value)}
+            className={FILTER_INPUT}
+          />
+          <span className="text-xs text-ink-2">to</span>
+          <input
+            type="date"
+            aria-label="To date"
+            value={toDate}
+            onChange={(e) => onToChange(e.target.value)}
+            className={FILTER_INPUT}
+          />
+        </div>
+        <button onClick={onSearch} className={SEARCH_BUTTON}>
+          Search Logs
+        </button>
       </div>
 
-      {loading ? <Spinner /> : !data ? null : data.activity.length === 0 ? (
-        <p className="text-sm text-ink-2">No activity found.</p>
+      {loading ? (
+        <Spinner />
+      ) : !data || data.activity.length === 0 ? (
+        <div className="rounded-2xl border border-line bg-surface p-12 text-center text-xs text-ink-2">
+          No audit activity found matching the criteria.
+        </div>
       ) : (
-        <>
-          <table className="w-full text-sm">
+        <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-sm">
+          <table className="w-full text-xs">
             <thead>
-              <tr className="text-xs text-ink-2">
-                <th className="px-2 py-1.5 text-left font-medium">Time</th>
-                <th className="px-2 py-1.5 text-left font-medium">User</th>
-                <th className="px-2 py-1.5 text-left font-medium">Action</th>
-                <th className="px-2 py-1.5 text-left font-medium">IP hash</th>
-                <th className="px-2 py-1.5 text-left font-medium">Metadata</th>
+              <tr className="border-b border-line bg-surface-2 text-[11px] font-semibold text-ink-2">
+                <th className="px-4 py-3 text-left">Timestamp</th>
+                <th className="px-3 py-3 text-left">User</th>
+                <th className="px-3 py-3 text-left">Action</th>
+                <th className="px-3 py-3 text-left">IP Hash</th>
+                <th className="px-4 py-3 text-left">Event Details</th>
               </tr>
             </thead>
-            <tbody>
-              {data.activity.map((row) => (
-                <tr key={row.id} className="border-t border-line align-top">
-                  <td className="whitespace-nowrap px-2 py-1.5 text-xs text-ink-2">
-                    {new Date(row.timestamp).toLocaleString()}
-                  </td>
-                  <td className="px-2 py-1.5 text-xs text-ink">{row.user?.email ?? '—'}</td>
-                  <td className="px-2 py-1.5 text-xs">
-                    <span className={`rounded px-1.5 py-0.5 font-mono text-xs ${
-                      row.severity === 'alert'
-                        ? 'bg-red-500/10 text-red-500'
-                        : row.severity === 'warn'
-                          ? 'bg-amber-500/10 text-amber-600'
-                          : 'bg-surface-3'
-                    }`}>
-                      {row.action}
-                    </span>
-                  </td>
-                  <td className="px-2 py-1.5 font-mono text-xs text-ink-2">{row.ipHash ?? '—'}</td>
-                  <td className="px-2 py-1.5">
-                    {row.metadata != null ? (
-                      <pre className="max-h-24 overflow-y-auto text-[11px] text-ink-2">
-                        {JSON.stringify(row.metadata, null, 2)}
-                      </pre>
-                    ) : '—'}
-                  </td>
-                </tr>
-              ))}
+            <tbody className="divide-y divide-line">
+              {data.activity.map((row) => {
+                const isExpanded = expandedMetaId === row.id
+                return (
+                  <tr key={row.id} className="transition-colors hover:bg-surface-2/60 align-top">
+                    <td className="whitespace-nowrap px-4 py-3 text-[11px] text-ink-2 font-mono">
+                      {new Date(row.timestamp).toLocaleString()}
+                    </td>
+                    <td className="px-3 py-3 font-medium text-ink">
+                      {row.user?.email ? (
+                        <div>
+                          <p className="truncate max-w-[160px]">{row.user.email}</p>
+                          <p className="font-mono text-[10px] text-ink-2 truncate max-w-[160px]">
+                            {row.user.id}
+                          </p>
+                        </div>
+                      ) : (
+                        <span className="text-ink-2 italic">System / Anonymous</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-3">
+                      <span
+                        className={`inline-flex items-center rounded-md px-2 py-0.5 font-mono text-[10px] font-semibold ${
+                          row.severity === 'alert'
+                            ? 'bg-red-500/10 text-red-500 border border-red-500/20'
+                            : row.severity === 'warn'
+                              ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20'
+                              : 'bg-surface-3 text-ink-2'
+                        }`}
+                      >
+                        {row.action}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3 font-mono text-[10px] text-ink-2">
+                      {row.ipHash ? (
+                        <span className="rounded bg-surface-3 px-1.5 py-0.5">{row.ipHash}</span>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      {row.metadata != null ? (
+                        <div>
+                          <button
+                            onClick={() => setExpandedMetaId(isExpanded ? null : row.id)}
+                            className="rounded bg-surface-3 px-2 py-0.5 text-[10px] font-medium text-ink hover:bg-surface-2"
+                          >
+                            {isExpanded ? 'Collapse JSON' : 'View Payload'}
+                          </button>
+                          {isExpanded && (
+                            <pre className="mt-2 max-h-48 overflow-auto rounded-xl border border-line bg-surface-2 p-2.5 font-mono text-[10px] text-ink-2">
+                              {JSON.stringify(row.metadata, null, 2)}
+                            </pre>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-ink-2">—</span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
-          <Pager offset={offset} total={data.total} onPage={onPage} />
-        </>
+          <div className="px-4 pb-3">
+            <Pager offset={offset} total={data.total} onPage={onPage} />
+          </div>
+        </div>
       )}
     </div>
   )
 }
 
 function SessionsView({
-  data, loading, offset, userIdFilter, search, includeDeleted,
-  onUserIdChange, onSearchChange, onIncludeDeletedChange, onSearch, onPage, onOpen,
+  data,
+  loading,
+  offset,
+  userIdFilter,
+  search,
+  includeDeleted,
+  onUserIdChange,
+  onSearchChange,
+  onIncludeDeletedChange,
+  onSearch,
+  onPage,
+  onOpen,
 }: {
-  data: AdminSessionList | null; loading: boolean; offset: number
-  userIdFilter: string; search: string; includeDeleted: boolean
-  onUserIdChange: (v: string) => void; onSearchChange: (v: string) => void
+  data: AdminSessionList | null
+  loading: boolean
+  offset: number
+  userIdFilter: string
+  search: string
+  includeDeleted: boolean
+  onUserIdChange: (v: string) => void
+  onSearchChange: (v: string) => void
   onIncludeDeletedChange: (v: boolean) => void
-  onSearch: () => void; onPage: (offset: number) => void; onOpen: (id: string) => void
+  onSearch: () => void
+  onPage: (offset: number) => void
+  onOpen: (id: string) => void
 }) {
   return (
-    <div>
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <input placeholder="Title contains…" value={search} onChange={(e) => onSearchChange(e.target.value)}
-          className={`min-w-32 flex-1 ${FILTER_INPUT}`} />
-        <input placeholder="User ID" value={userIdFilter} onChange={(e) => onUserIdChange(e.target.value)}
-          className={`min-w-32 flex-1 ${FILTER_INPUT}`} />
-        <label className="flex items-center gap-1.5 text-xs text-ink-2">
-          <input type="checkbox" checked={includeDeleted} onChange={(e) => onIncludeDeletedChange(e.target.checked)} />
-          Include deleted
+    <div className="space-y-4">
+      {/* Filters */}
+      <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-line bg-surface-2/40 p-3">
+        <div className="flex flex-1 min-w-[200px] items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2 text-xs shadow-sm">
+          <Search size={14} className="text-ink-2" />
+          <input
+            placeholder="Search conversation title…"
+            value={search}
+            onChange={(e) => onSearchChange(e.target.value)}
+            className="flex-1 bg-transparent outline-none text-ink placeholder:text-ink-2"
+          />
+        </div>
+        <input
+          placeholder="Filter by User ID…"
+          value={userIdFilter}
+          onChange={(e) => onUserIdChange(e.target.value)}
+          className={`min-w-[150px] ${FILTER_INPUT}`}
+        />
+        <label className="flex items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2 text-xs text-ink-2 shadow-sm cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={includeDeleted}
+            onChange={(e) => onIncludeDeletedChange(e.target.checked)}
+            className="rounded text-accent"
+          />
+          <span>Include soft-deleted</span>
         </label>
-        <button onClick={onSearch} className={SEARCH_BUTTON}>Search</button>
+        <button onClick={onSearch} className={SEARCH_BUTTON}>
+          Search Chats
+        </button>
       </div>
 
-      {loading ? <Spinner /> : !data ? null : data.sessions.length === 0 ? (
-        <p className="text-sm text-ink-2">No conversations found.</p>
+      {loading ? (
+        <Spinner />
+      ) : !data || data.sessions.length === 0 ? (
+        <div className="rounded-2xl border border-line bg-surface p-12 text-center text-xs text-ink-2">
+          No conversations found matching query.
+        </div>
       ) : (
-        <>
-          <table className="w-full text-sm">
+        <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-sm">
+          <table className="w-full text-xs">
             <thead>
-              <tr className="text-xs text-ink-2">
-                <th className="px-2 py-1.5 text-left font-medium">Title</th>
-                <th className="px-2 py-1.5 text-left font-medium">Owner</th>
-                <th className="px-2 py-1.5 text-right font-medium">Messages</th>
-                <th className="px-2 py-1.5 text-left font-medium">Updated</th>
-                <th className="px-2 py-1.5 text-left font-medium">Deleted</th>
-                <th className="px-2 py-1.5" />
+              <tr className="border-b border-line bg-surface-2 text-[11px] font-semibold text-ink-2">
+                <th className="px-4 py-3 text-left">Conversation</th>
+                <th className="px-3 py-3 text-left">User</th>
+                <th className="px-3 py-3 text-right">Messages</th>
+                <th className="px-3 py-3 text-left">Last Active</th>
+                <th className="px-3 py-3 text-left">Status</th>
+                <th className="px-4 py-3 text-right">Action</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-line">
               {data.sessions.map((s) => (
-                <tr key={s.id} className="border-t border-line">
-                  <td className="max-w-48 truncate px-2 py-1.5 text-sm text-ink" title={s.title}>{s.title}</td>
-                  <td className="px-2 py-1.5 text-xs text-ink-2">{s.user.email}</td>
-                  <td className="px-2 py-1.5 text-right text-xs text-ink-2">{s.messageCount}</td>
-                  <td className="whitespace-nowrap px-2 py-1.5 text-xs text-ink-2">
-                    {new Date(s.updatedAt).toLocaleDateString()}
+                <tr key={s.id} className="transition-colors hover:bg-surface-2/60">
+                  <td className="px-4 py-3 max-w-sm">
+                    <p className="truncate font-semibold text-ink text-xs">{s.title}</p>
+                    <p className="font-mono text-[10px] text-ink-2">{s.id}</p>
                   </td>
-                  <td className="px-2 py-1.5 text-xs">
+                  <td className="px-3 py-3 text-ink-2">
+                    <p className="font-medium text-ink truncate max-w-[160px]">{s.user.email}</p>
+                    <p className="font-mono text-[10px] text-ink-2 truncate max-w-[160px]">
+                      {s.user.id}
+                    </p>
+                  </td>
+                  <td className="px-3 py-3 text-right font-medium text-ink tabular-nums">
+                    {s.messageCount}
+                  </td>
+                  <td className="px-3 py-3 text-[11px] text-ink-2 whitespace-nowrap">
+                    {new Date(s.updatedAt).toLocaleString()}
+                  </td>
+                  <td className="px-3 py-3">
                     {s.deletedAt ? (
-                      <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-xs text-red-500">Yes</span>
-                    ) : '—'}
+                      <span className="inline-flex rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] font-medium text-red-500">
+                        Deleted
+                      </span>
+                    ) : (
+                      <span className="inline-flex rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                        Active
+                      </span>
+                    )}
                   </td>
-                  <td className="px-2 py-1.5">
-                    <button onClick={() => onOpen(s.id)}
-                      className="rounded px-2 py-1 text-xs text-ink-2 hover:bg-surface-3 hover:text-ink">Open</button>
+                  <td className="px-4 py-3 text-right">
+                    <button
+                      onClick={() => onOpen(s.id)}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 py-1 text-xs font-medium text-ink hover:border-accent hover:text-accent shadow-sm"
+                    >
+                      <Eye size={12} />
+                      <span>Inspect</span>
+                    </button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <Pager offset={offset} total={data.total} onPage={onPage} />
-        </>
+          <div className="px-4 pb-3">
+            <Pager offset={offset} total={data.total} onPage={onPage} />
+          </div>
+        </div>
       )}
     </div>
   )
 }
 
 function FilesView({
-  data, loading, offset, userIdFilter, onUserIdChange, onSearch, onPage, onError,
+  data,
+  loading,
+  offset,
+  userIdFilter,
+  onUserIdChange,
+  onSearch,
+  onPage,
+  onError,
 }: {
-  data: AdminFileList | null; loading: boolean; offset: number
-  userIdFilter: string; onUserIdChange: (v: string) => void
-  onSearch: () => void; onPage: (offset: number) => void
+  data: AdminFileList | null
+  loading: boolean
+  offset: number
+  userIdFilter: string
+  onUserIdChange: (v: string) => void
+  onSearch: () => void
+  onPage: (offset: number) => void
   onError: (message: string) => void
 }) {
   const [fileText, setFileText] = useState<string | null>(null)
@@ -413,8 +614,6 @@ function FilesView({
   async function viewFile(id: string) {
     try {
       const signed = await adminApi.fileUrl(id)
-      // `noopener` matters even same-origin: without it the new tab gets a live
-      // `window.opener` handle back into the admin panel.
       window.open(signed.url, '_blank', 'noopener,noreferrer')
     } catch (e) {
       onError(errorText(e))
@@ -438,57 +637,99 @@ function FilesView({
   }
 
   return (
-    <div>
-      <div className="mb-3 flex gap-2">
-        <input placeholder="User ID" value={userIdFilter} onChange={(e) => onUserIdChange(e.target.value)}
-          className={`flex-1 ${FILTER_INPUT}`} />
-        <button onClick={onSearch} className={SEARCH_BUTTON}>Search</button>
+    <div className="space-y-4">
+      {/* Filters */}
+      <div className="flex items-center gap-2 rounded-2xl border border-line bg-surface-2/40 p-3">
+        <input
+          placeholder="Filter by User ID…"
+          value={userIdFilter}
+          onChange={(e) => onUserIdChange(e.target.value)}
+          className={`flex-1 ${FILTER_INPUT}`}
+        />
+        <button onClick={onSearch} className={SEARCH_BUTTON}>
+          Search Files
+        </button>
       </div>
 
-      {loading ? <Spinner /> : !data ? null : data.files.length === 0 ? (
-        <p className="text-sm text-ink-2">No files found.</p>
+      {loading ? (
+        <Spinner />
+      ) : !data || data.files.length === 0 ? (
+        <div className="rounded-2xl border border-line bg-surface p-12 text-center text-xs text-ink-2">
+          No files stored in R2 bucket match query.
+        </div>
       ) : (
-        <>
-          <table className="w-full text-sm">
+        <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-sm">
+          <table className="w-full text-xs">
             <thead>
-              <tr className="text-xs text-ink-2">
-                <th className="px-2 py-1.5 text-left font-medium">Filename</th>
-                <th className="px-2 py-1.5 text-left font-medium">Owner</th>
-                <th className="px-2 py-1.5 text-left font-medium">Type</th>
-                <th className="px-2 py-1.5 text-right font-medium">Size</th>
-                <th className="px-2 py-1.5 text-left font-medium">Status</th>
-                <th className="px-2 py-1.5 text-left font-medium">Extraction</th>
-                <th className="px-2 py-1.5 text-left font-medium">SHA256</th>
-                <th className="px-2 py-1.5" />
+              <tr className="border-b border-line bg-surface-2 text-[11px] font-semibold text-ink-2">
+                <th className="px-4 py-3 text-left">File</th>
+                <th className="px-3 py-3 text-left">Owner</th>
+                <th className="px-3 py-3 text-left">Type</th>
+                <th className="px-3 py-3 text-right">Size</th>
+                <th className="px-3 py-3 text-left">Status</th>
+                <th className="px-3 py-3 text-left">Extraction</th>
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-line">
               {data.files.map((f) => (
-                <tr key={f.id} className="border-t border-line">
-                  <td className="max-w-32 truncate px-2 py-1.5 text-sm text-ink" title={f.filename}>{f.filename}</td>
-                  <td className="px-2 py-1.5 text-xs text-ink-2" title={f.user.id}>{f.user.email}</td>
-                  <td className="px-2 py-1.5 text-xs text-ink-2">{f.type}</td>
-                  <td className="px-2 py-1.5 text-right text-xs text-ink-2">{formatBytes(f.size)}</td>
-                  <td className="px-2 py-1.5 text-xs">
-                    <span className={`rounded px-1.5 py-0.5 ${
-                      f.uploadStatus === 'stored' ? 'bg-accent/10 text-accent' : 'text-ink-2'
-                    }`}>{f.uploadStatus}</span>
+                <tr key={f.id} className="transition-colors hover:bg-surface-2/60">
+                  <td className="px-4 py-3 max-w-xs">
+                    <div className="flex items-center gap-2">
+                      <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-surface-3 text-ink">
+                        {f.type === 'image' ? <ImageIcon size={14} /> : <FileText size={14} />}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="truncate font-semibold text-ink" title={f.filename}>
+                          {f.filename}
+                        </p>
+                        <p className="font-mono text-[10px] text-ink-2">{f.id}</p>
+                      </div>
+                    </div>
                   </td>
-                  <td className="px-2 py-1.5 text-xs text-ink-2">
+                  <td className="px-3 py-3 text-ink-2 truncate max-w-[160px]">
+                    <p className="font-medium text-ink truncate">{f.user.email}</p>
+                    <p className="font-mono text-[10px] text-ink-2 truncate">{f.user.id}</p>
+                  </td>
+                  <td className="px-3 py-3 font-mono uppercase text-[10px] text-ink-2">
+                    {f.type}
+                  </td>
+                  <td className="px-3 py-3 text-right tabular-nums font-medium text-ink">
+                    {formatBytes(f.size)}
+                  </td>
+                  <td className="px-3 py-3">
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                        f.uploadStatus === 'stored'
+                          ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                          : 'bg-surface-3 text-ink-2'
+                      }`}
+                    >
+                      {f.uploadStatus}
+                    </span>
+                  </td>
+                  <td className="px-3 py-3 text-[11px] text-ink-2">
                     {f.extractedChars != null
-                      ? `${f.extractedChars}c / ${f.extractedPages ?? 0}p (${f.extractionSource ?? '—'})`
+                      ? `${f.extractedChars} chars / ${f.extractedPages ?? 0} pages`
                       : f.processingStatus}
                   </td>
-                  <td className="max-w-24 truncate px-2 py-1.5 font-mono text-xs text-ink-2" title={f.sha256}>
-                    {f.sha256.slice(0, 16)}…
-                  </td>
-                  <td className="px-2 py-1.5">
-                    <div className="flex gap-1">
-                      <button onClick={() => void viewFile(f.id)}
-                        className="rounded px-2 py-1 text-xs text-ink-2 hover:bg-surface-3 hover:text-ink">View</button>
+                  <td className="px-4 py-3 text-right">
+                    <div className="flex justify-end gap-1.5">
+                      <button
+                        onClick={() => void viewFile(f.id)}
+                        className="inline-flex items-center gap-1 rounded-lg border border-line bg-surface px-2.5 py-1 text-xs font-medium text-ink hover:bg-surface-3"
+                      >
+                        <ExternalLink size={12} />
+                        <span>View</span>
+                      </button>
                       {f.type === 'pdf' && (
-                        <button onClick={() => void showText(f.id)}
-                          className="rounded px-2 py-1 text-xs text-ink-2 hover:bg-surface-3 hover:text-ink">Text</button>
+                        <button
+                          onClick={() => void showText(f.id)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-line bg-surface px-2.5 py-1 text-xs font-medium text-ink hover:bg-surface-3"
+                        >
+                          <FileCode size={12} />
+                          <span>Text</span>
+                        </button>
                       )}
                     </div>
                   </td>
@@ -496,58 +737,132 @@ function FilesView({
               ))}
             </tbody>
           </table>
-          <Pager offset={offset} total={data.total} onPage={onPage} />
+          <div className="px-4 pb-3">
+            <Pager offset={offset} total={data.total} onPage={onPage} />
+          </div>
+        </div>
+      )}
 
-          {loadingText && <Spinner />}
-          {fileText && (
-            <pre className="mt-4 max-h-96 overflow-y-auto whitespace-pre-wrap rounded-xl border border-line bg-surface-2 p-4 text-xs text-ink-2">
-              {fileText}
-            </pre>
-          )}
-        </>
+      {loadingText && <Spinner />}
+      {fileText && (
+        <div className="relative rounded-2xl border border-line bg-surface-2 p-4">
+          <button
+            onClick={() => setFileText(null)}
+            className="absolute right-3 top-3 rounded-lg p-1 text-ink-2 hover:bg-surface-3 hover:text-ink"
+          >
+            <X size={14} />
+          </button>
+          <pre className="max-h-96 overflow-y-auto whitespace-pre-wrap font-mono text-xs text-ink-2">
+            {fileText}
+          </pre>
+        </div>
       )}
     </div>
   )
 }
 
-function TranscriptView({ data, loading }: { data: AdminTranscript | null; loading: boolean }) {
+function TranscriptView({
+  data,
+  loading,
+  onBack,
+}: {
+  data: AdminTranscript | null
+  loading: boolean
+  onBack: () => void
+}) {
   if (loading) return <Spinner />
-  if (!data) return <p className="text-sm text-ink-2">No transcript loaded.</p>
+  if (!data)
+    return (
+      <div className="rounded-2xl border border-line bg-surface p-12 text-center text-xs text-ink-2">
+        No conversation transcript loaded.
+      </div>
+    )
 
   return (
-    <div>
-      <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-600">
-        Opening this conversation was recorded as an admin access.
+    <div className="space-y-4 max-w-4xl mx-auto">
+      {/* Notice */}
+      <div className="flex items-center justify-between rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3.5 text-xs text-amber-700 dark:text-amber-400">
+        <div className="flex items-center gap-2">
+          <ShieldAlert size={16} />
+          <span>Opening this transcript was audited and logged server-side.</span>
+        </div>
+        <button
+          onClick={onBack}
+          className="rounded-lg border border-amber-500/30 bg-amber-500/20 px-2.5 py-1 font-medium hover:bg-amber-500/30"
+        >
+          Back to Conversations
+        </button>
       </div>
 
-      <div className="mb-4 text-sm">
-        <p className="font-semibold text-ink">{data.session.title}</p>
-        <p className="text-xs text-ink-2">
-          {/* The owner row can be gone while a soft-deleted session survives. */}
-          {data.user?.name ?? data.user?.email ?? 'Deleted user'} · {data.messages.length} messages
-          {data.session.deletedAt && ' · soft-deleted'}
+      {/* Header */}
+      <div className="rounded-2xl border border-line bg-surface-2 p-4">
+        <h2 className="text-base font-bold text-ink">{data.session.title}</h2>
+        <p className="mt-1 text-xs text-ink-2">
+          User:{' '}
+          <strong className="text-ink">
+            {data.user?.name ?? data.user?.email ?? 'Deleted User'}
+          </strong>{' '}
+          ({data.user?.email ?? 'no email'}) · {data.messages.length} messages
+          {data.session.deletedAt && (
+            <span className="ml-2 rounded bg-red-500/10 px-1.5 py-0.5 text-red-500">
+              Soft Deleted
+            </span>
+          )}
         </p>
       </div>
 
-      <div className="space-y-4">
+      {/* Message stream bubbles */}
+      <div className="space-y-3">
         {data.messages.map((m) => (
-          <div key={m.id} className={`rounded-xl border border-line p-4 ${m.role === 'user' ? 'bg-bubble' : 'bg-surface-2'}`}>
-            <p className="mb-1 text-xs font-medium text-ink-2">{m.role === 'user' ? 'User' : 'Assistant'}</p>
-            {/* PLAIN TEXT, never the markdown renderer. This is untrusted user
-                content being read by a privileged account. */}
-            <p className="whitespace-pre-wrap break-words text-sm text-ink">{m.content}</p>
-            {m.attachments.length > 0 && (
-              <p className="mt-1.5 text-[11px] text-ink-2">
-                {m.attachments.length} attachment{m.attachments.length !== 1 ? 's' : ''}:{' '}
-                {m.attachments.map((a) => a.filename).join(', ')}
-              </p>
-            )}
-            {m.error && <p className="mt-1 text-[11px] text-red-500">Error: {m.error}</p>}
-            <p className="mt-1 text-[11px] text-ink-2">
-              {new Date(m.createdAt).toLocaleString()}
-              {m.model && ` · ${m.model}`}
-              {m.tokens.total != null && ` · ${m.tokens.total} tokens (${m.tokens.source ?? 'unknown'})`}
+          <div
+            key={m.id}
+            className={`rounded-2xl border p-4 ${
+              m.role === 'user'
+                ? 'border-line bg-surface-2/60 ml-8'
+                : 'border-line bg-surface mr-8 shadow-sm'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-2">
+                {m.role === 'user' ? '👤 User' : '🤖 Assistant'}
+              </span>
+              <span className="text-[10px] text-ink-2 font-mono">
+                {new Date(m.createdAt).toLocaleString()}
+              </span>
+            </div>
+
+            {/* Plain text for safety */}
+            <p className="whitespace-pre-wrap break-words text-xs text-ink leading-relaxed">
+              {m.content}
             </p>
+
+            {m.attachments.length > 0 && (
+              <div className="mt-2.5 flex flex-wrap gap-1.5 border-t border-line/60 pt-2">
+                {m.attachments.map((a) => (
+                  <span
+                    key={a.id}
+                    className="inline-flex items-center gap-1 rounded-lg bg-surface-3 px-2 py-1 text-[10px] text-ink"
+                  >
+                    <FileText size={10} />
+                    {a.filename}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {m.error && (
+              <p className="mt-2 text-[11px] font-medium text-red-500">Error: {m.error}</p>
+            )}
+
+            <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-line/40 pt-2 text-[10px] text-ink-2 font-mono">
+              {m.model && <span className="rounded bg-surface-3 px-1.5 py-0.5">{m.model}</span>}
+              {m.tokens.total != null && (
+                <span>
+                  {m.tokens.total} tokens ({m.tokens.prompt ?? 0} prompt /{' '}
+                  {m.tokens.completion ?? 0} completion)
+                </span>
+              )}
+            </div>
           </div>
         ))}
       </div>

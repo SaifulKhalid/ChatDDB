@@ -23,16 +23,14 @@ export interface PublicUser {
   lastLogin: number | null
 }
 
-/** `worker/models.ts` → `Vendor`. */
-export type Vendor = 'openai' | 'anthropic'
+export type Vendor = 'openai' | 'anthropic' | 'deepseek' | 'zhipu'
 
-/** `worker/models.ts` → `ModelSpec`. */
 export interface ModelSpec {
   id: string
   label: string
   /** The name a user picks by, e.g. `ChatGPT`. Short enough for the picker. */
   short: string
-  provider: 'agentrouter'
+  provider: string
   vendor: Vendor
   vision: boolean
   documents: boolean

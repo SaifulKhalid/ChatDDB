@@ -29,9 +29,9 @@ deployment.
 ```
 ┌─────────────────────────────────────────┐
 │ Browser — React 19 SPA                  │
-│   App.tsx        conversation state     │
+│   ChatApp.tsx    conversation state     │
 │   lib/api.ts     SSE reader + pacing    │
-│   lib/storage.ts localStorage           │
+│   lib/storage.ts theme + model choice   │
 └───────────────┬─────────────────────────┘
                 │  POST /api/chat  (same origin)
                 ▼
@@ -44,7 +44,7 @@ deployment.
 └───────────────┬─────────────────────────┘
                 │  POST /v1/chat/completions
                 ▼
-      AgentRouter  →  gpt-5.6-sol
+      AgentRouter  →  gpt-5.6-sol | claude-opus-5
 ```
 
 One Worker serves both the API and the built SPA. `wrangler.jsonc` sets
@@ -55,12 +55,13 @@ Unmatched paths fall back to `index.html` (`not_found_handling:
 
 ### Request lifecycle
 
-1. The user submits a message. `App.tsx` appends it plus an empty `streaming`
-   assistant message, then calls `streamChat(history, signal)`.
-2. `streamChat` POSTs the whole message history to `/api/chat`. In dev, Vite
-   proxies `/api` to `http://localhost:8787`.
-3. The Worker resolves config, validates the body, prepends a system prompt,
-   and opens an upstream streaming completion.
+1. The user submits a message. `ChatApp.tsx` appends it plus an empty `streaming`
+   assistant message, then calls `streamChat`.
+2. `streamChat` POSTs **the current turn only** — `{sessionId, content}`, plus
+   `model` when the picker names one — to `/api/chat`. In dev, Vite proxies
+   `/api` to `http://localhost:8787`.
+3. The Worker resolves config, validates the body, rebuilds the conversation from
+   D1, prepends a system prompt, and opens an upstream streaming completion.
 4. As upstream bytes arrive, `toClientStream` re-emits them as normalised SSE
    frames.
 5. `streamChat` parses each frame and yields text; `paced()` spreads oversized
@@ -95,16 +96,16 @@ curl http://localhost:5173/api/health
 # {"ok":true,"service":"chatddb-f5","model":"gpt-5.6-sol","provider":"agentrouter","configured":true}
 ```
 
-`"configured": false` means the Worker has no usable key, and the UI will stream
-a mock reply rather than fail. `.dev.vars` is gitignored and must never be
-committed.
+`"configured": false` means the Worker has no usable key and every turn will
+fail — there is no mock reply behind it any more (§8). `.dev.vars` is gitignored
+and must never be committed.
 
 ### Scripts
 
 | Script | What it does |
 | --- | --- |
 | `npm run dev:all` | Vite (`:5173`) and `wrangler dev` (`:8787`) together — the normal way to develop |
-| `npm run dev` | Frontend only; `/api` proxies to `:8787` (mock fallback if nothing is there) |
+| `npm run dev` | Frontend only; `/api` proxies to `:8787` — every turn fails if nothing is there |
 | `npm run dev:worker` | Worker only |
 | `npm run build` | `tsc -b` (app + node + worker projects) then `vite build` into `dist/` |
 | `npm run preview` | Build, then serve the built SPA *and* the Worker from `:8787` — closest thing to production |
@@ -116,6 +117,8 @@ committed.
 | `npm run probe:svg` | Measures whether the model draws usable figures *and* knows when not to — see §10 |
 | `npm run smoke:svg-sanitizer` | The HTMLRewriter allowlist, in workerd. No key needed |
 | `npm run smoke:figure-gate` | The streaming fence transform. No key needed |
+| `npm run smoke:sse-null` | The `data: null` frame AgentRouter sends for Claude, replayed through the shipped `sse.ts`. No key needed |
+| `npm run test:failover` | Failover branches, including `chainFor`'s vendor scoping. No network, no key |
 | `npm run stub:pollinations` | Fake Pollinations endpoint, so crossover tests spend no allowance |
 | `npm run smoke:image-failover` | End-to-end image crossover, both directions |
 | `npm run smoke:chat-image-tool` | End-to-end `generate_image` tool path |
@@ -133,15 +136,17 @@ worker/
                     which scopes that chain by vendor for an explicit model pick
   models.ts         the model registry: ids, vendors, measured capabilities
   images.ts         image chain: Workers AI → Pollinations, and error classification
-  sse.ts            upstream stream → client SSE contract; tool-call peek; figure gate
+  sse.ts            upstream stream → client SSE contract; tool-call peek; figure gate;
+                    `parseChunk`, the single guarded parse for upstream payloads
   lib/figureGate.ts holds back a ```svg fence until it is whole and clean
   lib/sanitizeSvg.ts HTMLRewriter allowlist — server-side SVG sanitiser
   tsconfig.json     workers-only TS project (ES2023 libs, no DOM)
 src/
-  App.tsx           all conversation state and turn orchestration
+  App.tsx           auth gate and routing: splash, login, /admin, chat
+  ChatApp.tsx       all conversation state and turn orchestration
   types.ts          Message, Conversation, newId()
-  lib/api.ts        streamChat(), paced(), mock fallback
-  lib/storage.ts    localStorage persistence for chats + theme
+  lib/api.ts        streamChat(), paced(), conversation + image calls
+  lib/storage.ts    localStorage: theme, model choice, import flag (§8)
   components/
     Sidebar.tsx     history list: search, rename, delete, date grouping
     ChatArea.tsx    scroll container, welcome screen, scroll-to-bottom
@@ -153,7 +158,7 @@ src/
     CopyButton.tsx  copy-to-clipboard with copied state
     Logo.tsx        assistant avatar / brand mark
   index.css         Tailwind v4 theme tokens, markdown + cursor styles
-wrangler.jsonc      Worker config: name, assets, vars, planned bindings
+wrangler.jsonc      Worker config: name, assets, vars, D1/R2/AI bindings
 vite.config.ts      React + Tailwind plugins, /api dev proxy → :8787
 .dev.vars.example   template for the local secret file
 smoke*.mjs          Playwright smoke tests (see §10)
@@ -184,6 +189,12 @@ per-machine in `.dev.vars`.
 | `UPSTREAM_TIMEOUT_MS` | `180000` | Time-to-first-byte budget only; never caps an in-flight stream |
 | `REASONING_EFFORT` | unset | `minimal` \| `low` \| `medium` \| `high` — omitted when unset |
 | `SYSTEM_PROMPT` | built-in | Replaces the default system prompt |
+| `FREEMODEL_API_KEY` | — | **Secret.** Arms the backup text gateway. `npm run secret:freemodel` |
+| `FALLBACK_ENABLED` | armed | Kill switch; only the exact string `"false"` disables |
+| `FREEMODEL_MODEL` | `gpt-5.5` | What the backup serves. Read by `vendorOf`, so an Anthropic id here would widen an explicit Claude pick's chain — see §7 |
+| `FREEMODEL_BASE_URL` | freemodel.dev | Backup base; trailing slashes trimmed |
+| `FREEMODEL_TOKEN_PARAM` | `max_completion_tokens` | `max_tokens` if the gateway wants the classic name — a fact `npm run probe:freemodel` establishes, not one this code can know |
+| `FREEMODEL_REASONING_EFFORT` | armed | `"false"` stops forwarding `reasoning_effort` to the backup |
 | `POLLINATIONS_API_KEY` | — | **Secret.** Arms the backup image provider. `npm run secret:pollinations` |
 | `POLLINATIONS_ENABLED` | armed | Kill switch; only the exact string `"false"` disables |
 | `POLLINATIONS_MODEL` | `flux` | Backup image model. `turbo` was retired |
@@ -249,24 +260,36 @@ with the CORS headers.
 
 ### `POST /api/chat`
 
+The client sends **one turn**, not a history — the Worker rebuilds context from
+D1. All three modes are this one call:
+
 ```jsonc
 {
-  "messages": [
-    { "role": "system", "content": "optional — replaces the default prompt" },
-    { "role": "user", "content": "Explain B-trees" },
-    { "role": "assistant", "content": "…prior turn…" },
-    { "role": "user", "content": "Now compare to LSM trees" }
-  ]
+  "sessionId": "uuid",              // omitted creates a session
+  "content": "Now compare to LSM trees",
+  "attachments": ["uuid"],          // file ids, de-duplicated
+  "model": "claude-opus-5",         // omitted is Auto — see below
+  "replaceFromMessageId": "uuid",   // edit: drop this message and everything after
+  "regenerate": true                // regenerate: reuse the last user turn
 }
 ```
 
-Roles are `system` | `user` | `assistant`. Blank-content messages are dropped
-rather than rejected; at least one `user` message must survive that filter.
+A `messages` array is rejected with `400 legacy_client` naming the change, rather
+than a confusing "content must be a string" from a leftover pre-Phase-2 client.
+
+**Omitting `model` is not the same as naming the default.** No field means *you
+choose*: the Worker resolves `AGENTROUTER_MODEL` and keeps the whole failover
+chain. Naming a model is a promise about who answers, so it narrows the chain to
+that model's vendor (§7). An id outside the registry is a `400`, never a silent
+substitution.
 
 Response headers: `Content-Type: text/event-stream; charset=utf-8`,
 `Cache-Control: no-cache, no-transform`, `X-Accel-Buffering: no` (stops
-intermediaries coalescing the stream), and `X-ChatDDB-Model` naming the model
-that served the request.
+intermediaries coalescing the stream), `X-ChatDDB-Session-Id` and
+`X-ChatDDB-Message-Id` (so a brand-new conversation has its ids before the first
+token rather than after the last), and `X-ChatDDB-Model` naming the model that
+was **asked for** — still that model on a crossover, since the frontend uses it
+to label the bubble.
 
 Frame sequence:
 
@@ -297,7 +320,7 @@ data: [DONE]
 | `429` | AgentRouter rate limit or quota |
 | `499` | Client hung up — nothing is sent back |
 | `500` | Upstream failure, bad key, or an unexpected error |
-| `503` | No API key configured (the UI reads this as "mock instead") |
+| `503` | No API key configured |
 
 #### Generating an image mid-turn
 
@@ -483,6 +506,56 @@ ignoring `stream: true` — `pumpJsonBody` handles it and emits the same frames.
 If the stream ends without ever producing content, the client gets an
 `empty_completion` error frame rather than a silently blank message.
 
+### Every upstream payload goes through `parseChunk`
+
+Re-emitting means parsing, and there are five places in `sse.ts` that parse an
+upstream payload: `pumpEventStream`, `pumpJsonBody`, `peekToolCalls`,
+`inspectLine`, and `isTerminalFrame`. All five call one helper, and the rule it
+enforces is that a payload which does not parse **to a non-null object** is a
+frame with nothing in it, to be skipped — exactly how an unparseable frame was
+always treated:
+
+```ts
+function parseChunk(payload: string): UpstreamChunk | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(payload)
+  } catch {
+    return null
+  }
+  return typeof parsed === 'object' && parsed !== null ? (parsed as UpstreamChunk) : null
+}
+```
+
+That looks like defensive boilerplate and is not. `try { JSON.parse(x) } catch`
+is the guard everyone writes, and it does not cover `null`: **`JSON.parse('null')`
+succeeds.** The catch only ever fires on malformed JSON, so `null` walks straight
+through and the next property access throws. Optional chaining does not save the
+base either — `chunk.choices?.[0]` still throws when `chunk` itself is null.
+
+AgentRouter really does put `data: null` on the wire for Claude (§7), so this was
+a live bug rather than a hypothetical: `extractError(null)` read `.error` off it,
+threw a `TypeError`, and the relay's own catch dressed it up as an upstream
+failure (§9). A bare `JSON.parse` at any of those five sites is that bug coming
+back, which is what `npm run smoke:sse-null` exists to catch (§10).
+
+Arrays are let through rather than excluded — every read downstream simply misses
+on one, so rejecting them would add a branch no upstream has ever exercised.
+
+`isTerminalFrame` was guarded too, even though its parse already sat inside a try
+that would have returned `false` rather than crashed. A swallowed `TypeError`
+there is still a wrong answer about whether the stream has ended, which is the
+same class of bug wearing a quieter failure mode.
+
+`pumpJsonBody` was moved off `(await res.json()) as UpstreamChunk` at the same
+time. Nothing had triggered it, but a body of bare `null` is the identical hole
+one layer out, and the cast is what made it invisible.
+
+The client's reader in `src/lib/api.ts` carries the same guard. That one is not a
+fix — this Worker writes its own frames and never emits `data: null` — but it is
+the identical footgun one layer further out, reading frames from a server it does
+not control in dev, and the reader is a cheaper place to be wrong than the relay.
+
 ### The figure gate
 
 Assistant text passes through `FigureGate` (`worker/lib/figureGate.ts`) on its
@@ -590,6 +663,29 @@ version lands at 698–719 ms against its 700 ms budget.
 
 ## 7. AgentRouter integration
 
+### For Claude, it sends a `data: null` frame
+
+AgentRouter reaches Anthropic natively and re-serialises the reply into an
+OpenAI-compatible stream. One of Anthropic's native events has no OpenAI shape,
+and rather than dropping the frame the gateway writes the JSON for *nothing*:
+
+```
+data: {"id":"chatcmpl_temp","choices":[{"delta":{"content":"The Routh array…"}}]}
+data: null
+data: {"id":"chatcmpl_temp","choices":[{"delta":{"content":" decides stability."}}]}
+```
+
+Measured live against the deployed gateway: **one null frame in twelve for
+`claude-opus-5`, none in forty-two for `gpt-5.6-sol`** — in the captured case,
+frame 5 of 8, mid-answer. Nothing in this codebase can prevent it; the frame is
+the gateway's, and the only defence is reading it as what it is (§6).
+
+It is worth knowing where this sat in the timeline. The frame had been on the
+wire for as long as AgentRouter has served Anthropic, and it had never reached
+this Worker, because until the model picker shipped no client could ask for
+Claude. Adding a second model to a list did not look like a change to the stream
+parser, and it was.
+
 ### The client whitelist
 
 AgentRouter's edge rejects unrecognised clients *before* the request reaches the
@@ -645,12 +741,44 @@ arrive) and a forwarder for client aborts. On success the forwarder is left
 attached deliberately: a closed tab or a pressed Stop button must cancel the
 upstream generation too.
 
+### An explicit model pick narrows the failover chain
+
+Silent failover was designed when no client could name a model. Substituting
+freemodel's `gpt-5.5` for `gpt-5.6-sol` swaps one OpenAI model for another that
+nobody asked for either, so saying nothing is kind. The picker broke that: once a
+user chooses **Claude**, the same silence answers an Anthropic request with an
+OpenAI model and logs it under a `model_used` the user believes came from
+Anthropic — what `models.ts` calls *worse than an error*.
+
+`chainFor` (`worker/failover.ts:123`) resolves that by scoping the chain by
+**vendor**, not by model id:
+
+| Request | Chain | Cost of the rule |
+| --- | --- | --- |
+| Auto (no `model` field) | AgentRouter → freemodel | None — unchanged, and this is the default |
+| ChatGPT, picked | AgentRouter → freemodel | None — same vendor, so the backup still covers a gateway outage |
+| Claude, picked | AgentRouter only | Real: no configured backup serves Anthropic, so a gateway outage is a visible failure |
+
+Index 0 is never filtered — it carries `model.id`, so its vendor matches by
+construction and a mistyped `FREEMODEL_MODEL` cannot empty the chain. That is
+also why `vendorOf` guesses `openai` for ids it cannot place: guessing wrong in
+that direction only ever *widens* a GPT request's options, while a wrong guess of
+`anthropic` would let a GPT model answer a Claude request, which is the single
+thing the rule exists to prevent.
+
+The trade is deliberate — reliability for honesty, and only on the path where the
+user asked a specific question about who answers. `npm run test:failover` pins
+both directions (§10).
+
 ---
 
 ## 8. Frontend architecture
 
-State lives entirely in `App.tsx` — no state library. A `Conversation[]` array
-holds everything; the active conversation is found by id.
+Conversation state lives entirely in `ChatApp.tsx` — no state library. (`App.tsx`
+above it is only the auth gate and router: splash, login, `/admin`, chat.) A
+`Conversation[]` array holds everything; the active conversation is found by id.
+It is a *cache* of what D1 holds, not the record itself — the transcript is
+fetched per conversation and written back by the Worker as turns complete.
 
 ```ts
 interface Message {
@@ -670,6 +798,33 @@ interface Conversation {
   updatedAt: number
 }
 ```
+
+### The model picker
+
+`ModelPicker.tsx` is a segmented control — **Auto · ChatGPT · Claude** — rendered
+from `models` as delivered by `/api/me`, so adding a third model is an entry in
+`worker/models.ts` and no edit here. Segments show a registry `note` when a
+capability is unproven, which is how Claude's SVG-restraint regression is
+disclosed rather than hidden (§10).
+
+`ChatApp.tsx` holds the choice as `string | null`, where **`null` is Auto** — the
+distinction the API contract rests on (§5), preserved end to end rather than
+resolved in the client. Three consequences:
+
+- **Auto is not "the default model".** The picker labels the Auto segment with the
+  registry default so the user can see who would answer, but it still sends no
+  `model` field, so the Worker resolves `AGENTROUTER_MODEL` and keeps its backup.
+  Resolving it client-side would silently opt every user out of failover.
+- **The choice rides on all three modes, regenerate included.** Re-rolling a
+  reply under the model now selected is the point of picking one.
+- **It persists as an id, not an index** (`chatddb.model`), so reordering the
+  registry cannot switch someone's choice. An id that has since left the registry
+  decays to Auto on load rather than sending something the backend answers with a
+  `400`.
+
+`activeModel` — the resolved spec, Auto included — is what gates the attach
+button, so the composer's affordances and the backend's `model_no_vision` check
+read the same registry flags.
 
 ### Turn orchestration
 
@@ -692,27 +847,45 @@ Streaming mutates the last message on every chunk, which naively re-renders and
 re-parses the Markdown of every message in the thread. Two mitigations:
 
 - `MessageItem` is wrapped in `memo()`.
-- `App.tsx` keeps a `latest` ref mirroring `{conversations, activeId,
+- `ChatApp.tsx` keeps a `latest` ref mirroring `{conversations, activeId,
   streaming}`, so the callbacks passed to messages read through the ref and keep
   a stable identity across renders instead of being rebuilt each time.
 
 ### Persistence
 
-`localStorage`, debounced 400 ms because streaming updates arrive fast. Keys:
-`chatddb.conversations` and `chatddb.theme`. Every read and write is wrapped —
-a full or unavailable store degrades to in-memory rather than breaking the app.
-D1 will replace this (§13).
+Conversations and messages live in **D1**, keyed to the signed-in user; the
+client no longer owns the transcript. `localStorage` keeps only what is
+per-browser rather than per-account:
 
-Theme defaults to `prefers-color-scheme`, is toggleable, and is applied by
-adding `.dark` to `<html>`; an inline script in `index.html` sets it before
-first paint so there is no flash.
+| Key | Holds |
+| --- | --- |
+| `chatddb.theme` | Light / dark choice, read before first paint |
+| `chatddb.model` | The picker's choice, as a model id — `null`/absent is Auto |
+| `chatddb.conversations` | The pre-Phase-2 local history, kept for import |
+| `chatddb.importedAt` | That the import has run |
 
-### Mock fallback
+`chatddb.conversations` is **not deleted** once imported, only flagged. The
+import inserts in chunks, so a failure part-way leaves some conversations on the
+server and some not; keeping the original makes that recoverable by hand instead
+of data loss.
 
-When `/api/chat` cannot be reached, or answers `404`/`502`/`503`, `streamChat`
-streams a canned Markdown reply that exercises streaming, tables, and
-highlighted code. This keeps the UI fully testable with no backend — and is why
-the Worker never reuses those three status codes for real failures.
+Every read and write is wrapped — a full or unavailable store degrades to
+in-memory rather than breaking the app. Theme defaults to
+`prefers-color-scheme`, is toggleable, and is applied by adding `.dark` to
+`<html>`; an inline script in `index.html` sets it before first paint so there
+is no flash.
+
+### There is no mock fallback any more
+
+`streamChat` once answered an unreachable Worker — or a `404`/`502`/`503` — with
+a canned Markdown reply, so the UI stayed testable with no backend. It was
+removed when login became mandatory: a fake answer that looked real is the more
+dangerous of the two behaviours, and with auth in front of every turn there is no
+longer a state where "no backend" is the expected experience. A failed request
+now surfaces as an error note (§9).
+
+The three status codes it used to key off are no longer reserved, and
+`node smoke.mjs` no longer passes without a working Worker.
 
 ---
 
@@ -722,8 +895,8 @@ Mapping from failure to what the user sees:
 
 | Failure | `type` | Status | UI |
 | --- | --- | --- | --- |
-| No API key | `not_configured` | 503 | Mock reply streams |
-| Worker not running | — | — | Mock reply streams |
+| No API key | `not_configured` | 503 | Error note — nothing is faked |
+| Worker not running | — | — | Error note from the fetch failure |
 | UA rejected by AgentRouter edge | `unauthorized_client_error` | 500 | Error note naming `AGENTROUTER_USER_AGENT` |
 | Key rejected (401/403) | `invalid_api_key` | 500 | Error note linking the token console |
 | Rate limit / quota | `rate_limited` | 429 | Error note with upstream detail |
@@ -737,6 +910,33 @@ Mapping from failure to what the user sees:
 Error notes render in a red-bordered box under the message, and the message's
 regenerate button becomes **Try again**. An aborted turn is not an error: the
 frontend suppresses the message when `signal.aborted`.
+
+### `stream_error` does not mean the model failed
+
+`toClientStream`'s outer catch wraps **anything** thrown during the relay in
+`Stream interrupted: <message>` and emits it as a `stream_error` frame. That is
+the right behaviour — once headers are out there is no status code left to
+change, and dropping the connection would leave the reader guessing — but it
+means a bug in the Worker's own parsing is reported in the same words as a
+gateway that died mid-answer.
+
+The `data: null` frame produced exactly that: a `TypeError` from
+`extractError(null)` reached the user as
+
+```
+Stream interrupted: Cannot read properties of null (reading 'error')
+```
+
+which reads like an upstream failure and was not one. Two things follow when
+triaging a `stream_error`. First, the text after the prefix is the thrown
+message, not an upstream `error.message` — a JavaScript one (`Cannot read
+properties of…`, `… is not a function`) means the Worker threw, and the frame is
+pointing at this codebase. Second, the property name in such a message names the
+*last* access attempted, not the first thing that went wrong: it said `'error'`
+because `peekToolCalls` meets each frame before the pump does, died on
+`null.choices`, caught its own `TypeError`, and replayed the stream as text —
+after which `extractError` died for real. Both readers had the bug; only the
+second one was allowed to surface it.
 
 Server-side logging uses `console.warn` for a missing key and `console.error`
 for upstream and unexpected failures, both prefixed `[chatddb]`. Observability
@@ -753,7 +953,7 @@ screenshots to `shots/` (gitignored). Start `npm run dev:all` first.
 | Test | Asserts |
 | --- | --- |
 | `node smoke.mjs` | Welcome screen, dark-mode toggle, send a message and get a reply, sidebar lists the chat, mobile viewport collapses the sidebar into an overlay |
-| `node smoke-backend.mjs` | **Real** `gpt-5.6-sol` reply: fails immediately if `/api/health` reports `configured:false`, then samples the assistant bubble every 60 ms and requires ≥80 chars, ≥3 growth steps, and text that is not the mock |
+| `node smoke-backend.mjs` | **Real** `gpt-5.6-sol` reply: fails immediately if `/api/health` reports `configured:false`, then samples the assistant bubble every 60 ms and requires ≥80 chars and ≥3 growth steps |
 | `node smoke-edit.mjs` | Edit flow: two turns, edit the first message, expect one user message left, new text present, dropped turn gone |
 | `node smoke-mobile.mjs` | Mobile viewport collapses to the hamburger and the overlay sidebar opens — screenshot-only, no assertions |
 
@@ -768,9 +968,9 @@ PASS: real gpt-5.6-sol reply streamed progressively into the UI.
 ```
 
 The three non-backend tests key off the assistant bubble filling in rather than
-any fixed string, so they pass against the real Worker and the mock fallback
-alike. `smoke-backend.mjs` is deliberately the exception — a mock reply would
-make a broken backend look healthy.
+any fixed string, so they pass against the real Worker and the error-note
+behaviour alike. `smoke-backend.mjs` is deliberately the exception — a fake
+reply would make a broken backend look healthy.
 
 ### Selectors tests rely on
 
@@ -827,6 +1027,40 @@ sanitiser is testing nothing.
 The gate harness returns the pieces emitted *per push*, not just the
 concatenation, so the tests can assert **when** the placeholder appeared rather
 than only that it did.
+
+### Module tests that need neither a key nor a browser
+
+| Script | Cases |
+| --- | --- |
+| `npm run test:failover` | 56: the retry-vs-crossover branches, `resolveProviders`/`resolveFallback` including both kill switches, and `chainFor` — Auto keeps the backup, an explicit ChatGPT pick keeps it, an explicit Claude pick drops it |
+| `npm run smoke:sse-null` | 19: the `data: null` frame through both readers |
+| `npm run smoke:tool-peek` | The lookahead's verdict and byte-identical replay |
+
+Both run under `--experimental-strip-types`, which is what lets a `.mjs` file
+import the Worker's `.ts` modules directly, uncompiled — so the code under test
+is the code that ships. `test:failover` replaces `globalThis.fetch` with a stub
+that counts calls per host, which is how "crossed over on the *first* 503" is
+distinguished from "crossed over eventually".
+
+`smoke:sse-null` replays a captured Claude stream, null frame in its measured
+mid-stream position, through `peekToolCalls` and `toClientStream`. Both are
+covered because both meet the frame, in that order (§9). The interesting cases
+are the ones that guard against over-fixing it:
+
+- A **real** error frame is still an error. `error` is the field the null frame
+  was read through, so a guard that skipped too much would swallow genuine
+  failures.
+- A stream of **nothing but** null frames is still `empty_completion`. Counting
+  the frame as content would turn a reply that never said anything into a
+  success.
+- A **tool call behind** a null frame is still found, and a text stream is still
+  replayed byte-identically, null frame included.
+
+Verified by reverting the guard at a call site rather than in the helper: the
+suite goes to 8 passed / 11 failed and reproduces the production message
+verbatim, truncated mid-sentence. Mutating `parseChunk` itself proves nothing —
+`typeof null === 'object'`, so the obvious mutation still returns `null` and
+every caller's `if (!chunk)` catches it anyway.
 
 On Windows, both harnesses spawn Wrangler as `process.execPath` plus the literal
 `node_modules/wrangler/bin/wrangler.js` path. Node 22 cannot `execFileSync` a
@@ -909,10 +1143,10 @@ After editing `wrangler.jsonc`, rerun `npm run cf-typegen` — the generated
 
 ## 12. Troubleshooting
 
-**Replies are the mock, not the model.** `curl /api/health`. If `configured` is
-false, the Worker has no usable key: check `.dev.vars` exists, holds a real key
-rather than `sk-replace-me`, and that `wrangler dev` was restarted after it was
-created.
+**Every turn fails with `not_configured`.** `curl /api/health`. If `configured`
+is false, the Worker has no usable key: check `.dev.vars` exists, holds a real
+key rather than `sk-replace-me`, and that `wrangler dev` was restarted after it
+was created.
 
 **`unauthorized_client_error`.** AgentRouter's edge refused the client. Confirm
 `AGENTROUTER_USER_AGENT` still matches the `claude-cli/<version> (external, …)`
@@ -937,6 +1171,16 @@ Get-CimInstance Win32_Process -Filter "ProcessId = <pid>" | Select ProcessId,Par
 client-side, so check `paced()` was not bypassed and that the delta exceeded
 `PACE_MIN_CHARS`.
 
+**`Stream interrupted: Cannot read properties of null (reading 'error')`.** Not
+an upstream failure despite the wording. A `data: null` frame met a parse that
+did not guard against it — run `npm run smoke:sse-null`, and if it passes, look
+for a `JSON.parse` in `sse.ts` that does not go through `parseChunk` (§6). The
+original occurrence hit only `claude-opus-5`, since `gpt-5.6-sol` never sends
+the frame; `select model_used, count(*) from messages where error is not null
+group by 1` in D1 shows that split quickly. More generally, any
+`Stream interrupted:` followed by JavaScript wording is the Worker throwing, not
+the gateway (§9).
+
 **`model_unavailable`.** Ask what the key can actually reach:
 `curl -s localhost:5173/api/models`.
 
@@ -953,27 +1197,27 @@ explicitly.
 
 ## 13. Roadmap
 
-The next phase is persistence. Binding placeholders are already in
-`wrangler.jsonc`, commented out:
+Persistence has landed: `d1_databases` (`chatddb-f5-db`), `r2_buckets`
+(`chatddb-f5-storage`) and the `AI` binding are all live in `wrangler.jsonc`, and
+history, attachments and per-user ownership come with them. Appendix A's status
+column and Appendix B are the current picture; what follows is what is *not* done.
 
-```jsonc
-// "d1_databases": [{ "binding": "DB", "database_name": "chatddb-f5-db", "database_id": "" }],
-// "r2_buckets":   [{ "binding": "FILES", "bucket_name": "chatddb-f5-storage" }]
-```
+**Retune `DIAGRAM_CLAUSE` for `claude-opus-5`.** The clause was written against
+`gpt-5.6-sol` and its restraint does not transfer — 1/8 versus 8/8 on prompts
+that deserve no figure (Appendix B). This is the one open item a user can see: it
+is why the picker carries a note on the Claude segment.
 
-**D1 — `chatddb-f5-db`.** Move conversation history off `localStorage`. Needs
-endpoints for list/create/rename/delete plus message append, and a shape close
-to the existing `Conversation`/`Message` types (a `conversations` table and a
-`messages` table keyed by conversation id, both timestamped). Nothing here is
-implemented yet, including any notion of per-user ownership — with no auth,
-history is currently per-browser by construction.
+**Render a tool-generated image in the live bubble.** It is stored and attached
+correctly and appears on reload; nothing in `src/` reads
+`X-ChatDDB-Generated-File` yet (Appendix B). The same header would let the
+waiting indicator say *drawing* rather than *thinking* during the long pre-stream
+pause a tool turn adds.
 
-**R2 — `chatddb-f5-storage`.** File attachments: upload endpoint, references on
-messages, and multimodal request bodies.
-
-Also worth doing at some point: the client bundle is 537 KB (168 KB gzipped) in
-one chunk, mostly `highlight.js` and the Markdown stack — code-splitting the
-highlighter would cut first paint noticeably.
+**Give `UpstreamError` the `ApiError` treatment.** Every pre-stream chat failure
+currently flattens to `500 internal_error`, which makes §9's status table
+optimistic. The fix is one line and changes user-visible statuses on the main
+chat path, so it wants a change of its own rather than being done in passing
+(Appendix B).
 
 ---
 
@@ -986,13 +1230,31 @@ uses the **`chatddb-f5`** prefix to avoid collisions:
 | Resource | Name | Status |
 | --- | --- | --- |
 | Worker | `chatddb-f5` | deployed |
-| D1 database | `chatddb-f5-db` | planned |
-| R2 bucket | `chatddb-f5-storage` | planned |
+| D1 database | `chatddb-f5-db` | live |
+| R2 bucket | `chatddb-f5-storage` | live |
 
 ---
 
 ## Appendix B — known loose ends
 
+- **`DIAGRAM_CLAUSE` was tuned against `gpt-5.6-sol` and does not transfer.** On
+  `probe:svg` phase 2, `claude-opus-5` stays quiet on **1/8** prompts that
+  deserve no figure where `gpt-5.6-sol` manages 8/8 — it draws for a
+  quadratic-formula derivation and for a request for linked-list code. Drawing
+  quality itself is fine; this is restraint only. It is disclosed in the picker
+  through the registry `note` ("Draws diagrams more eagerly than asked.") rather
+  than fixed, because retuning the clause means re-running phase 2 against both
+  models to check the fix does not cost the other one its 8/8.
+- **`claude-opus-5`'s time-to-first-token has never been measured.** Every other
+  capability behind the picker was probed (vision 3/3, tools 10/10 trigger and
+  5/5 restraint, round trip, refusal, streaming `tool_calls`); latency was not.
+  Since AgentRouter buffers the whole completion before sending anything (§6),
+  the pacing that hides that wait is calibrated against one model's timing only.
+- **No authenticated `POST /api/chat` through the picker was run locally.** It
+  needs a Firebase ID token only a signed-in browser can mint, and local
+  `.dev.vars` has no `FREEMODEL_API_KEY`, so there is nothing to cross over to.
+  The vendor-scoping rule is pinned by `npm run test:failover` against a stubbed
+  `fetch` instead, and the deployed path was verified in production.
 - `errorStream()` in `worker/sse.ts` is exported but unused — pre-flight
   failures are reported as JSON status codes instead, which is the better
   behaviour. It is a leftover, not a dependency.

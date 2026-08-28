@@ -31,30 +31,12 @@
   },
 
   "vars": {
-    // AgentRouter model. `gpt-5.6-sol` is OpenAI's flagship GPT-5.6 tier.
-    "AGENTROUTER_MODEL": "gpt-5.6-sol",
-    "AGENTROUTER_BASE_URL": "https://agentrouter.org/v1",
-    // AgentRouter's edge rejects clients it does not recognise with
-    // `unauthorized_client_error`. A claude-cli-shaped UA passes the check.
-    "AGENTROUTER_USER_AGENT": "claude-cli/2.1.158 (external, sdk-cli)",
+    // Upstream API Provider model and endpoint configuration.
+    "API_PROVIDER_MODEL": "deepseek-v4-flash",
+    "API_PROVIDER_BASE_URL": "https://agentrouter.org/v1",
+    "API_PROVIDER_USER_AGENT": "claude-cli/2.1.158 (external, sdk-cli)",
     "MAX_OUTPUT_TOKENS": "8192",
     "UPSTREAM_TIMEOUT_MS": "180000",
-
-    // The silent fallback gateway. When AgentRouter cannot answer, freemodel.dev
-    // does, and nobody is told -- see worker/failover.ts. It only arms itself
-    // once FREEMODEL_API_KEY is set, so these vars are inert until then.
-    //
-    // freemodel does not serve gpt-5.6-sol; gpt-5.5 is the top tier it offers,
-    // so a failed-over turn is recorded in D1 as gpt-5.5/freemodel while the
-    // response header still says gpt-5.6-sol, which is what was asked for.
-    //
-    // Note the bare host: api.freemodel.dev answered "Container service is
-    // restarting" while freemodel.dev served the same route fine.
-    "FREEMODEL_MODEL": "gpt-5.5",
-    "FREEMODEL_BASE_URL": "https://freemodel.dev/v1",
-    // Kill switch. "false" stops crossover without unsetting the secret -- the
-    // fallback is metered, so a primary failing on every request spends money.
-    "FALLBACK_ENABLED": "true",
 
     // Firebase project id. A public identifier, not a secret: ID tokens are
     // verified against Google's public JWKS, so there is no service-account key.
@@ -73,46 +55,19 @@
     // Image generation (Workers AI). flux-1-schnell is chosen on price: 4.80
     // neurons per 512x512 tile + 9.60 per step, so a 1024x1024 4-step image is
     // ~57.6 neurons against the 10,000/day free allocation -- about 173 images a
-    // day. The next cheapest listed image model (lucid-origin, 636 neurons/tile)
-    // would manage roughly four.
-    //
-    // That allowance is per *account*, not per user, and on the Workers Free plan
-    // requests fail rather than bill once it is gone. Hence the tight per-user
-    // rate limits below.
+    // day.
     "IMAGE_MODEL": "@cf/black-forest-labs/flux-1-schnell",
-    // Kill switch, same convention as FALLBACK_ENABLED: only the exact string
-    // "false" disarms it, so a typo fails safe (enabled) rather than silently
-    // removing the feature.
     "IMAGE_ENABLED": "true",
-    // flux-1-schnell accepts 1-8; 4 is the model default and the quality knee.
     "IMAGE_STEPS": "4",
     "RATE_IMAGE_PER_MIN": "3",
     "RATE_IMAGE_PER_DAY": "20",
 
-    // The backup image provider. When Workers AI cannot draw -- allowance gone,
-    // model withdrawn -- Pollinations draws instead, and the user is not told.
-    // Same shape as the FREEMODEL_* block above, and inert until
-    // POLLINATIONS_API_KEY is set.
-    //
-    // The crossover is scoped to quota and availability failures only. A prompt
-    // refused by one provider's safety filter is NOT retried against another's:
-    // that would make the deployment's content policy whichever filter is
-    // laxest. See worker/images.ts.
-    //
-    // Note it is a different host from the documented image.pollinations.ai:
-    // gen.pollinations.ai is the keyed endpoint, and it answers an over-pace
-    // request with 401 rather than 429, which is why worker/images.ts has a
-    // Pollinations-specific classifier instead of reusing the Workers AI one.
+    // The backup image provider.
     "POLLINATIONS_MODEL": "flux",
     "POLLINATIONS_BASE_URL": "https://gen.pollinations.ai",
-    // Kill switch, same convention as FALLBACK_ENABLED and IMAGE_ENABLED: only
-    // the exact string "false" disarms it. Pollinations is metered, so a primary
-    // failing on every request spends money.
     "POLLINATIONS_ENABLED": "true",
 
-    // Images the *model* asks for via the generate_image tool, per user per day.
-    // A quarter of RATE_IMAGE_PER_DAY on purpose: the system prompt tells the
-    // model when to illustrate, but prompting is a hint and this is the budget.
+    // Images the model asks for via the generate_image tool, per user per day.
     "RATE_TOOL_IMAGE_PER_DAY": "5",
 
     "MAX_IMAGE_BYTES": "10485760",
@@ -131,10 +86,8 @@
   },
 
   // Secrets, never vars:
-  //   AGENTROUTER_API_KEY  the primary upstream key
-  //   FREEMODEL_API_KEY    the fallback gateway's key (optional; arms failover)
-  //   POLLINATIONS_API_KEY the backup image provider's key (optional; arms the
-  //                        image crossover -- npm run secret:pollinations)
+  //   PROVIDER_API_KEY     the primary upstream key (with optional PROVIDER_API_KEY_2, PROVIDER_API_KEY_3)
+  //   POLLINATIONS_API_KEY the backup image provider's key (optional)
   //   FILE_URL_SECRET      HMAC key for signed file-view URLs
   //   IP_HASH_SALT         salt for the truncated IP hash in the audit log
   // local  -> .dev.vars   (gitignored; see .dev.vars.example)

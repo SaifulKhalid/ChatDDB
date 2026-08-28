@@ -101,7 +101,7 @@ export function corsHeaders(request: Request, env: WorkerEnv): Record<string, st
     // The chat stream reports the ids it created in headers rather than in a
     // frame, so a cross-origin dev client has to be allowed to read them.
     'Access-Control-Expose-Headers':
-      'X-ChatDDB-Model, X-ChatDDB-Session-Id, X-ChatDDB-Message-Id, Retry-After',
+      'X-ChatDDB-Model, X-ChatDDB-Session-Id, X-ChatDDB-Message-Id, X-ChatDDB-Generated-File, X-ChatDDB-Generated-File-JSON, Retry-After',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',
   }
