@@ -13,6 +13,12 @@ PROVIDER_API_KEY=sk-replace-me
 # PROVIDER_API_KEY_2=sk-replace-me
 # PROVIDER_API_KEY_3=sk-replace-me
 
+# The OpenRouter free-tier backup text gateway (optional). With this set, a
+# failing primary gateway no longer ends the turn: the request crosses to
+# OpenRouter and the UI says which model answered.
+# Deployed:  npx wrangler secret put OPENROUTER_API_KEY
+# OPENROUTER_API_KEY=sk-or-replace-me
+
 # The backup image provider (optional). With this set, an exhausted Workers AI
 # allowance stops being visible: Pollinations draws the image instead.
 # Deployed:  npm run secret:pollinations
@@ -23,6 +29,11 @@ PROVIDER_API_KEY=sk-replace-me
 # API_PROVIDER_BASE_URL=https://agentrouter.org/v1
 # MAX_OUTPUT_TOKENS=8192
 # REASONING_EFFORT=medium
+# OPENROUTER_MODEL=z-ai/glm-5.2:free
+# OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+# OPENROUTER_TOKEN_PARAM=max_tokens
+# OPENROUTER_REASONING_EFFORT=true
+# OPENROUTER_VISION=false
 # POLLINATIONS_MODEL=flux
 # POLLINATIONS_BASE_URL=https://gen.pollinations.ai
 # POLLINATIONS_ENABLED=true

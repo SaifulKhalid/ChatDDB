@@ -73,8 +73,8 @@ data: [DONE]
 | File | Role |
 | --- | --- |
 | `worker/index.ts` | Routing, request validation, system prompt, error mapping |
-| `worker/agentrouter.ts` | AgentRouter HTTP client — headers, retries, timeout, abort |
-| `worker/failover.ts` | The gateway chain: AgentRouter, then freemodel.dev — and `chainFor`, which scopes it by vendor for an explicit model pick |
+| `worker/provider.ts` | Upstream provider HTTP client — headers, retries, timeout, abort |
+| `worker/failover.ts` | The gateway chain: the primary gateway, then OpenRouter's free tier — and `chainFor`, which drops the backup for image turns unless it is declared vision-capable |
 | `worker/models.ts` | The model registry: ids, vendors, measured capabilities |
 | `worker/images.ts` | The image chain: Workers AI, then Pollinations |
 | `worker/sse.ts` | Normalises upstream SSE to the contract above; peeks for tool calls; gates SVG figures; `parseChunk` guards every upstream parse |
@@ -83,23 +83,21 @@ data: [DONE]
 
 Config lives in `wrangler.jsonc` `vars` (model, base URL, token cap, timeout) and can be overridden per-machine in `.dev.vars`. Full reference in [DOCS.md § 4](DOCS.md#4-configuration).
 
-### Two failover chains, both silent
+### Two failover chains
 
-Each of the two things this app asks an outside provider for has a backup behind it, and neither announces itself. There is no provider badge, and nothing in `src/` knows which one answered.
+Each of the two things this app asks an outside provider for has a backup behind it. The image backup stays silent; the text backup announces itself.
 
-**Text: AgentRouter → freemodel.dev.** AgentRouter fails often enough that users noticed. `completeWithFailover` in `worker/failover.ts` sits *above* the stream opener, so it cannot restart a stream that has already delivered bytes — a mid-flight death still surfaces as an SSE error frame. A crossover writes an `upstream_failover` activity row and sets `X-ChatDDB-Upstream`.
+**Text: primary → OpenRouter free tier.** The primary gateway fails often enough that users noticed. `completeWithFailover` in `worker/failover.ts` sits *above* the stream opener, so it cannot restart a stream that has already delivered bytes — a mid-flight death still surfaces as an SSE error frame. A crossover writes an `upstream_failover` activity row and sets `X-ChatDDB-Upstream`.
 
 **Images: Workers AI → Pollinations.** The Cloudflare free allowance is 10,000 neurons *per account per day*, shared by every signed-in user, so the first person to spend it used to take image generation down for everyone until 00:00 UTC. `generateImage` in `worker/images.ts` crosses over on exactly two error classes — `image_quota_exhausted` and `image_model_unavailable`, the two that mean *this provider cannot serve right now*. A refusal is deliberately **not** one of them: resubmitting a prompt one safety filter rejected to a provider with a different policy would make the deployment's effective content policy "whichever provider is last on the chain". Crossovers write an `image_failover` row, and `files.gen_model` records what actually drew the image (`pollinations/flux`, not the Cloudflare model id).
 
-Both backups are metered, so both are backups rather than peers: a missing primary is an error, not a reason to run entirely on the paid one. `FALLBACK_ENABLED` and `POLLINATIONS_ENABLED` switch them off, and only the exact string `"false"` does — a typo leaves the backup armed rather than silently removing it.
+Both backups are metered, so both are backups rather than peers: a missing primary is an error, not a reason to run entirely on the paid one. `OPENROUTER_ENABLED` and `POLLINATIONS_ENABLED` switch them off, and only the exact string `"false"` does — a typo leaves the backup armed rather than silently removing it.
 
 ### Picking a model, and what that costs
 
-The composer offers **Auto · ChatGPT · Claude**. Auto sends no `model` field, which is what the Worker reads as *you choose*: it resolves `AGENTROUTER_MODEL` (`gpt-5.6-sol`) and keeps the full failover chain. Naming a model is a different promise, so it gets different behaviour.
+The composer offers **Auto · DeepSeek · GLM · ChatGPT · Claude**. Auto sends no `model` field, which is what the Worker reads as *you choose*: it resolves `API_PROVIDER_MODEL` and keeps the full failover chain.
 
-The tension is that text failover crosses to a gateway serving a **different catalogue**. That was free while no client could name a model — nobody had asked for anything specific. Once a user picks "Claude", a crossover would answer with freemodel's `gpt-5.5` and log it under a reply the user believes came from Anthropic, which is the exact thing `models.ts` calls *"worse than an error."*
-
-So `chainFor` in `worker/failover.ts` scopes the chain by **vendor**, not by model: an explicit ChatGPT pick keeps the backup (both are OpenAI, so nothing is lost), and an explicit Claude pick drops it and fails loudly instead. That is a deliberate trade of reliability for honesty, and it applies only to explicit picks — Auto is the default, so the reliability of the common path is unchanged. `scripts/test-failover.mjs` pins both directions.
+Naming a model used to narrow the chain by vendor — a picked Claude request would fail rather than be answered by another vendor's model. That rule was dropped deliberately, in favour of availability with an announcement: every request crosses to the backup when the primary fails, and when the user had *picked* a model the UI says so — *"Claude Opus 5 is unavailable right now — this reply came from X on OpenRouter."* Auto stays quiet, because "retries elsewhere" is already what it promises. The one filter left in `chainFor` is a capability check: an image turn only crosses to a backup declared vision-capable (`OPENROUTER_VISION`), because forwarding an image to a model that will refuse it spends the user's wait for nothing. `scripts/test-failover.mjs` pins both directions.
 
 `claude-opus-5` was measured with the same probes as the default model, not assumed: vision 3/3, tool calling 10/10 trigger and 5/5 on restraint, round trip, refusal and streaming. One regression is real and is disclosed in the picker rather than hidden — on `probe:svg` phase 2 it stays quiet on 1/8 prompts that deserve no figure where `gpt-5.6-sol` manages 8/8. `DIAGRAM_CLAUSE` was tuned against the other model and does not transfer.
 
@@ -149,7 +147,7 @@ This is worth knowing because `try { JSON.parse(x) }` does not defend against it
 
 It also calls tools reliably, which is what the `generate_image` path depends on. `npm run probe:tools` measured 10/10 on prompts that should fire it, 5/5 restraint on one that should not, 5/5 on relaying a tool result, 5/5 on explaining a failed one, and 5/5 producing usable `tool_calls` over a *streaming* request — the last of which is why the decision leg keeps `stream: true` instead of being downgraded to a buffered request. Arguments arrive as ~150 delta fragments, so anything reading them has to reassemble by `index` rather than expecting one frame.
 
-freemodel's tool support has never been probed. The backup is offered `tools` anyway and ignoring the field is survivable by construction: no `tool_calls` just means the turn is answered as plain text, which is what it would have been.
+The free-tier backup model's tool support has never been probed. The backup is offered `tools` anyway and ignoring the field is survivable by construction: no `tool_calls` just means the turn is answered as plain text, which is what it would have been.
 
 It writes usable SVG, and — the part that actually needed measuring — it knows when not to. `npm run probe:svg` runs two phases. Phase 1 asked for five figures twice each: 10/10 came back as parseable SVG with a `viewBox`, a `<title>`, text labels, `currentColor` fills, and no script, handler or external reference; label counts ran 5–21 and sizes 1.3–3.8 kB. Phase 2 is restraint, three prompts that deserve a figure against four adversarially chosen ones that do not (a derivation, a TCP-vs-UDP comparison, a request for linked-list code, plain prose): 6/6 drew, 8/8 stayed quiet. Structural checks cannot tell you whether an axis is in the right place, so the probe also renders every figure to `shots/svg-probe/*.png` for a human to look at.
 

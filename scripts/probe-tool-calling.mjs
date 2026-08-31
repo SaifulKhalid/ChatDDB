@@ -146,7 +146,7 @@ async function post(messages, extra = {}) {
       Authorization: `Bearer ${API_KEY}`,
       'Content-Type': 'application/json',
       Accept: 'application/json',
-      // AgentRouter's edge whitelists clients; see worker/agentrouter.ts.
+      // Upstream gateway client whitelist; see worker/provider.ts.
       'User-Agent': USER_AGENT,
       'X-App': 'cli',
     },

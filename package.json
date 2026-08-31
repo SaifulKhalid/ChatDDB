@@ -20,6 +20,7 @@
     "db:tables": "wrangler d1 execute chatddb-f5-db --local --command \"select name from sqlite_master where type='table' order by name\"",
     "probe:vision": "node scripts/probe-vision.mjs",
     "probe:tools": "node scripts/probe-tool-calling.mjs",
+    "probe:openrouter": "node scripts/probe-openrouter.mjs",
     "test:failover": "node --experimental-strip-types scripts/test-failover.mjs",
     "stub:gateway": "node scripts/stub-gateway.mjs",
     "smoke:failover": "node scripts/smoke-failover.mjs",

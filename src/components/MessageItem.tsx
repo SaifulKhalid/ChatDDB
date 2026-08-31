@@ -336,9 +336,14 @@ function AssistantMessage({
           <GeneratedImage key={file.id} file={file} />
         ))}
         {message.error && (
-          <p className="mt-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">
-            {message.error}
-          </p>
+          <div className="mt-2 space-y-1">
+            <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">
+              {message.error}
+            </p>
+            <p className="px-1 text-xs text-ink-2">
+              Please switch to Auto mode if you think something is wrong with this model
+            </p>
+          </div>
         )}
         {showActions && (
           <div

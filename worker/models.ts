@@ -7,14 +7,14 @@
  * of the attach button, and those two must agree. Adding a model is one entry in
  * this array -- the picker renders whatever is here, so it needs no edit.
  *
- * `GET /api/models` returns these records rather than AgentRouter's raw list.
+ * `GET /api/models` returns these records rather than the raw upstream list.
  * The raw list is a debugging tool and lives at `GET /api/admin/models`.
  */
 
 /**
  * Who actually trained the model, as distinct from which gateway serves it.
  *
- * AgentRouter serves both vendors, so `provider` cannot answer this -- and the
+ * The provider serves multiple vendors, so `provider` cannot answer this -- and the
  * failover rule needs it: substituting one vendor's model for another is the one
  * crossover a user who picked deliberately would call a lie.
  */
@@ -25,7 +25,7 @@ export interface ModelSpec {
   label: string
   /** The name a user picks by. Short enough for a segmented control. */
   short: string
-  provider: 'provider' | 'agentrouter'
+  provider: 'provider'
   vendor: Vendor
   /** Accepts image content parts. Gates the attach button and `model_no_vision`. */
   vision: boolean
@@ -114,7 +114,7 @@ export function resolveModel(id: string | undefined, configuredDefault: string):
     if (!found) return unknownModel(id)
     return found
   }
-  // The Worker's AGENTROUTER_MODEL var wins over the registry's `default` flag,
+  // The Worker's API_PROVIDER_MODEL var wins over the registry's `default` flag,
   // so changing the deployed model stays a config change.
   return findModel(configuredDefault) ?? defaultModel()
 }
@@ -125,7 +125,7 @@ function unknownModel(id: string): ModelSpec {
     id,
     label: id,
     short: id,
-    provider: 'agentrouter',
+    provider: 'provider',
     vendor: vendorOf(id),
     vision: false,
     documents: false,
@@ -139,14 +139,10 @@ function unknownModel(id: string): ModelSpec {
  * Guesses a vendor from a model id, for ids the registry does not describe.
  *
  * Sniffing a string is not how any of the rest of this file works, and it is
- * deliberately confined to one caller that has no better source: the fallback
- * gateway's model comes from `FREEMODEL_MODEL`, an operator's free-text env var,
- * so there is no record to look it up in. `openai` is the default because the
- * fallback has served `gpt-5.5` since it was added, and because the direction of
- * the error matters -- see `chainFor` in `routes/chat.ts`, where guessing
- * `openai` can only ever *widen* a GPT request's failover, while a wrong guess
- * of `anthropic` would let a Claude request be answered by a GPT model, which is
- * the single thing that rule exists to prevent.
+ * deliberately confined to one caller that has no better source: labelling an
+ * unknown id in the admin inspector. It no longer feeds any routing rule — the
+ * old vendor-matching failover filter is gone, and every model now crosses to
+ * the backup with the substitution announced in headers and activity logs.
  */
 export function vendorOf(modelId: string): Vendor {
   if (/claude|anthropic/i.test(modelId)) return 'anthropic'

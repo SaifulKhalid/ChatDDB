@@ -46,6 +46,13 @@ export interface StreamMeta {
   model: string | null
   generatedFileId: string | null
   generatedFile: PublicFile | null
+  /**
+   * Present only when a backup gateway answered because the primary failed.
+   * The Worker sets the header pair on a crossover; its absence means the
+   * primary answered and no notice is owed.
+   */
+  upstream: string | null
+  upstreamModel: string | null
 }
 
 export async function* streamChat(
@@ -73,6 +80,8 @@ export async function* streamChat(
     model: res.headers.get('X-ChatDDB-Model'),
     generatedFileId: res.headers.get('X-ChatDDB-Generated-File'),
     generatedFile,
+    upstream: res.headers.get('X-ChatDDB-Upstream'),
+    upstreamModel: res.headers.get('X-ChatDDB-Upstream-Model'),
   })
 
   const reader = res.body.getReader()
@@ -132,11 +141,11 @@ const PACE_BUDGET_MS = 700
 /**
  * Renders a delta progressively instead of all at once.
  *
- * AgentRouter does not actually stream `gpt-5.6-sol`: it buffers the full
- * completion upstream and sends it as a single SSE frame, so without this the UI
+ * The upstream gateway buffers the full
+ * completion upstream for some models and sends it as a single SSE frame, so without this the UI
  * would sit empty and then paste the whole answer in one repaint. Genuinely
  * incremental deltas are short, fall under PACE_MIN_CHARS, and pass straight
- * through — so if AgentRouter ever starts real streaming this stops doing
+ * through — so if the upstream provider performs real incremental streaming this stops doing
  * anything.
  */
 async function* paced(text: string, signal: AbortSignal): AsyncGenerator<string> {

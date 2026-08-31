@@ -1,11 +1,12 @@
 /**
  * Failover unit tests — no network, no API key, no Worker.
  *
- * `worker/failover.ts` decides when to abandon AgentRouter for the metered
- * backup. Getting that wrong is expensive in both directions: too eager and it
- * spends freemodel credit on a hiccup, too patient and the user waits out a
- * 3×3 retry ladder against a gateway that is already down. Neither failure is
- * visible from a happy-path manual test, so the branches are pinned here.
+ * `worker/failover.ts` decides when to abandon the primary gateway for the
+ * OpenRouter free-tier backup. Getting that wrong is expensive in both
+ * directions: too eager and it spends the free daily allowance on a hiccup, too
+ * patient and the user waits out a 3×3 retry ladder against a gateway that is
+ * already down. Neither failure is visible from a happy-path manual test, so
+ * the branches are pinned here.
  *
  * `globalThis.fetch` is replaced with a scripted stub that counts calls per
  * host, which is how "crossed over on the *first* 503" is distinguished from
@@ -19,16 +20,16 @@
  * ships.
  */
 
-import { chainFor, completeWithFailover, resolveFallback, resolveProviders } from '../worker/failover.ts'
-import { UpstreamError } from '../worker/agentrouter.ts'
+import { chainFor, completeWithFailover, fallbackReady, fallbackModel, resolveProviders } from '../worker/failover.ts'
+import { UpstreamError } from '../worker/provider.ts'
 import { findModel } from '../worker/models.ts'
 
 const PRIMARY = 'agentrouter.org'
-const BACKUP = 'freemodel.dev'
+const BACKUP = 'openrouter.ai'
 
 const env = {
-  AGENTROUTER_API_KEY: 'sk-primary',
-  FREEMODEL_API_KEY: 'fm-backup',
+  PROVIDER_API_KEY: 'sk-primary',
+  OPENROUTER_API_KEY: 'sk-or-backup',
 }
 
 let failures = 0
@@ -77,79 +78,72 @@ async function expectThrow(fn) {
 
 // ---------------------------------------------------------------------------
 
-console.log('\nresolveFallback')
+console.log('\nresolveProviders / fallbackReady')
 {
-  check('null with no key', resolveFallback({}) === null)
-  check(
-    'null when the kill switch is off',
-    resolveFallback({ ...env, FALLBACK_ENABLED: 'false' }) === null,
-  )
-  check(
-    'armed with a key',
-    resolveFallback(env)?.provider === 'freemodel',
-  )
-  const fb = resolveFallback(env)
-  check('defaults to gpt-5.5', fb.model === 'gpt-5.5', fb.model)
-  check('uses the bare host, not api.', fb.baseUrl === 'https://freemodel.dev/v1', fb.baseUrl)
-  check('sends no User-Agent', fb.userAgent === undefined)
-  check('defaults to max_completion_tokens', fb.tokenParam === 'max_completion_tokens')
-  check(
-    'probe can switch the token param',
-    resolveFallback({ ...env, FREEMODEL_TOKEN_PARAM: 'max_tokens' }).tokenParam === 'max_tokens',
-  )
-  check(
-    'probe can drop reasoning_effort',
-    resolveFallback({ ...env, FREEMODEL_REASONING_EFFORT: 'false' }).sendReasoningEffort === false,
-  )
+  const chain = resolveProviders(env)
+  check('primary first, backup second', chain.map((c) => c.provider).join(',') === 'provider,openrouter')
+  check('the requested model overrides the primary only', resolveProviders(env, 'gpt-5.6-sol')[0].model === 'gpt-5.6-sol')
+  check('the backup keeps its own catalogue', chain[1].model === 'z-ai/glm-5.2:free', chain[1].model)
+  check('single provider without an OpenRouter key', resolveProviders({ PROVIDER_API_KEY: 'sk-x' }).length === 1)
+  check('kill switch disarms the backup', resolveProviders({ ...env, OPENROUTER_ENABLED: 'false' }).length === 1)
   // A typo in the kill switch must leave the backup armed, not silently off.
   check(
-    'a typo in FALLBACK_ENABLED fails safe (still armed)',
-    resolveFallback({ ...env, FALLBACK_ENABLED: 'no' }) !== null,
+    'a typo in OPENROUTER_ENABLED fails safe (still armed)',
+    resolveProviders({ ...env, OPENROUTER_ENABLED: 'no' }).length === 2,
+  )
+  const err = await expectThrow(async () => resolveProviders({ OPENROUTER_API_KEY: 'or-only' }))
+  check('a backup alone is not a configuration', err?.name === 'NotConfiguredError', String(err))
+  check('fallbackReady is true with a key', fallbackReady(env) === true)
+  check('fallbackReady is false without one', fallbackReady({ PROVIDER_API_KEY: 'sk-x' }) === false)
+  check(
+    'fallbackModel reports the backup id',
+    fallbackModel(env) === 'z-ai/glm-5.2:free',
+    String(fallbackModel(env)),
+  )
+  check('the backup sends max_tokens by default', chain[1].tokenParam === 'max_tokens', chain[1].tokenParam)
+  check(
+    'the token param can be switched',
+    resolveProviders({ ...env, OPENROUTER_TOKEN_PARAM: 'max_completion_tokens' })[1].tokenParam ===
+      'max_completion_tokens',
+  )
+  check(
+    'reasoning_effort can be dropped',
+    resolveProviders({ ...env, OPENROUTER_REASONING_EFFORT: 'false' })[1].sendReasoningEffort === false,
   )
 }
 
-console.log('\nresolveProviders')
+// The vision half of the chainFor contract. An image turn may only cross to a
+// backup declared vision-capable — an unverified claim would forward the image
+// to a model that refuses it upstream, after the user waited out the primary
+// failing first. Both directions are pinned: filtering every image turn would
+// silently halve reliability for vision-verified deployments.
+console.log('\nchainFor — an image turn only crosses to a declared-vision backup')
 {
-  const chain = resolveProviders(env, 'gpt-5.6-sol')
-  check('primary first, backup second', chain.map((c) => c.provider).join(',') === 'agentrouter,freemodel')
-  check('the requested model overrides the primary only', chain[0].model === 'gpt-5.6-sol')
-  check('the backup keeps its own catalogue', chain[1].model === 'gpt-5.5', chain[1].model)
-  check('single provider without a freemodel key', resolveProviders({ AGENTROUTER_API_KEY: 'sk-x' }).length === 1)
-  const err = await expectThrow(async () => resolveProviders({ FREEMODEL_API_KEY: 'fm-only' }))
-  check('a backup alone is not a configuration', err?.name === 'NotConfiguredError', String(err))
+  const providers = resolveProviders(env)
+  const gpt = findModel('gpt-5.6-sol')
+  check('the registry id resolves', gpt?.vendor === 'openai')
+
+  const text = chainFor(providers, gpt, false)
+  check('a text turn keeps the backup', text.length === 2, `${text.length}`)
+
+  const image = chainFor(providers, gpt, true)
+  check('an image turn drops an undeclared backup', image.length === 1, `${image.length}`)
+  check('the primary is never filtered', image[0].provider === 'provider')
+
+  const vision = resolveProviders({ ...env, OPENROUTER_VISION: 'true' })
+  check('an image turn keeps a declared-vision backup', chainFor(vision, gpt, true).length === 2)
 }
 
-// The picker's half of the contract. Auto may cross vendors because nobody named
-// one; an explicit pick may not, because `model_used` would then record a vendor
-// the user did not choose. Both directions are pinned — dropping the backup for
-// *every* request would pass a one-sided test and quietly halve reliability.
-console.log('\nchainFor — an explicit pick is never answered by another vendor')
+// Every model crosses over now, explicit picks included — the substitution is
+// announced in headers and activity logs rather than prevented. The old vendor
+// rule (an explicit Claude pick never answered by a GPT model) was dropped
+// deliberately; this pins its removal so the change is a decision, not a drift.
+console.log('\nchainFor — an explicit pick keeps the backup too')
 {
-  const gpt = findModel('gpt-5.6-sol')
-  const claude = findModel('claude-opus-5')
   const providers = resolveProviders(env)
-  check('both registry ids resolve', gpt?.vendor === 'openai' && claude?.vendor === 'anthropic')
-
-  const auto = chainFor(providers, gpt, false)
-  check('Auto keeps the backup', auto.map((c) => c.provider).join(',') === 'agentrouter,freemodel')
-  check('Auto still overrides the primary model', auto[0].model === 'gpt-5.6-sol')
-
-  const pickedGpt = chainFor(providers, gpt, true)
-  check('an explicit ChatGPT pick keeps the backup', pickedGpt.length === 2, `${pickedGpt.length}`)
-
-  const pickedClaude = chainFor(providers, claude, true)
-  check('an explicit Claude pick drops the backup', pickedClaude.length === 1, `${pickedClaude.length}`)
-  check('and still asks for Claude', pickedClaude[0].model === 'claude-opus-5')
-
-  // Auto is the default, so a regression here breaks every existing user.
-  const autoClaude = chainFor(providers, claude, false)
-  check('Auto is unfiltered even for a Claude default', autoClaude.length === 2)
-
-  // The primary is never filtered, so an unrecognised FREEMODEL_MODEL cannot
-  // empty the chain — `vendorOf` guessing `openai` only ever widens GPT's reach.
-  const odd = resolveProviders({ ...env, FREEMODEL_MODEL: 'some-new-model' })
-  check('an unknown backup model still serves an explicit GPT pick', chainFor(odd, gpt, true).length === 2)
-  check('but not an explicit Claude pick', chainFor(odd, claude, true).length === 1)
+  const claude = findModel('claude-opus-5')
+  check('an explicit Claude pick keeps the backup', chainFor(providers, claude, false).length === 2)
+  check('the primary still answers as Claude', resolveProviders(env, 'claude-opus-5')[0].model === 'claude-opus-5')
 }
 
 console.log('\ncompleteWithFailover — happy path')
@@ -157,7 +151,7 @@ console.log('\ncompleteWithFailover — happy path')
   const chain = resolveProviders(env)
   const counts = stubFetch({ [PRIMARY]: streamOk, [BACKUP]: streamOk })
   const attempt = await completeWithFailover(chain, [], new AbortController().signal)
-  check('primary answers', attempt.provider === 'agentrouter')
+  check('primary answers', attempt.provider === 'provider')
   check('crossedOver is false', attempt.crossedOver === false)
   check('backup never touched', counts[BACKUP] === undefined)
 }
@@ -172,21 +166,21 @@ console.log('\ncompleteWithFailover — crosses fast')
     const chain = resolveProviders(env)
     const counts = stubFetch({ [PRIMARY]: handler, [BACKUP]: streamOk })
     const attempt = await completeWithFailover(chain, [], new AbortController().signal)
-    check(`${label}: backup answers`, attempt.provider === 'freemodel')
+    check(`${label}: backup answers`, attempt.provider === 'openrouter')
     check(`${label}: crossedOver is true`, attempt.crossedOver === true)
     // The whole point of "cross over fast": one try, not MAX_ATTEMPTS.
     check(`${label}: primary tried exactly once`, counts[PRIMARY] === 1, `was ${counts[PRIMARY]}`)
-    check(`${label}: model recorded is the backup's`, attempt.model === 'gpt-5.5')
+    check(`${label}: model recorded is the backup's`, attempt.model === 'z-ai/glm-5.2:free')
   }
 }
 
 console.log('\ncompleteWithFailover — 401 walks the keys first')
 {
-  const chain = resolveProviders({ ...env, AGENTROUTER_API_KEY_2: 'sk-second' })
+  const chain = resolveProviders({ ...env, PROVIDER_API_KEY_2: 'sk-second' })
   const counts = stubFetch({ [PRIMARY]: () => status(401), [BACKUP]: streamOk })
   const attempt = await completeWithFailover(chain, [], new AbortController().signal)
-  check('backup answers once both keys are rejected', attempt.provider === 'freemodel')
-  // One revoked key of two is not an outage — try the other before paying.
+  check('backup answers once both keys are rejected', attempt.provider === 'openrouter')
+  // One revoked key of two is not an outage — try the other before crossing.
   check('both primary keys tried, no backoff ladder', counts[PRIMARY] === 2, `was ${counts[PRIMARY]}`)
 }
 
@@ -195,7 +189,7 @@ console.log('\ncompleteWithFailover — 429 retries in place, then crosses')
   const chain = resolveProviders(env)
   const counts = stubFetch({ [PRIMARY]: () => status(429), [BACKUP]: streamOk })
   const attempt = await completeWithFailover(chain, [], new AbortController().signal)
-  check('backup answers after the ladder', attempt.provider === 'freemodel')
+  check('backup answers after the ladder', attempt.provider === 'openrouter')
   // Waiting genuinely helps a rate limit, so this is the one that stays patient.
   check('primary retried 3× in place', counts[PRIMARY] === 3, `was ${counts[PRIMARY]}`)
 }
@@ -221,7 +215,7 @@ console.log('\ncompleteWithFailover — a 400 about the model IS an outage shape
     [BACKUP]: streamOk,
   })
   const attempt = await completeWithFailover(chain, [], new AbortController().signal)
-  check('crosses to a gateway with a different catalogue', attempt.provider === 'freemodel')
+  check('crosses to a gateway with a different catalogue', attempt.provider === 'openrouter')
 }
 
 console.log('\ncompleteWithFailover — reports every crossover')
@@ -233,7 +227,7 @@ console.log('\ncompleteWithFailover — reports every crossover')
     seen.push([from, to, err.upstreamStatus]),
   )
   check('called once', seen.length === 1, JSON.stringify(seen))
-  check('with from/to/status', JSON.stringify(seen[0]) === '["agentrouter","freemodel",502]', JSON.stringify(seen[0]))
+  check('with from/to/status', JSON.stringify(seen[0]) === '["provider","openrouter",502]', JSON.stringify(seen[0]))
 }
 
 console.log('\ncompleteWithFailover — Stop is not a failure to route around')
@@ -266,7 +260,7 @@ console.log('\nboth gateways down')
 
 console.log('\nno backup configured — the old behaviour is unchanged')
 {
-  const chain = resolveProviders({ AGENTROUTER_API_KEY: 'sk-only' })
+  const chain = resolveProviders({ PROVIDER_API_KEY: 'sk-only' })
   const counts = stubFetch({ [PRIMARY]: () => status(503) })
   const err = await expectThrow(() => completeWithFailover(chain, [], new AbortController().signal))
   check('still fails', err instanceof UpstreamError, String(err))

@@ -1,27 +1,10 @@
 /**
- * The OpenAI-compatible upstream client.
+ * The OpenAI-compatible upstream provider client.
  *
- * Despite the filename this is not AgentRouter-specific any more: it speaks
- * plain `/v1/chat/completions` to whichever gateway a `UpstreamConfig` points
- * at. Two are configured — AgentRouter as primary and freemodel.dev as the
- * silent fallback — and `failover.ts` builds both configs and picks between
- * them. Everything a gateway can disagree about lives in the config, so no
- * function here branches on `provider`; that field exists to label logs and to
+ * Speaks plain `/v1/chat/completions` to whichever gateway a `UpstreamConfig` points
+ * at. Everything a gateway can disagree about lives in the config, so no
+ * function here branches on provider specifics; that field exists to label logs and to
  * record which gateway actually answered.
- *
- * One non-obvious requirement, and the reason `userAgent` is optional:
- * AgentRouter's edge runs a client whitelist. A request carrying an ordinary
- * User-Agent is rejected before it reaches the router with
- *
- *   {"error":{"message":"unauthorized client detected, ..."},
- *    "type":"unauthorized_client_error"}
- *
- * while the same request with a `claude-cli/<version> (external, ...)`
- * User-Agent is accepted (a bad key then fails with `new_api_error` instead,
- * which is how you can tell the two failures apart). The UA is therefore
- * mandatory for AgentRouter, and is exposed as `AGENTROUTER_USER_AGENT` so it
- * can be changed without a redeploy if the accepted pattern ever moves.
- * freemodel has no such whitelist and sets no `userAgent` at all.
  */
 
 export const DEFAULT_BASE_URL = 'https://agentrouter.org/v1'
@@ -29,8 +12,21 @@ export const DEFAULT_MODEL = 'deepseek-v4-flash'
 export const DEFAULT_USER_AGENT = 'claude-cli/2.1.158 (external, sdk-cli)'
 export const DEFAULT_TIMEOUT_MS = 180_000
 
-/** Which gateway a config points at. Labels logs and `chat_messages.model_provider`. */
-export type ProviderId = 'provider' | 'agentrouter'
+export const DEFAULT_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1'
+/**
+ * The backup's model. A `:free` id verified against the live catalog by
+ * `npm run probe:openrouter` — free ids rotate, so this is a config fact, not
+ * a code fact, and `OPENROUTER_MODEL` overrides it without a deploy.
+ */
+export const DEFAULT_OPENROUTER_MODEL = 'z-ai/glm-5.2:free'
+
+/**
+ * Which gateway a config points at. Labels logs, `chat_messages.model_provider`,
+ * and error text. The only place a gateway identity is branched on is `label()`
+ * and the attribution headers in `upstreamHeaders` — everything else a gateway
+ * can disagree about lives in the `UpstreamConfig` fields.
+ */
+export type ProviderId = 'provider' | 'openrouter'
 
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool'
 
@@ -87,12 +83,20 @@ export interface UpstreamConfig {
   reasoningEffort?: string
   /** False for a gateway that rejects the whole request over `reasoning_effort`. */
   sendReasoningEffort: boolean
+  /**
+   * Operator's verified claim that this gateway's model accepts image content
+   * parts. Absent on the primary (whose models each carry a registry `vision`
+   * flag); on the backup it gates whether image turns may cross over to it —
+   * see `chainFor` in `failover.ts`.
+   */
+  visionCapable?: boolean
   /** Applies to time-to-first-byte only, never to an in-flight stream. */
   timeoutMs: number
 }
 
-/** Pre-failover name, kept so existing imports read naturally. */
+export type ProviderConfig = UpstreamConfig
 export type AgentRouterConfig = UpstreamConfig
+export type OpenRouterConfig = UpstreamConfig
 
 /** The API key is missing, so the backend cannot serve completions. */
 export class NotConfiguredError extends Error {
@@ -141,6 +145,14 @@ interface EnvLike {
   MAX_OUTPUT_TOKENS?: string
   REASONING_EFFORT?: string
   UPSTREAM_TIMEOUT_MS?: string
+  // ---- OpenRouter backup --------------------------------------------------
+  OPENROUTER_API_KEY?: string
+  OPENROUTER_BASE_URL?: string
+  OPENROUTER_MODEL?: string
+  OPENROUTER_ENABLED?: string
+  OPENROUTER_TOKEN_PARAM?: string
+  OPENROUTER_REASONING_EFFORT?: string
+  OPENROUTER_VISION?: string
 }
 
 function intVar(raw: string | undefined, fallback: number): number {
@@ -193,13 +205,61 @@ export function resolveConfig(env: EnvLike): UpstreamConfig {
   }
 }
 
+/**
+ * The OpenRouter backup, or null when it is unarmed or has no key.
+ *
+ * Null — never a throw — when unconfigured: the backup is an add-on, and a
+ * deployment without it must boot exactly as it did before the backup existed.
+ * A *configured-but-unusable* backup (armed, key set, gateway refusing) is a
+ * runtime crossover problem, not a boot problem.
+ *
+ * The kill switch follows the `POLLINATIONS_ENABLED` convention: only the exact
+ * string `'false'` disarms, so a typo fails armed rather than silently removing
+ * the fallback.
+ */
+export function resolveOpenRouterConfig(env: EnvLike): UpstreamConfig | null {
+  if (env.OPENROUTER_ENABLED?.trim() === 'false') return null
+  const apiKey = env.OPENROUTER_API_KEY?.trim()
+  if (!apiKey || apiKey === 'sk-or-replace-me') return null
+
+  const tokenParam =
+    env.OPENROUTER_TOKEN_PARAM?.trim() === 'max_completion_tokens'
+      ? ('max_completion_tokens' as const)
+      : ('max_tokens' as const)
+
+  return {
+    provider: 'openrouter',
+    apiKeys: [apiKey],
+    baseUrl: (env.OPENROUTER_BASE_URL?.trim() || DEFAULT_OPENROUTER_BASE_URL).replace(/\/+$/, ''),
+    model: env.OPENROUTER_MODEL?.trim() || DEFAULT_OPENROUTER_MODEL,
+    // No User-Agent: the claude-cli string is an AgentRouter whitelist
+    // artifact, and `upstreamHeaders` sends OpenRouter's attribution headers
+    // instead. Undefined, not empty — the header set is keyed on its presence.
+    userAgent: undefined,
+    tokenParam,
+    maxOutputTokens: intVar(env.MAX_OUTPUT_TOKENS, 8192),
+    reasoningEffort: env.REASONING_EFFORT?.trim() || undefined,
+    sendReasoningEffort: env.OPENROUTER_REASONING_EFFORT?.trim() !== 'false',
+    // `OPENROUTER_VISION` is the operator's claim, verified by eye or by the
+    // probe — not something this code can know for a free-text model id.
+    visionCapable: env.OPENROUTER_VISION?.trim() === 'true',
+    timeoutMs: intVar(env.UPSTREAM_TIMEOUT_MS, DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
+  }
+}
+
 export function upstreamHeaders(cfg: UpstreamConfig, apiKey: string): HeadersInit {
   return {
     Authorization: `Bearer ${apiKey}`,
     'Content-Type': 'application/json',
     Accept: 'text/event-stream',
-    // Only for a gateway that whitelists clients — see the note at the top.
-    ...(cfg.userAgent ? { 'User-Agent': cfg.userAgent, 'X-App': 'cli' } : {}),
+    ...(cfg.provider === 'openrouter'
+      ? // OpenRouter's optional attribution headers. Free-tier keys rank by app
+        // in the dashboard, and these cost nothing. No User-Agent spoofing: the
+        // claude-cli one is an AgentRouter client-whitelist artifact.
+        { 'HTTP-Referer': 'https://chatddb.app', 'X-Title': 'ChatDDB' }
+      : cfg.userAgent
+        ? { 'User-Agent': cfg.userAgent, 'X-App': 'cli' }
+        : {}),
   }
 }
 
@@ -208,18 +268,10 @@ function buildBody(cfg: UpstreamConfig, messages: ChatMessage[], tools?: ToolDef
     model: cfg.model,
     messages,
     stream: true,
-    // Ask for token counts on the final chunk. Not every gateway honours this,
-    // which is why `chat_messages.token_source` records whether a number came
-    // from upstream or from our own estimate.
     stream_options: { include_usage: true },
   }
-  // A reasoning model rejects a non-default `temperature`, so no sampling
-  // params are sent to anyone — the cap parameter itself is per-gateway.
   if (cfg.maxOutputTokens > 0) body[cfg.tokenParam] = cfg.maxOutputTokens
   if (cfg.reasoningEffort && cfg.sendReasoningEffort) body.reasoning_effort = cfg.reasoningEffort
-  // Omitted entirely when there are none, so a request that wants no tools keeps
-  // byte-for-byte the body every gateway here is known to accept. Same rule the
-  // multimodal content parts follow.
   if (tools && tools.length > 0) {
     body.tools = tools
     body.tool_choice = 'auto'
@@ -227,53 +279,18 @@ function buildBody(cfg: UpstreamConfig, messages: ChatMessage[], tools?: ToolDef
   return JSON.stringify(body)
 }
 
-/**
- * Waiting actually helps. The gateway is up and answering; we are going too
- * fast, or one request hiccuped. Retry the same key after a backoff.
- */
 const RETRY_IN_PLACE = new Set([408, 429])
-/**
- * The gateway itself is unwell. A second key on the same gateway will hit the
- * same sick edge, so when a backup gateway exists these abandon this one
- * immediately — that is what "cross over fast" means. With no backup
- * configured they fall back to the old in-place ladder, because retrying a bad
- * minute is then the only move left.
- */
 const CROSS_NOW = new Set([402, 500, 502, 503, 504, 522, 524])
 const MAX_ATTEMPTS = 3
 
 export interface CompletionOptions {
-  /**
-   * True when a *different* gateway is standing by to take over.
-   *
-   * It changes how patient this function is, not what it accepts: a
-   * provider-wide failure throws on first sight instead of spending the
-   * 3-attempts-per-key ladder, so `failover.ts` can cross over while the user
-   * is still waiting on the first token. Per-key failures (401/403) still walk
-   * the key list first — one revoked key of three is not an outage, and the
-   * backup gateway is metered.
-   */
   crossFast?: boolean
-  /**
-   * Tools to offer the model. Omitted from the body entirely when absent.
-   *
-   * Verified against AgentRouter by `npm run probe:tools` before this existed:
-   * `gpt-5.6-sol` returns `tool_calls` over a streaming request 5/5 times, with
-   * the arguments arriving as `delta.tool_calls` fragments. `sse.ts` is what
-   * reassembles them — see `peekToolCalls` there.
-   */
   tools?: ToolDefinition[]
 }
 
 /**
  * Opens a streaming chat completion. Resolves once upstream headers are in,
  * so the returned Response body is still being produced.
- *
- * Retries only happen before any bytes are delivered — a stream that dies
- * mid-flight is surfaced to the caller rather than silently restarted, which
- * would duplicate text the user has already seen. The same reasoning is why
- * cross-provider failover lives in `failover.ts`, above this call, rather than
- * anywhere downstream of it.
  */
 export async function createChatCompletion(
   cfg: UpstreamConfig,
@@ -292,8 +309,6 @@ export async function createChatCompletion(
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       if (clientSignal.aborted) throw new DOMException('Aborted', 'AbortError')
 
-      // One controller per attempt: it carries the pre-headers timeout *and*
-      // forwards client aborts for the whole lifetime of the stream.
       const controller = new AbortController()
       const onClientAbort = () => controller.abort()
       clientSignal.addEventListener('abort', onClientAbort, { once: true })
@@ -312,8 +327,6 @@ export async function createChatCompletion(
         clientSignal.removeEventListener('abort', onClientAbort)
         if (clientSignal.aborted) throw new DOMException('Aborted', 'AbortError')
         lastError = err
-        // Unreachable is as provider-wide as it gets: the request never landed,
-        // so no key and no amount of waiting changes the answer.
         if (crossFast) {
           throw new UpstreamError(
             `Could not reach ${label(cfg)}: ${describe(err)}`,
@@ -326,7 +339,6 @@ export async function createChatCompletion(
           await backoff(attempt, clientSignal)
           continue
         }
-        // Exhausted retries for this key — try the next key if available.
         if (keyIndex < cfg.apiKeys.length - 1) {
           console.warn(
             '[%s] key %d/%d unreachable after %d attempts, falling back to next key: %s',
@@ -342,13 +354,9 @@ export async function createChatCompletion(
         )
       }
 
-      // Headers are in — the timeout has done its job; the abort forwarder stays
-      // wired so Stop in the UI also cancels the upstream generation.
       clearTimeout(timer)
 
       if (res.ok && res.body) {
-        // Deliberately leave the abort forwarder attached: the client hanging up
-        // (Stop button, closed tab) must cancel the upstream generation too.
         return res
       }
 
@@ -360,8 +368,6 @@ export async function createChatCompletion(
       const detail = await readError(cfg, res)
       clientSignal.removeEventListener('abort', onClientAbort)
 
-      // Auth errors (401/403) indicate a bad key — try the next one immediately,
-      // with no backoff. Waiting cannot un-revoke a key.
       if ((res.status === 401 || res.status === 403) && keyIndex < cfg.apiKeys.length - 1) {
         console.warn(
           '[%s] key %d/%d rejected (HTTP %d %s), falling back to next key',
@@ -371,8 +377,6 @@ export async function createChatCompletion(
         break
       }
 
-      // The gateway is sick. Hand straight over to the backup when there is
-      // one; otherwise treat it as retryable, which is what it used to be.
       if (CROSS_NOW.has(res.status)) {
         if (crossFast) throw toUpstreamError(cfg, res.status, detail)
         if (attempt < MAX_ATTEMPTS) {
@@ -386,9 +390,6 @@ export async function createChatCompletion(
         continue
       }
 
-      // Non-retryable error, or retries exhausted — try next key if available.
-      // Worth doing even for a 400: AgentRouter keys can differ in which models
-      // they may call, so `model_unavailable` really can be per-key.
       if (keyIndex < cfg.apiKeys.length - 1) {
         console.warn(
           '[%s] key %d/%d failed (HTTP %d %s), falling back to next key',
@@ -412,9 +413,6 @@ export async function createChatCompletion(
 
 /**
  * Fetches the model list the key is allowed to use — handy for debugging.
- *
- * Tries each configured key in order and returns the first successful response.
- * If no key succeeds, the last failed response (or error) is returned.
  */
 export async function listModels(cfg: UpstreamConfig, clientSignal: AbortSignal): Promise<Response> {
   let last: Response | undefined
@@ -431,33 +429,16 @@ export async function listModels(cfg: UpstreamConfig, clientSignal: AbortSignal)
       last = res
     } catch (err) {
       console.warn('[%s] listModels failed with a key: %s', cfg.provider, describe(err))
-      // Network error — try the next key if there is one.
       continue
     }
   }
-  // If every key was tried and none succeeded, return whatever came last.
   return last ?? new Response(null, { status: 502 })
 }
 
-// ---------------------------------------------------------------------------
-// Session titles
-// ---------------------------------------------------------------------------
-
-/** How much of each turn the titler sees. A name needs the opening, not the essay. */
 const TITLE_SOURCE_CHARS = 800
-/**
- * Token ceiling for a title request.
- *
- * Generous for eight words on purpose: this is a reasoning model, and thinking
- * tokens come out of `max_completion_tokens` too, so a tight cap returns an
- * empty message rather than a short title.
- */
 const TITLE_MAX_TOKENS = 512
-/** Background work — give up quickly rather than keeping the Worker alive for it. */
 const TITLE_TIMEOUT_MS = 20_000
-/** Words a title may keep. Matches the ask below, and `makeTitle` in `db/sessions.ts`. */
 const TITLE_WORD_LIMIT = 8
-/** Hard character cap, for when eight words are eight long words. */
 const TITLE_CHAR_LIMIT = 64
 
 const TITLE_SYSTEM_PROMPT = [
@@ -469,15 +450,6 @@ const TITLE_SYSTEM_PROMPT = [
 
 /**
  * Names a session from its first completed exchange.
- *
- * Best effort by design: every failure path returns null instead of throwing.
- * The caller runs this in `waitUntil` after the reply has already reached the
- * user, and a sidebar row keeping its placeholder title is a far smaller problem
- * than a rejected background task.
- *
- * Deliberately not routed through `createChatCompletion`, which hardcodes
- * `stream: true` and a 3×3 retry ladder — both wrong for a throwaway request.
- * One pass per key, like `listModels`.
  */
 export async function generateTitle(
   cfg: UpstreamConfig,
@@ -494,10 +466,6 @@ export async function generateTitle(
       },
     ],
     stream: false,
-    // Same per-gateway rules as `buildBody`, and no `temperature` at all.
-    // Effort is pinned rather than inherited from `cfg.reasoningEffort`, which a
-    // deployment may have set to `high` — a minute of deliberation over eight
-    // words is not a trade worth making.
     [cfg.tokenParam]: TITLE_MAX_TOKENS,
     ...(cfg.sendReasoningEffort ? { reasoning_effort: 'low' } : {}),
   })
@@ -514,9 +482,7 @@ export async function generateTitle(
         headers: {
           Authorization: `Bearer ${cfg.apiKeys[keyIndex]}`,
           'Content-Type': 'application/json',
-          // Not `upstreamHeaders`: that one asks for text/event-stream.
           Accept: 'application/json',
-          // Required by a whitelisting gateway — see the note at the top.
           ...(cfg.userAgent ? { 'User-Agent': cfg.userAgent, 'X-App': 'cli' } : {}),
         },
         body,
@@ -537,7 +503,6 @@ export async function generateTitle(
         cfg.provider, keyIndex + 1, cfg.apiKeys.length,
       )
     } catch (err) {
-      // The client went away, or the deadline passed. Either way, no title.
       if (signal?.aborted) return null
       console.warn('[%s] generateTitle failed with a key: %s', cfg.provider, describe(err))
     } finally {
@@ -553,13 +518,10 @@ function clip(text: string): string {
   return trimmed.length > TITLE_SOURCE_CHARS ? `${trimmed.slice(0, TITLE_SOURCE_CHARS)}…` : trimmed
 }
 
-/** Text of the first choice of a non-streaming completion, or ''. */
 function completionText(payload: unknown): string {
   const content = (payload as { choices?: { message?: { content?: unknown } }[] } | null)?.choices?.[0]?.message
     ?.content
   if (typeof content === 'string') return content
-  // Some OpenAI-compatible gateways answer with the multimodal part array even
-  // when the request was plain text.
   if (Array.isArray(content)) {
     return content
       .map((part) => (part && typeof part === 'object' && 'text' in part ? String((part as { text: unknown }).text) : ''))
@@ -568,18 +530,10 @@ function completionText(payload: unknown): string {
   return ''
 }
 
-/**
- * Turns a model's answer into something that fits a sidebar row.
- *
- * The prompt asks for a bare title; this assumes it did not get one. Models
- * answer the question they were asked ("Title: ..."), wrap strings in quotes,
- * and add a full stop, and none of that survives contact with a 200px-wide row.
- */
 function cleanTitle(raw: string): string {
   const line = raw.split('\n').map((l) => l.trim()).find(Boolean) ?? ''
   const stripped = line
     .replace(/^(?:chat\s+)?title\s*[:\-—]\s*/i, '')
-    // Quotes of every flavour, plus stray markdown emphasis around the whole.
     .replace(/^["'“”‘’`*_]+/, '')
     .replace(/["'“”‘’`*_]+$/, '')
     .replace(/[.,;:!?]+$/, '')
@@ -612,7 +566,6 @@ async function readError(cfg: UpstreamConfig, res: Response): Promise<UpstreamEr
     const type = json.error?.type ?? json.type ?? 'upstream_error'
     return { message: String(message).slice(0, 600), type }
   } catch {
-    // Non-JSON almost always means an HTML page from the edge, not the gateway.
     return {
       message: text.slice(0, 300) || `${label(cfg)} returned HTTP ${res.status}`,
       type: 'upstream_non_json',
@@ -620,14 +573,11 @@ async function readError(cfg: UpstreamConfig, res: Response): Promise<UpstreamEr
   }
 }
 
-/** Human name for messages the user may end up reading. */
-function label(_cfg: UpstreamConfig): string {
-  return 'API Provider'
+/** The one place a gateway identity is branched on, for logs and error text. */
+function label(cfg: UpstreamConfig): string {
+  return cfg.provider === 'openrouter' ? 'OpenRouter' : 'API Provider'
 }
 
-/**
- * Classifies an upstream HTTP failure.
- */
 function toUpstreamError(
   cfg: UpstreamConfig,
   upstreamStatus: number,
@@ -666,8 +616,6 @@ function toUpstreamError(
       'rate_limited',
     )
   }
-  // An outage shape, not a malformed request: this key or this gateway cannot
-  // serve the model right now, but another gateway serves a different one.
   if (upstreamStatus === 400 && /model/i.test(detail.message)) {
     return new UpstreamError(
       `${label(cfg)} will not serve this model: ${detail.message}. Check GET /api/models for what the key can access.`,
@@ -676,7 +624,6 @@ function toUpstreamError(
       'model_unavailable',
     )
   }
-  // Any other 4xx is our own doing — do not pay a second gateway to agree.
   const ourFault = upstreamStatus >= 400 && upstreamStatus < 500
   return new UpstreamError(
     detail.message,

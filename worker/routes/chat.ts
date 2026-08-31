@@ -39,7 +39,7 @@ import {
   type ToolCall,
   type ToolDefinition,
   type UpstreamConfig,
-} from '../agentrouter.ts'
+} from '../provider.ts'
 import {
   chainFor,
   completeWithFailover,
@@ -96,7 +96,7 @@ const DEFAULT_SYSTEM_PROMPT = [
 // always did.
 //
 // Verified before any of it was written: `npm run probe:tools`, 5 runs per case
-// against `gpt-5.6-sol` through AgentRouter — 10/10 tool calls on explicit and
+// against `gpt-5.6-sol` through the provider — 10/10 tool calls on explicit and
 // implicit image requests, 5/5 restraint on a question with no visual intent,
 // 5/5 clean round trips in both the success and unavailable directions, and 5/5
 // over a streaming request. Re-run it after touching anything below.
@@ -386,9 +386,11 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
   const toolsArmed = resolveImageProviders(ctx.env).length > 0
   const upstream = buildUpstreamMessages(ctx, turn, toolsArmed)
 
-  // The requested id applies to the primary only, and an *explicit* pick drops
-  // any backup that would answer with another vendor's model. See `chainFor`.
-  const chain = chainFor(providers, model, body.model !== undefined)
+  // The images flag is the one filter left: an image turn never crosses to a
+  // backup that is not declared vision-capable. Every model — Auto and an
+  // explicit pick alike — keeps the backup otherwise, because the substitution
+  // is announced (X-ChatDDB-Upstream) rather than silent. See `chainFor`.
+  const chain = chainFor(providers, model, turn.images.length > 0)
 
   // Which gateway owns a failure below. Advanced on each crossover so
   // `persistFailure` blames the one that actually refused last.
@@ -793,7 +795,7 @@ async function loadAttachments(
 
 function assertVisionOk(files: FileRow[], model: ModelSpec): void {
   if (files.some((f) => f.file_type === 'image') && !model.vision) {
-    // Refused here rather than upstream: an AgentRouter 400 about content parts
+    // Refused here rather than upstream: an upstream 400 about content parts
     // is not something a user can act on, and this message is.
     throw badRequest(NO_VISION_MESSAGE, 'model_no_vision')
   }
@@ -845,7 +847,7 @@ async function imageParts(ctx: AuthedContext, files: FileRow[]): Promise<Content
  *
  * Note the shape of the last turn: plain string when there are no images,
  * content parts when there are. Text-only requests therefore keep exactly the
- * body AgentRouter is known to accept — the multimodal form is only used when it
+ * body the provider is known to accept — the multimodal form is only used when it
  * has to be, and only for a model whose `vision` flag was actually verified.
  *
  * The capability clauses are appended to whichever base prompt resolved, rather

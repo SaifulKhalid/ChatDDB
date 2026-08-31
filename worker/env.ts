@@ -37,6 +37,8 @@ export interface WorkerEnv {
   AGENTROUTER_API_KEY_2?: string
   /** Legacy alias for tertiary API key. */
   AGENTROUTER_API_KEY_3?: string
+  /** OpenRouter key — arms the free-tier backup text gateway. */
+  OPENROUTER_API_KEY?: string
   /** Salt for `ip_hash`. Rotating it deliberately breaks old correlations. */
   IP_HASH_SALT?: string
   /** HMAC key for short-lived signed file-view URLs. */
@@ -58,6 +60,31 @@ export interface WorkerEnv {
   UPSTREAM_TIMEOUT_MS?: string
   REASONING_EFFORT?: string
   SYSTEM_PROMPT?: string
+
+  // ---- OpenRouter backup --------------------------------------------------
+  /**
+   * Kill switch for the OpenRouter backup, same convention as
+   * `POLLINATIONS_ENABLED`: only the exact string `'false'` disarms it, so a
+   * typo fails safe (armed) rather than silently removing the fallback.
+   */
+  OPENROUTER_ENABLED?: string
+  /** What the backup serves. A `:free` id; verified by `npm run probe:openrouter`. */
+  OPENROUTER_MODEL?: string
+  /** Default `https://openrouter.ai/api/v1`. */
+  OPENROUTER_BASE_URL?: string
+  /**
+   * `max_completion_tokens` if the gateway wants the newer name — a fact the
+   * probe establishes, not one this code can know. Default `max_tokens`.
+   */
+  OPENROUTER_TOKEN_PARAM?: string
+  /** `'false'` stops forwarding `reasoning_effort` to the backup. */
+  OPENROUTER_REASONING_EFFORT?: string
+  /**
+   * `'true'` declares the backup model vision-capable, keeping it in the chain
+   * for image turns. Unset by default: an unverified claim would forward an
+   * image to a model that then refuses it upstream, after the user waited.
+   */
+  OPENROUTER_VISION?: string
 
   // ---- Image generation ---------------------------------------------------
   /** Workers AI model id. Default `@cf/black-forest-labs/flux-1-schnell`. */

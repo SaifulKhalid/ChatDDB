@@ -1,15 +1,8 @@
 /**
- * Cross-gateway failover — the reason an AgentRouter outage stops being visible.
+ * Cross-gateway failover logic.
  *
- * ChatDDB spoke to exactly one gateway, and AgentRouter fails often enough that
- * users noticed. This module puts a second gateway behind the first:
- * AgentRouter answers as it always has, and when it cannot, freemodel.dev
- * answers instead. Nobody is told — the only externally visible difference is an
- * `X-ChatDDB-Upstream` response header that appears when the backup fired.
- *
- * That silence had no cost while no client could name a model. The model picker
- * gave it one, so it is now conditional: see `chainFor`, which is the boundary
- * between "any gateway may answer" and "only this vendor may answer".
+ * Puts the OpenRouter free-tier backup behind the primary provider to provide
+ * resilience.
  *
  * ## Why the loop lives here and nowhere else
  *
@@ -25,14 +18,20 @@
  * inside `toClientStream` and it could. A mid-flight death therefore still
  * surfaces as an SSE error frame from `sse.ts`, exactly as it did before.
  *
+ * ## Why every model crosses over, Auto and explicit picks alike
+ *
+ * The old vendor rule — an explicit Claude pick may only be answered by an
+ * Anthropic model — was dropped deliberately. The user asked for maximum
+ * availability: a picked model that is down is *announced* ("GPT-5.6 Sol is
+ * unavailable right now — answered by X instead") rather than preserved as a
+ * hard failure. The attribution surfaces in `X-ChatDDB-Upstream` headers and
+ * the `model_used` column records the truth, so the substitution is visible,
+ * just not silent.
+ *
  * ## Why the fallback is a backup and not a peer
  *
- * `resolveProviders` still throws `NotConfiguredError` when AgentRouter is
- * absent, even with a freemodel key present. freemodel is metered ($5 of signup
- * credit, then paid), so a deployment that quietly ran entirely on the backup
- * would be spending money nobody chose to spend. Same reason `FALLBACK_ENABLED`
- * exists and the `upstream_failover` activity row is written: the spending has
- * to be visible.
+ * `resolveProviders` still throws `NotConfiguredError` when the primary provider is
+ * unconfigured. An OpenRouter key alone does not make a deployment.
  */
 
 import {
@@ -40,12 +39,13 @@ import {
   generateTitle,
   NotConfiguredError,
   resolveConfig,
+  resolveOpenRouterConfig,
   UpstreamError,
   type ChatMessage,
   type ProviderId,
   type ToolDefinition,
   type UpstreamConfig,
-} from './agentrouter.ts'
+} from './provider.ts'
 import type { WorkerEnv } from './env.ts'
 import type { ModelSpec } from './models.ts'
 
@@ -65,27 +65,49 @@ export interface UpstreamAttempt {
 export type CrossoverReporter = (from: ProviderId, to: ProviderId, err: UpstreamError) => void
 
 /**
- * Builds the provider configuration.
+ * Builds the provider chain: primary first, OpenRouter backup second.
+ *
+ * The backup is omitted (not an error) when it is unarmed or has no key, so a
+ * deployment without it behaves exactly as it did before the backup existed.
+ * The primary missing is still a `NotConfiguredError` — the backup alone is not
+ * a configuration.
  */
 export function resolveProviders(env: WorkerEnv, modelId?: string): UpstreamConfig[] {
   const primary = resolveConfig(env)
-  return [modelId ? { ...primary, model: modelId } : primary]
+  const backup = resolveOpenRouterConfig(env)
+  const head = modelId ? { ...primary, model: modelId } : primary
+  return backup ? [head, backup] : [head]
 }
 
 /**
- * Narrows a resolved chain to the gateways allowed to answer for one model.
+ * Narrows a resolved chain to the gateways allowed to answer one request.
+ *
+ * The one rule left: a turn carrying images drops a backup that is not declared
+ * vision-capable. Forwarding an image to a model that will refuse it upstream
+ * spends the user's wait for nothing — the primary already failed, so the turn
+ * would error either way, only later. `OPENROUTER_VISION: 'true'` is the
+ * operator's verified claim that the backup model takes image parts; it is
+ * unset by default because an unverified claim is worse than no backup here.
+ *
+ * The primary is never filtered, so this can never empty the chain.
  */
 export function chainFor(
   providers: UpstreamConfig[],
-  model: ModelSpec,
-  _explicit: boolean,
+  _model: ModelSpec,
+  hasImages: boolean,
 ): UpstreamConfig[] {
-  return providers.map((cfg) => ({ ...cfg, model: model.id }))
+  if (!hasImages) return providers
+  return providers.filter((cfg) => cfg.provider !== 'openrouter' || cfg.visionCapable === true)
 }
 
-/** Reports if a fallback gateway is armed (always false now). */
-export function fallbackReady(_env: WorkerEnv): boolean {
-  return false
+/** Whether the OpenRouter backup is armed, for `GET /api/health`. */
+export function fallbackReady(env: WorkerEnv): boolean {
+  return resolveOpenRouterConfig(env) !== null
+}
+
+/** The armed backup's model id, or null — the health endpoint reports it. */
+export function fallbackModel(env: WorkerEnv): string | null {
+  return resolveOpenRouterConfig(env)?.model ?? null
 }
 
 /**
@@ -120,9 +142,10 @@ export async function completeWithFailover(
       const res = await createChatCompletion(cfg, messages, signal, {
         crossFast: next !== undefined,
         // Offered to whichever gateway answers. The backup may well ignore the
-        // field — freemodel's tool support has never been probed — and that is
-        // survivable by construction: no `tool_calls` simply means the turn is
-        // answered as plain text, which is what it would have been anyway.
+        // field — the free-tier model's tool support is whatever it is — and
+        // that is survivable by construction: no `tool_calls` simply means the
+        // turn is answered as plain text, which is what it would have been
+        // anyway.
         tools,
       })
       if (i > 0) {

@@ -99,9 +99,11 @@ export function corsHeaders(request: Request, env: WorkerEnv): Record<string, st
     'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     // The chat stream reports the ids it created in headers rather than in a
-    // frame, so a cross-origin dev client has to be allowed to read them.
+    // frame, so a cross-origin dev client has to be allowed to read them. The
+    // upstream pair rides along: the frontend reads it to show the "unavailable
+    // right now — answered by X instead" notice on a crossover.
     'Access-Control-Expose-Headers':
-      'X-ChatDDB-Model, X-ChatDDB-Session-Id, X-ChatDDB-Message-Id, X-ChatDDB-Generated-File, X-ChatDDB-Generated-File-JSON, Retry-After',
+      'X-ChatDDB-Model, X-ChatDDB-Session-Id, X-ChatDDB-Message-Id, X-ChatDDB-Generated-File, X-ChatDDB-Generated-File-JSON, X-ChatDDB-Upstream, X-ChatDDB-Upstream-Model, Retry-After',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',
   }

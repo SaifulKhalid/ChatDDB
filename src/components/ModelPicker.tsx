@@ -23,11 +23,13 @@ interface Option {
 /**
  * Auto / ChatGPT / Claude, as a segmented control above the composer.
  *
- * Auto is a real choice rather than a synonym for the default entry, and the
- * difference is failover: only an Auto turn may cross over to the backup
- * gateway. An explicit pick is answered by its own vendor or it fails — see
- * `chainFor` in `worker/failover.ts`. The tooltips say so, because a user who
- * picks Claude to compare two models deserves to know which of them answered.
+ * Auto is a real choice rather than a synonym for the default entry. The
+ * difference used to be failover: only an Auto turn crossed to the backup
+ * gateway. Now every turn crosses — a picked model that is down is announced
+ * ("unavailable right now — answered by X instead") rather than preserved as a
+ * hard failure — and Auto is simply the one where that announcement is quiet,
+ * because "retries elsewhere" is already what Auto promises. See
+ * `chainFor` in `worker/failover.ts`.
  *
  * Segments come from the registry, so a third model is an entry in
  * `worker/models.ts` and no edit here.
@@ -42,7 +44,7 @@ export function ModelPicker({
   const groupRef = useRef<HTMLDivElement>(null)
 
   // The registry's `default: true` entry. The Worker resolves Auto from
-  // `AGENTROUTER_MODEL` instead, which is the same model in every deployment so
+  // `API_PROVIDER_MODEL` instead, which is the same model in every deployment so
   // far; if the two ever disagree, this label is the one that is wrong.
   const fallbackTo = models.find((m) => m.default) ?? models[0]
 
@@ -57,7 +59,8 @@ export function ModelPicker({
     ...models.map((m) => ({
       id: m.id,
       short: m.short,
-      // No mention of a backup: there is deliberately none for an explicit pick.
+      // The backup covers an explicit pick too — but a crossover is announced
+      // in a banner, because the user named a model and a different one answered.
       title: [`Always ${m.label}.`, m.note].filter(Boolean).join(' '),
       note: m.note,
     })),
@@ -130,13 +133,15 @@ export function ModelPicker({
         })}
       </div>
 
-      {/* A capability worth knowing before sending, not after. `title` carries it
-          on touch, where there is no room for the text and no hover to reveal it. */}
-      {selected.note && (
+      {value !== null ? (
+        <span className="truncate text-xs text-ink-2">
+          If this model is unavailable, a free backup answers and you will see a notice
+        </span>
+      ) : selected.note ? (
         <span className="truncate text-xs text-ink-2" title={selected.note}>
           {selected.note}
         </span>
-      )}
+      ) : null}
     </div>
   )
 }

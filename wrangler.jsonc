@@ -38,6 +38,12 @@
     "MAX_OUTPUT_TOKENS": "8192",
     "UPSTREAM_TIMEOUT_MS": "180000",
 
+    // The OpenRouter free-tier backup text gateway. Armed by the
+    // OPENROUTER_API_KEY secret; everything here is override-only.
+    // The model id is a `:free` one verified by `npm run probe:openrouter` —
+    // free ids rotate, so re-run the probe before changing it.
+    "OPENROUTER_MODEL": "z-ai/glm-5.2:free",
+
     // Firebase project id. A public identifier, not a secret: ID tokens are
     // verified against Google's public JWKS, so there is no service-account key.
     // Set this to your own project's id (see DOCS.md, "Firebase setup").
@@ -87,6 +93,7 @@
 
   // Secrets, never vars:
   //   PROVIDER_API_KEY     the primary upstream key (with optional PROVIDER_API_KEY_2, PROVIDER_API_KEY_3)
+  //   OPENROUTER_API_KEY   arms the free-tier backup text gateway (optional)
   //   POLLINATIONS_API_KEY the backup image provider's key (optional)
   //   FILE_URL_SECRET      HMAC key for signed file-view URLs
   //   IP_HASH_SALT         salt for the truncated IP hash in the audit log

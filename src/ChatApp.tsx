@@ -169,6 +169,9 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
   async function runTurn(input: TurnInput) {
     if (streaming) return
     setError(null)
+    // A crossover notice belongs to the turn it happened in; the next turn
+    // starts from a clean slate unless the backup answers again.
+    setNotice(null)
 
     // ---- 1. Make sure a session exists BEFORE streaming -----------------
     let sessionId = latest.current.activeId
@@ -242,6 +245,17 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
       }
 
       for await (const delta of streamChat(req, ctrl.signal, (meta) => {
+        // A backup gateway answered because the primary failed. Auto already
+        // promises "retries elsewhere", so the notice is only owed when the
+        // user actually picked a model — the substitution is fine, but never
+        // silent. `model` is what was requested; `upstreamModel` answered.
+        if (meta.upstream && model) {
+          const requested = models.find((m) => m.id === model)
+          setNotice(
+            `${requested ? requested.label : model} is unavailable right now — ` +
+              `this reply came from ${meta.upstreamModel ?? 'a backup model'} on OpenRouter.`,
+          )
+        }
         if (meta.messageId) {
           targetId = meta.messageId
         }

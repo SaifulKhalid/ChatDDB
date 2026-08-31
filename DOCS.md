@@ -38,7 +38,7 @@ deployment.
 ┌─────────────────────────────────────────┐
 │ Cloudflare Worker  "chatddb-f5"         │
 │   worker/index.ts        routes, guards │
-│   worker/agentrouter.ts  upstream call  │
+│   worker/provider.ts     upstream call  │
 │   worker/sse.ts          SSE normaliser │
 │   assets: dist/  (SPA, same deploy)     │
 └───────────────┬─────────────────────────┘
@@ -118,7 +118,9 @@ and must never be committed.
 | `npm run smoke:svg-sanitizer` | The HTMLRewriter allowlist, in workerd. No key needed |
 | `npm run smoke:figure-gate` | The streaming fence transform. No key needed |
 | `npm run smoke:sse-null` | The `data: null` frame AgentRouter sends for Claude, replayed through the shipped `sse.ts`. No key needed |
-| `npm run test:failover` | Failover branches, including `chainFor`'s vendor scoping. No network, no key |
+| `npm run test:failover` | Failover branches, including `chainFor`'s vision scoping. No network, no key |
+| `npm run stub:gateway` | Fake OpenAI-compatible gateway, so text crossover tests spend no free-tier allowance |
+| `npm run probe:openrouter` | What `:free` models exist, and does the configured one complete a streaming round trip |
 | `npm run stub:pollinations` | Fake Pollinations endpoint, so crossover tests spend no allowance |
 | `npm run smoke:image-failover` | End-to-end image crossover, both directions |
 | `npm run smoke:chat-image-tool` | End-to-end `generate_image` tool path |
@@ -131,9 +133,9 @@ and must never be committed.
 ```
 worker/
   index.ts          routes, validation, system prompt, error mapping
-  agentrouter.ts    upstream client: config, headers, retries, timeout, abort
-  failover.ts       gateway chain: AgentRouter → freemodel.dev, and `chainFor`,
-                    which scopes that chain by vendor for an explicit model pick
+  provider.ts       upstream client: config, headers, retries, timeout, abort
+  failover.ts       gateway chain: primary → OpenRouter free tier, and `chainFor`,
+                    which drops the backup for image turns unless declared vision-capable
   models.ts         the model registry: ids, vendors, measured capabilities
   images.ts         image chain: Workers AI → Pollinations, and error classification
   sse.ts            upstream stream → client SSE contract; tool-call peek; figure gate;
@@ -181,20 +183,22 @@ per-machine in `.dev.vars`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `AGENTROUTER_API_KEY` | — | **Secret.** Required. `.dev.vars` locally, `wrangler secret put` in production |
-| `AGENTROUTER_MODEL` | `gpt-5.6-sol` | Model requested upstream |
-| `AGENTROUTER_BASE_URL` | `https://agentrouter.org/v1` | Gateway base; trailing slashes trimmed |
-| `AGENTROUTER_USER_AGENT` | `claude-cli/2.1.158 (external, sdk-cli)` | **Mandatory** — see §7 |
+| `PROVIDER_API_KEY` | — | **Secret.** Required. `.dev.vars` locally, `wrangler secret put` in production. Optional `PROVIDER_API_KEY_2`/`_3` walk a key ladder |
+| `AGENTROUTER_*` | — | Legacy aliases for the `PROVIDER_*`/`API_PROVIDER_*` vars above |
+| `API_PROVIDER_MODEL` | `deepseek-v4-flash` | Model requested upstream |
+| `API_PROVIDER_BASE_URL` | `https://agentrouter.org/v1` | Gateway base; trailing slashes trimmed |
+| `API_PROVIDER_USER_AGENT` | `claude-cli/2.1.158 (external, sdk-cli)` | **Mandatory** — see §7 |
 | `MAX_OUTPUT_TOKENS` | `8192` | Sent as `max_completion_tokens`; `0` omits the cap |
 | `UPSTREAM_TIMEOUT_MS` | `180000` | Time-to-first-byte budget only; never caps an in-flight stream |
 | `REASONING_EFFORT` | unset | `minimal` \| `low` \| `medium` \| `high` — omitted when unset |
 | `SYSTEM_PROMPT` | built-in | Replaces the default system prompt |
-| `FREEMODEL_API_KEY` | — | **Secret.** Arms the backup text gateway. `npm run secret:freemodel` |
-| `FALLBACK_ENABLED` | armed | Kill switch; only the exact string `"false"` disables |
-| `FREEMODEL_MODEL` | `gpt-5.5` | What the backup serves. Read by `vendorOf`, so an Anthropic id here would widen an explicit Claude pick's chain — see §7 |
-| `FREEMODEL_BASE_URL` | freemodel.dev | Backup base; trailing slashes trimmed |
-| `FREEMODEL_TOKEN_PARAM` | `max_completion_tokens` | `max_tokens` if the gateway wants the classic name — a fact `npm run probe:freemodel` establishes, not one this code can know |
-| `FREEMODEL_REASONING_EFFORT` | armed | `"false"` stops forwarding `reasoning_effort` to the backup |
+| `OPENROUTER_API_KEY` | — | **Secret.** Arms the free-tier backup text gateway |
+| `OPENROUTER_ENABLED` | armed | Kill switch; only the exact string `"false"` disables |
+| `OPENROUTER_MODEL` | `z-ai/glm-5.2:free` | What the backup serves. A `:free` id — verified by `npm run probe:openrouter`, since free ids rotate |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | Backup base; trailing slashes trimmed |
+| `OPENROUTER_TOKEN_PARAM` | `max_tokens` | `max_completion_tokens` if the gateway wants the newer name — a fact `npm run probe:openrouter` establishes, not one this code can know |
+| `OPENROUTER_REASONING_EFFORT` | armed | `"false"` stops forwarding `reasoning_effort` to the backup |
+| `OPENROUTER_VISION` | unset | `"true"` declares the backup model image-capable, letting image turns cross to it. Leave unset until the probe's catalog confirms image input |
 | `POLLINATIONS_API_KEY` | — | **Secret.** Arms the backup image provider. `npm run secret:pollinations` |
 | `POLLINATIONS_ENABLED` | armed | Kill switch; only the exact string `"false"` disables |
 | `POLLINATIONS_MODEL` | `flux` | Backup image model. `turbo` was retired |
@@ -204,11 +208,11 @@ per-machine in `.dev.vars`.
 
 The literal placeholder `sk-replace-me` counts as "not configured", so copying
 `.dev.vars.example` without editing it behaves the same as having no key.
-`pk-replace-me` does the same for Pollinations.
+`pk-replace-me` does the same for Pollinations, `sk-or-replace-me` for OpenRouter.
 
 `POLLINATIONS_API_KEY` is a **secret and never a var**: Pollinations meters by
 account, so a key in `wrangler.jsonc` would be a spendable credential committed
-to git history. Same rule as `FREEMODEL_API_KEY`.
+to git history. Same rule as `OPENROUTER_API_KEY`.
 
 ### Request guardrails
 
@@ -278,10 +282,10 @@ A `messages` array is rejected with `400 legacy_client` naming the change, rathe
 than a confusing "content must be a string" from a leftover pre-Phase-2 client.
 
 **Omitting `model` is not the same as naming the default.** No field means *you
-choose*: the Worker resolves `AGENTROUTER_MODEL` and keeps the whole failover
-chain. Naming a model is a promise about who answers, so it narrows the chain to
-that model's vendor (§7). An id outside the registry is a `400`, never a silent
-substitution.
+choose*: the Worker resolves `API_PROVIDER_MODEL` and keeps the whole failover
+chain. Naming a model keeps the chain too — the crossover is announced in
+headers and the UI rather than prevented (§7). An id outside the registry is a
+`400`, never a silent substitution.
 
 Response headers: `Content-Type: text/event-stream; charset=utf-8`,
 `Cache-Control: no-cache, no-transform`, `X-Accel-Buffering: no` (stops
@@ -367,7 +371,7 @@ rather than a 429. Budgets consumed: `tool_image` (day) *and* `image`
     "upstream": true, "db": true, "r2": true, "auth": true, "signedUrls": true,
     "fallback": true, "image": true, "imageFallback": true
   },
-  "fallbackProvider": "freemodel", "fallbackModel": "gpt-5.5",
+  "fallbackProvider": "openrouter", "fallbackModel": "z-ai/glm-5.2:free",
   "imageFallbackProvider": "pollinations", "imageFallbackModel": "flux"
 }
 ```
@@ -417,10 +421,8 @@ The image is stored in R2 through the same path as an upload and attached to the
 with no special handling. `file.origin` is `"generated"`, which is what the UI
 keys full-size rendering off — an uploaded attachment stays a 36px chip.
 
-Neither AgentRouter nor freemodel can serve this. AgentRouter *has* the route,
-but every image model on this account's tier answers `503 无可用渠道` ("no
-available channel"), and its `/v1/models` lists three models, all text. Hence a
-third provider.
+Neither the primary gateway nor OpenRouter's free tier can serve this — no
+`:free` model generates images. Hence a third provider.
 
 **It spends a shared budget.** `@cf/black-forest-labs/flux-1-schnell` bills 4.80
 neurons per 512×512 tile plus 9.60 per step, so a 1024×1024 four-step image is
@@ -741,33 +743,32 @@ arrive) and a forwarder for client aborts. On success the forwarder is left
 attached deliberately: a closed tab or a pressed Stop button must cancel the
 upstream generation too.
 
-### An explicit model pick narrows the failover chain
+### Who may fail over, and who gets told
 
-Silent failover was designed when no client could name a model. Substituting
-freemodel's `gpt-5.5` for `gpt-5.6-sol` swaps one OpenAI model for another that
-nobody asked for either, so saying nothing is kind. The picker broke that: once a
-user chooses **Claude**, the same silence answers an Anthropic request with an
-OpenAI model and logs it under a `model_used` the user believes came from
-Anthropic — what `models.ts` calls *worse than an error*.
+Every request crosses to the backup when the primary fails — Auto and an
+explicit model pick alike. The earlier design scoped the chain by vendor (a
+picked Claude request would fail rather than be answered by a GPT model), and it
+was dropped deliberately: the user chose availability, and the substitution is
+**announced** rather than silent. On a crossover the response carries
+`X-ChatDDB-Upstream` / `X-ChatDDB-Upstream-Model`, the assistant row records the
+gateway that really answered in `model_provider`/`model_used`, an
+`upstream_failover` activity row is written, and — when the user had explicitly
+picked a model — the frontend shows a notice: *"GPT-5.6 Sol is unavailable right
+now — this reply came from X on OpenRouter."* Auto stays quiet, because
+"retries elsewhere" is already what it promises.
 
-`chainFor` (`worker/failover.ts:123`) resolves that by scoping the chain by
-**vendor**, not by model id:
+The one filter left is a capability check, in `chainFor`
+(`worker/failover.ts`):
 
-| Request | Chain | Cost of the rule |
+| Request | Chain | Why |
 | --- | --- | --- |
-| Auto (no `model` field) | AgentRouter → freemodel | None — unchanged, and this is the default |
-| ChatGPT, picked | AgentRouter → freemodel | None — same vendor, so the backup still covers a gateway outage |
-| Claude, picked | AgentRouter only | Real: no configured backup serves Anthropic, so a gateway outage is a visible failure |
+| Text turn, any model | Primary → OpenRouter | The substitution is announced, so it is allowed |
+| Image turn, backup not declared vision-capable | Primary only | Forwarding an image to a model that will refuse it spends the user's wait for nothing |
 
-Index 0 is never filtered — it carries `model.id`, so its vendor matches by
-construction and a mistyped `FREEMODEL_MODEL` cannot empty the chain. That is
-also why `vendorOf` guesses `openai` for ids it cannot place: guessing wrong in
-that direction only ever *widens* a GPT request's options, while a wrong guess of
-`anthropic` would let a GPT model answer a Claude request, which is the single
-thing the rule exists to prevent.
-
-The trade is deliberate — reliability for honesty, and only on the path where the
-user asked a specific question about who answers. `npm run test:failover` pins
+`OPENROUTER_VISION: "true"` is the operator's claim — verified against the
+probe's catalog output — that the backup model takes image parts. It is unset by
+default because an unverified claim is worse than no backup here. Index 0 is
+never filtered, so the chain can never be emptied. `npm run test:failover` pins
 both directions (§10).
 
 ---
@@ -998,7 +999,7 @@ Both failover scripts point the primary at something broken using
 the backup against a local stub (`npm run stub:gateway`,
 `npm run stub:pollinations`) so no metered credit is spent. Each script's header
 has the exact three-terminal invocation, including the kill-switch run —
-`EXPECT_FAILOVER=0` with `FALLBACK_ENABLED:false` or
+`EXPECT_FAILOVER=0` with `OPENROUTER_ENABLED:false` or
 `POLLINATIONS_ENABLED:false`, which asserts the backup *stops*. A backup that
 cannot be switched off is a dependency, not a backup.
 
@@ -1032,7 +1033,7 @@ than only that it did.
 
 | Script | Cases |
 | --- | --- |
-| `npm run test:failover` | 56: the retry-vs-crossover branches, `resolveProviders`/`resolveFallback` including both kill switches, and `chainFor` — Auto keeps the backup, an explicit ChatGPT pick keeps it, an explicit Claude pick drops it |
+| `npm run test:failover` | The retry-vs-crossover branches, `resolveProviders`/`fallbackReady` including the kill switch, and `chainFor` — text turns keep the backup for every model, image turns drop it unless `OPENROUTER_VISION` declares it capable |
 | `npm run smoke:sse-null` | 19: the `data: null` frame through both readers |
 | `npm run smoke:tool-peek` | The lookahead's verdict and byte-identical replay |
 
@@ -1076,7 +1077,7 @@ several decisions here turn on facts no amount of reading the docs establishes.
 | --- | --- |
 | `npm run probe:vision` | Does `gpt-5.6-sol` accept image content parts? |
 | `AGENTROUTER_MODEL=claude-opus-5 node scripts/probe-*.mjs` | The same four questions, asked of the other registry model. Every probe reads that env var, so a second model is a variable rather than a fork — results in `worker/models.ts` |
-| `npm run probe:freemodel` | What shape does the backup gateway want (`max_tokens` vs `max_completion_tokens`, reasoning effort)? |
+| `npm run probe:openrouter` | What `:free` models exist right now, does the configured one take images, and does a streaming round trip succeed with the production request shape? |
 | `npm run probe:tools` | Does the model call tools reliably, *and* does it do so over a streaming request? |
 | `npm run probe:svg` | Can the model draw a usable technical figure — and does it know when not to? |
 
@@ -1252,8 +1253,8 @@ uses the **`chatddb-f5`** prefix to avoid collisions:
   the pacing that hides that wait is calibrated against one model's timing only.
 - **No authenticated `POST /api/chat` through the picker was run locally.** It
   needs a Firebase ID token only a signed-in browser can mint, and local
-  `.dev.vars` has no `FREEMODEL_API_KEY`, so there is nothing to cross over to.
-  The vendor-scoping rule is pinned by `npm run test:failover` against a stubbed
+  `.dev.vars` has no `OPENROUTER_API_KEY`, so there is nothing to cross over to.
+  The crossover rules are pinned by `npm run test:failover` against a stubbed
   `fetch` instead, and the deployed path was verified in production.
 - `errorStream()` in `worker/sse.ts` is exported but unused — pre-flight
   failures are reported as JSON status codes instead, which is the better

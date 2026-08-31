@@ -19,9 +19,9 @@
  *    line, so `.dev.vars` is never touched:
  *
  *      npx wrangler dev --port 8788 \
- *        --var AGENTROUTER_BASE_URL:http://127.0.0.1:9/v1 \
- *        --var FREEMODEL_API_KEY:stub-key \
- *        --var FREEMODEL_BASE_URL:http://127.0.0.1:8799/v1
+ *        --var API_PROVIDER_BASE_URL:http://127.0.0.1:9/v1 \
+ *        --var OPENROUTER_API_KEY:stub-key \
+ *        --var OPENROUTER_BASE_URL:http://127.0.0.1:8799/v1
  *
  * 3. This script. `CHATDDB_TOKEN` is a Firebase ID token, from the browser
  *    console of a signed-in tab:  await firebase.auth().currentUser.getIdToken()
@@ -30,9 +30,9 @@
  *
  * ## The other branches worth running
  *
- * - 401 → keys exhausted → cross: restart step 2 with `--var AGENTROUTER_API_KEY:sk-bad`
+ * - 401 → keys exhausted → cross: restart step 2 with `--var PROVIDER_API_KEY:sk-bad`
  *   instead of the base-url override. Expect the same result by a different path.
- * - The kill switch: add `--var FALLBACK_ENABLED:false` and re-run with
+ * - The kill switch: add `--var OPENROUTER_ENABLED:false` and re-run with
  *   `EXPECT_FAILOVER=0`. The request must now fail, proving the switch works.
  * - Both gateways down: also run the stub with `STUB_FAIL=503`, and
  *   `EXPECT_FAILOVER=0`.
@@ -109,10 +109,14 @@ async function main() {
   )
 
   console.log('\nPOST /api/chat')
+  // An explicit pick, deliberately: the new rule is that explicit picks cross
+  // over too, announced in headers. Posting without `model` would exercise the
+  // same crossover but make the `X-ChatDDB-Model` assertion depend on
+  // API_PROVIDER_MODEL rather than on this request.
   const res = await fetch(`${BASE}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
-    body: JSON.stringify({ content: 'In one sentence, what is a failover?' }),
+    body: JSON.stringify({ content: 'In one sentence, what is a failover?', model: 'gpt-5.6-sol' }),
   })
 
   if (!EXPECT_FAILOVER) {
@@ -128,20 +132,22 @@ async function main() {
   }
 
   check('200 OK', res.status === 200, `got ${res.status} ${await res.clone().text().catch(() => '')}`)
-  // The frontend must not be able to tell a crossover happened.
+  // The requested model stays in `X-ChatDDB-Model` — the picker's selection is
+  // not rewritten — while the upstream pair says what really answered. The
+  // frontend reads exactly this pair to show its "unavailable right now" notice.
   check(
     'X-ChatDDB-Model is still the requested model',
     res.headers.get('x-chatddb-model') === 'gpt-5.6-sol',
     String(res.headers.get('x-chatddb-model')),
   )
   check(
-    'X-ChatDDB-Upstream says freemodel',
-    res.headers.get('x-chatddb-upstream') === 'freemodel',
+    'X-ChatDDB-Upstream says openrouter',
+    res.headers.get('x-chatddb-upstream') === 'openrouter',
     String(res.headers.get('x-chatddb-upstream')),
   )
   check(
     'X-ChatDDB-Upstream-Model says what really answered',
-    res.headers.get('x-chatddb-upstream-model') === 'gpt-5.5',
+    res.headers.get('x-chatddb-upstream-model') === 'z-ai/glm-5.2:free',
     String(res.headers.get('x-chatddb-upstream-model')),
   )
 
@@ -169,8 +175,8 @@ async function main() {
   const assistant = rows.find((r) => r.role === 'assistant')
   check('an assistant row was written', Boolean(assistant))
   // The registry says what was requested; the row says what answered.
-  check('model_provider records the truth', assistant?.model_provider === 'freemodel', String(assistant?.model_provider))
-  check('model_used records the truth', assistant?.model_used === 'gpt-5.5', String(assistant?.model_used))
+  check('model_provider records the truth', assistant?.model_provider === 'openrouter', String(assistant?.model_provider))
+  check('model_used records the truth', assistant?.model_used === 'z-ai/glm-5.2:free', String(assistant?.model_used))
   check('the reply was stored', (assistant?.chars ?? 0) > 0, String(assistant?.chars))
 
   let logs = []
@@ -187,8 +193,8 @@ async function main() {
   check('logged as a warning', logs[0]?.severity === 'warn', String(logs[0]?.severity))
   check(
     'the metadata names both gateways',
-    String(logs[0]?.metadata ?? '').includes('agentrouter') &&
-      String(logs[0]?.metadata ?? '').includes('freemodel'),
+    String(logs[0]?.metadata ?? '').includes('provider') &&
+      String(logs[0]?.metadata ?? '').includes('openrouter'),
     String(logs[0]?.metadata),
   )
 

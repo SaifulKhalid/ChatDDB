@@ -3,24 +3,24 @@
 /**
  * A fake OpenAI-compatible gateway, for testing failover without spending money.
  *
- * freemodel.dev is metered, and its key may not even exist yet. Point
- * `FREEMODEL_BASE_URL` at this instead and the Worker cannot tell the
+ * OpenRouter's free tier is real credit and a real rate limit. Point
+ * `OPENROUTER_BASE_URL` at this instead and the Worker cannot tell the
  * difference: same `/v1/chat/completions`, same SSE frame shape, same
  * `[DONE]` sentinel, plus the non-streaming form `generateTitle` uses and the
  * `/v1/models` catalogue.
  *
  * Usage:
- *   node scripts/stub-gateway.mjs               # listens on 8799 as "gpt-5.5"
- *   PORT=9001 STUB_MODEL=gpt-5.4 node scripts/stub-gateway.mjs
+ *   node scripts/stub-gateway.mjs               # listens on 8799 as the default backup model
+ *   PORT=9001 STUB_MODEL=some/model:free node scripts/stub-gateway.mjs
  *   STUB_FAIL=503 node scripts/stub-gateway.mjs # refuse everything, to test
  *                                               # "both gateways down"
  *
  * Then, in another terminal, break the primary and arm this as the backup:
  *
  *   npx wrangler dev --port 8788 \
- *     --var AGENTROUTER_BASE_URL:http://127.0.0.1:9/v1 \
- *     --var FREEMODEL_API_KEY:stub-key \
- *     --var FREEMODEL_BASE_URL:http://127.0.0.1:8799/v1
+ *     --var API_PROVIDER_BASE_URL:http://127.0.0.1:9/v1 \
+ *     --var OPENROUTER_API_KEY:stub-key \
+ *     --var OPENROUTER_BASE_URL:http://127.0.0.1:8799/v1
  *
  * `127.0.0.1:9` is the discard port — nothing listens, so the primary fails as
  * a network error, which is the branch that should cross over immediately.
@@ -30,7 +30,7 @@
 import { createServer } from 'node:http'
 
 const PORT = Number(process.env.PORT ?? 8799)
-const MODEL = process.env.STUB_MODEL ?? 'gpt-5.5'
+const MODEL = process.env.STUB_MODEL ?? 'z-ai/glm-5.2:free'
 const FAIL = process.env.STUB_FAIL ? Number(process.env.STUB_FAIL) : 0
 /** Words the stub "generates". Recognisable in a transcript on sight. */
 const REPLY = 'This reply came from the stub gateway, not from AgentRouter.'
@@ -61,7 +61,7 @@ const server = createServer(async (req, res) => {
   if (url.pathname.endsWith('/models')) {
     return send(res, 200, {
       object: 'list',
-      data: [MODEL, 'gpt-5.4', 'gpt-5.4-mini'].map((id) => ({ id, object: 'model', owned_by: 'stub' })),
+      data: [MODEL, 'stub/tiny:free', 'stub/tiny-mini:free'].map((id) => ({ id, object: 'model', owned_by: 'stub' })),
     })
   }
 

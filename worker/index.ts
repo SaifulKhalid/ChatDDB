@@ -23,7 +23,7 @@
  * here means the asset handler already passed on it.
  */
 
-import { NotConfiguredError, resolveConfig } from './agentrouter.ts'
+import { NotConfiguredError, resolveConfig, resolveOpenRouterConfig } from './provider.ts'
 import { imageFallbackReady, imageReady, resolvePollinations } from './images.ts'
 import { bucketReady, dbReady } from './db/client.ts'
 import { errorResponse, json, methodNotAllowed, preflight } from './lib/http.ts'
@@ -214,6 +214,7 @@ async function health(ctx: RequestContext): Promise<Response> {
   const [db, r2] = await Promise.all([dbReady(ctx.env.DB), bucketReady(ctx.env.FILES)])
 
   const imageFallback = resolvePollinations(ctx.env)
+  const textFallback = resolveOpenRouterConfig(ctx.env)
 
   const missing: string[] = []
   if (!ctx.env.DB) missing.push('DB binding')
@@ -223,6 +224,9 @@ async function health(ctx: RequestContext): Promise<Response> {
   if (!ctx.env.IP_HASH_SALT) missing.push('IP_HASH_SALT (optional)')
   if (ctx.env.POLLINATIONS_ENABLED?.trim() !== 'false' && !ctx.env.POLLINATIONS_API_KEY?.trim()) {
     missing.push('POLLINATIONS_API_KEY (optional; image fallback unconfigured)')
+  }
+  if (ctx.env.OPENROUTER_ENABLED?.trim() !== 'false' && !ctx.env.OPENROUTER_API_KEY?.trim()) {
+    missing.push('OPENROUTER_API_KEY (optional; text fallback unconfigured)')
   }
 
   return json(
@@ -239,10 +243,13 @@ async function health(ctx: RequestContext): Promise<Response> {
         r2,
         auth: Boolean(ctx.env.FIREBASE_PROJECT_ID),
         signedUrls: Boolean(ctx.env.FILE_URL_SECRET),
-        fallback: false,
+        fallback: textFallback !== null,
         image: imageReady(ctx.env),
         imageFallback: imageFallbackReady(ctx.env),
       },
+      ...(textFallback
+        ? { fallbackProvider: textFallback.provider, fallbackModel: textFallback.model }
+        : {}),
       ...(missing.length > 0 ? { missing } : {}),
       ...(imageFallback
         ? { imageFallbackProvider: imageFallback.provider, imageFallbackModel: imageFallback.model }

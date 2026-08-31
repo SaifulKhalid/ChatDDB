@@ -1,5 +1,5 @@
 /**
- * Bridges AgentRouter's upstream stream to the frontend's SSE contract.
+ * Bridges the upstream provider stream to the frontend's SSE contract.
  *
  * We re-emit rather than pass through, which buys three things:
  *  - a guaranteed shape (`data: {"choices":[{"delta":{"content":"…"}}]}` then
@@ -9,9 +9,9 @@
  *  - a way to report a mid-stream failure, as a `data: {"error":{…}}` frame,
  *    after the response headers have already been committed.
  *
- * ## AgentRouter does not really stream
+ * ## Upstream Streaming Normalisation
  *
- * It waits for the full completion upstream and then synthesises a one-frame
+ * Some gateways wait for the full completion upstream and then synthesise a one-frame
  * SSE response — the chunk comes back as `"id":"chatcmpl_temp"` carrying the
  * entire answer, so even a long reply arrives as a single delta. This Worker
  * relays that faithfully and as fast as it can; re-chunking it into a
@@ -55,7 +55,7 @@
  * back at them, feature flag or not.
  */
 
-import type { ToolCall } from './agentrouter.ts'
+import type { ToolCall } from './provider.ts'
 import { FigureGate } from './lib/figureGate.ts'
 
 const encoder = new TextEncoder()
@@ -182,8 +182,8 @@ async function drainGate(
  * — and every reader below then does `chunk.error` or `chunk.choices` on null and
  * throws a `TypeError` that kills the stream mid-answer.
  *
- * That is not hypothetical. AgentRouter emits a literal `data: null` frame
- * mid-stream for `claude-opus-5` and never for `gpt-5.6-sol`: its
+ * That is not hypothetical. Certain upstream relays emit a literal `data: null` frame
+ * mid-stream for `claude-opus-5` and never for `gpt-5.6-sol`: their
  * Anthropic-to-OpenAI re-serialiser has no OpenAI shape for one of Anthropic's
  * native events (a `ping`, on the evidence of where it lands) and writes the
  * JSON for "nothing" instead of dropping the frame.
@@ -232,7 +232,7 @@ function num(value: unknown): number | null {
 /**
  * Reads a usage block, when upstream sends one.
  *
- * Requested via `stream_options.include_usage`; AgentRouter does not always
+ * Requested via `stream_options.include_usage`; upstream does not always
  * honour it, which is why `token_source` in `chat_messages` records whether a
  * count came from upstream or from our own character estimate.
  */
@@ -268,7 +268,7 @@ async function pumpEventStream(
     if (!payload) return false
     if (payload === '[DONE]') return true
 
-    // A frame carrying nothing — unparseable, or the `data: null` AgentRouter
+    // A frame carrying nothing — unparseable, or the `data: null` upstream
     // sends for Claude. Skipping it is right either way: it is not content, not
     // an error, and not the end of the stream.
     const chunk = parseChunk(payload)
@@ -407,7 +407,7 @@ async function pumpJsonBody(
 }
 
 /**
- * Converts an upstream AgentRouter response into a client-facing SSE stream.
+ * Converts an upstream response into a client-facing SSE stream.
  * Returns immediately; the body fills in as upstream bytes arrive.
  *
  * `onComplete` fires exactly once, after the last frame is written, with the
@@ -511,7 +511,7 @@ export type PeekResult = PeekedToolCalls | PeekedText
  *
  * ## The shape this parses, and how it was established
  *
- * `npm run probe:tools` phase 5, against `gpt-5.6-sol` through AgentRouter, 5/5
+ * `npm run probe:tools` phase 5, against `gpt-5.6-sol` through the upstream provider, 5/5
  * runs. Two findings drive the code:
  *
  *  - The call arrives as **`delta.tool_calls`**, OpenAI's fragmented form, and
@@ -520,8 +520,7 @@ export type PeekResult = PeekedToolCalls | PeekedText
  *    which is what makes peeking cheap.
  *  - `function.arguments` is then split across roughly **150 further frames**,
  *    one token each. They have to be concatenated before `JSON.parse` — a parse
- *    of any single frame fails. This is the one place AgentRouter really does
- *    stream, incidentally: ordinary text comes back as a single blob.
+ *    of any single frame fails.
  *
  * `message.tool_calls` is accepted too, for a relay that sends a whole message
  * on one frame, the same way `extractContent` already tolerates both.
@@ -545,7 +544,7 @@ export type PeekResult = PeekedToolCalls | PeekedText
  * fires first:
  *
  *  - **A terminal frame** — `finish_reason` or `[DONE]`. Nothing after it can
- *    change the verdict. AgentRouter sends ordinary prose as a single blob (see
+ *    change the verdict. Many gateways send ordinary prose as a single blob (see
  *    above), so this lands one frame after the content and the budget is never
  *    touched: the common path pays one extra `read()` on an already-finished
  *    stream.
@@ -655,7 +654,7 @@ export async function peekToolCalls(res: Response): Promise<PeekResult> {
  *
  * Only ever reached on a gateway that streams prose token by token, and it is
  * the whole latency cost of the lookahead on one: at most this many frames
- * before the user's first byte. AgentRouter blobs prose and then sends
+ * before the user's first byte. Many gateways buffer prose and then send
  * `finish_reason`, so `isTerminalFrame` ends the scan long before the count
  * matters — 16 is chosen to be ample for the one case that binds (a short
  * introducing sentence ahead of a call) while staying too small to be felt.

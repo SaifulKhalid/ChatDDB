@@ -252,7 +252,7 @@ export function countForSession(db: D1Database, sessionId: string): Promise<numb
 }
 
 /**
- * A crude token estimate for when AgentRouter reports no usage block.
+ * A crude token estimate for when the upstream provider reports no usage block.
  *
  * Four characters per token is the usual English rule of thumb. Anything stored
  * from here is marked `token_source='estimate'` and the admin UI labels it, so
