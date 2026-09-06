@@ -21,18 +21,10 @@ interface Option {
 }
 
 /**
- * Auto / ChatGPT / Claude, as a segmented control above the composer.
+ * Auto / deepseek-v4-flash / glm-5.3 / gpt-5.6-sol / gemini-3.7-flash / claude-opus-5,
+ * as a segmented control above the composer.
  *
- * Auto is a real choice rather than a synonym for the default entry. The
- * difference used to be failover: only an Auto turn crossed to the backup
- * gateway. Now every turn crosses — a picked model that is down is announced
- * ("unavailable right now — answered by X instead") rather than preserved as a
- * hard failure — and Auto is simply the one where that announcement is quiet,
- * because "retries elsewhere" is already what Auto promises. See
- * `chainFor` in `worker/failover.ts`.
- *
- * Segments come from the registry, so a third model is an entry in
- * `worker/models.ts` and no edit here.
+ * Segments come dynamically from the model registry in `worker/models.ts`.
  */
 export function ModelPicker({
   models,
@@ -43,9 +35,7 @@ export function ModelPicker({
 }: ModelPickerProps) {
   const groupRef = useRef<HTMLDivElement>(null)
 
-  // The registry's `default: true` entry. The Worker resolves Auto from
-  // `API_PROVIDER_MODEL` instead, which is the same model in every deployment so
-  // far; if the two ever disagree, this label is the one that is wrong.
+  // The registry's `default: true` entry.
   const fallbackTo = models.find((m) => m.default) ?? models[0]
 
   const options: Option[] = [
@@ -53,14 +43,12 @@ export function ModelPicker({
       id: null,
       short: 'Auto',
       title: fallbackTo
-        ? `Auto — ${fallbackTo.short}, and quietly retries elsewhere if that gateway fails.`
+        ? `Auto — default to ${fallbackTo.label}.`
         : 'Auto — let the server choose.',
     },
     ...models.map((m) => ({
       id: m.id,
       short: m.short,
-      // The backup covers an explicit pick too — but a crossover is announced
-      // in a banner, because the user named a model and a different one answered.
       title: [`Always ${m.label}.`, m.note].filter(Boolean).join(' '),
       note: m.note,
     })),
@@ -101,7 +89,7 @@ export function ModelPicker({
   if (models.length === 0) return null
 
   return (
-    <div className="mb-2 flex items-center gap-2 px-1">
+    <div className="mb-2 flex max-w-full items-center gap-2 overflow-x-auto px-1 scrollbar-none">
       <div
         ref={groupRef}
         role="radiogroup"
@@ -121,7 +109,7 @@ export function ModelPicker({
               disabled={disabled}
               onClick={() => onChange(opt.id)}
               title={disabled ? (disabledReason ?? opt.title) : opt.title}
-              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:opacity-40 ${
+              className={`whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:opacity-40 ${
                 on
                   ? 'bg-accent text-surface'
                   : 'text-ink-2 hover:bg-surface-3 hover:text-ink disabled:hover:bg-transparent'
@@ -133,12 +121,8 @@ export function ModelPicker({
         })}
       </div>
 
-      {value !== null ? (
-        <span className="truncate text-xs text-ink-2">
-          If this model is unavailable, a free backup answers and you will see a notice
-        </span>
-      ) : selected.note ? (
-        <span className="truncate text-xs text-ink-2" title={selected.note}>
+      {selected?.note ? (
+        <span className="shrink-0 truncate text-xs text-ink-2" title={selected.note}>
           {selected.note}
         </span>
       ) : null}

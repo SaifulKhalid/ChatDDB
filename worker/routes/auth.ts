@@ -16,7 +16,7 @@ import { bearerToken, verifyIdToken } from '../auth/verify.ts'
 import type { AuthedContext, RequestContext } from '../auth/middleware.ts'
 import { listVar } from '../env.ts'
 import { imageReady } from '../images.ts'
-import { MODELS } from '../models.ts'
+import { MODELS, toPublicModel } from '../models.ts'
 
 /** UTC midnight for a timestamp -- the boundary all daily counters share. */
 export function dayStart(now = Date.now()): number {
@@ -150,7 +150,7 @@ export async function getMe(ctx: AuthedContext): Promise<Response> {
             ? Math.max(0, ctx.policy.rateImagePerDay - imageUsedToday)
             : null,
       },
-      models: MODELS,
+      models: MODELS.map(toPublicModel),
       pdfExtractMode: ctx.policy.pdfExtractMode,
       /**
        * Whether `POST /api/images` can serve. The composer hides its image

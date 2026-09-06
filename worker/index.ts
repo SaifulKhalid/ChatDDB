@@ -23,7 +23,7 @@
  * here means the asset handler already passed on it.
  */
 
-import { NotConfiguredError, resolveConfig, resolveOpenRouterConfig } from './provider.ts'
+import { NotConfiguredError, resolveConfig } from './provider.ts'
 import { imageFallbackReady, imageReady, resolvePollinations } from './images.ts'
 import { bucketReady, dbReady } from './db/client.ts'
 import { errorResponse, json, methodNotAllowed, preflight } from './lib/http.ts'
@@ -202,19 +202,22 @@ function match(pattern: string, path: string): string | null {
  * otherwise pass against a deployment that cannot sign in.
  */
 async function health(ctx: RequestContext): Promise<Response> {
-  let configured = true
+  const rawKey = ctx.env.CODECRAFT_API_KEY?.trim()
+  const cleanKey = rawKey ? rawKey.replace(/^["']|["']$/g, '').replace(/^Bearer\s+/i, '').trim() : undefined
+  const codecraftConfigured = Boolean(cleanKey && cleanKey !== 'cc-replace-me')
+  let agentrouterConfigured = true
   let detail: string | undefined
   try {
     resolveConfig(ctx.env)
   } catch (err) {
-    configured = false
+    agentrouterConfigured = false
     detail = err instanceof NotConfiguredError || err instanceof Error ? err.message : String(err)
   }
+  const configured = agentrouterConfigured || codecraftConfigured
 
   const [db, r2] = await Promise.all([dbReady(ctx.env.DB), bucketReady(ctx.env.FILES)])
 
   const imageFallback = resolvePollinations(ctx.env)
-  const textFallback = resolveOpenRouterConfig(ctx.env)
 
   const missing: string[] = []
   if (!ctx.env.DB) missing.push('DB binding')
@@ -225,31 +228,23 @@ async function health(ctx: RequestContext): Promise<Response> {
   if (ctx.env.POLLINATIONS_ENABLED?.trim() !== 'false' && !ctx.env.POLLINATIONS_API_KEY?.trim()) {
     missing.push('POLLINATIONS_API_KEY (optional; image fallback unconfigured)')
   }
-  if (ctx.env.OPENROUTER_ENABLED?.trim() !== 'false' && !ctx.env.OPENROUTER_API_KEY?.trim()) {
-    missing.push('OPENROUTER_API_KEY (optional; text fallback unconfigured)')
-  }
 
   return json(
     {
       ok: true,
       service: 'chat',
-      model: ctx.env.API_PROVIDER_MODEL ?? ctx.env.AGENTROUTER_MODEL ?? 'deepseek-v4-flash',
-      provider: 'provider',
+      model: 'deepseek-v4-flash',
       configured,
-      ...(detail ? { detail } : {}),
+      ...(detail && !configured ? { detail } : {}),
       ready: {
         upstream: configured,
         db,
         r2,
         auth: Boolean(ctx.env.FIREBASE_PROJECT_ID),
         signedUrls: Boolean(ctx.env.FILE_URL_SECRET),
-        fallback: textFallback !== null,
         image: imageReady(ctx.env),
         imageFallback: imageFallbackReady(ctx.env),
       },
-      ...(textFallback
-        ? { fallbackProvider: textFallback.provider, fallbackModel: textFallback.model }
-        : {}),
       ...(missing.length > 0 ? { missing } : {}),
       ...(imageFallback
         ? { imageFallbackProvider: imageFallback.provider, imageFallbackModel: imageFallback.model }

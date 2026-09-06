@@ -23,22 +23,25 @@ export interface PublicUser {
   lastLogin: number | null
 }
 
-export type Vendor = 'openai' | 'anthropic' | 'deepseek' | 'zhipu'
+export type Vendor = 'openai' | 'anthropic' | 'deepseek' | 'zhipu' | 'google'
 
 export interface ModelSpec {
   id: string
   label: string
-  /** The name a user picks by, e.g. `ChatGPT`. Short enough for the picker. */
+  /** The name a user picks by, e.g. `gpt-5.6-sol`. Short enough for the picker. */
   short: string
-  provider: string
-  vendor: Vendor
+  name?: string
+  modelId?: string
   vision: boolean
   documents: boolean
-  contextTokens: number
-  maxOutputTokens: number
-  reasoning: boolean
   default?: boolean
+  description?: string
   note?: string
+  provider?: string
+  vendor?: string
+  contextTokens?: number
+  maxOutputTokens?: number
+  reasoning?: boolean
 }
 
 /** `worker/db/users.ts` → `UsageSummary`. */

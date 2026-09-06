@@ -5,19 +5,17 @@
 # 3. Run `npm run dev:all`.
 #
 # For the deployed Worker, set them as real secrets instead:
-#   npx wrangler secret put PROVIDER_API_KEY
-#   npx wrangler secret put PROVIDER_API_KEY_2
-#   npx wrangler secret put PROVIDER_API_KEY_3
+#   npx wrangler secret put AGENTROUTER_API_KEY
+#   npx wrangler secret put AGENTROUTER_API_KEY_2
+#   npx wrangler secret put AGENTROUTER_API_KEY_3
 
-PROVIDER_API_KEY=sk-replace-me
-# PROVIDER_API_KEY_2=sk-replace-me
-# PROVIDER_API_KEY_3=sk-replace-me
+AGENTROUTER_API_KEY=sk-replace-me
+# AGENTROUTER_API_KEY_2=sk-replace-me
+# AGENTROUTER_API_KEY_3=sk-replace-me
 
-# The OpenRouter free-tier backup text gateway (optional). With this set, a
-# failing primary gateway no longer ends the turn: the request crosses to
-# OpenRouter and the UI says which model answered.
-# Deployed:  npx wrangler secret put OPENROUTER_API_KEY
-# OPENROUTER_API_KEY=sk-or-replace-me
+# The CodeCraft API text provider key (serves ChatGPT 5.6, Gemini 3.7, Claude 5).
+# Deployed:  npx wrangler secret put CODECRAFT_API_KEY
+CODECRAFT_API_KEY=cc-replace-me
 
 # The backup image provider (optional). With this set, an exhausted Workers AI
 # allowance stops being visible: Pollinations draws the image instead.
@@ -25,15 +23,10 @@ PROVIDER_API_KEY=sk-replace-me
 # POLLINATIONS_API_KEY=pk-replace-me
 
 # Optional overrides — defaults live in wrangler.jsonc `vars`.
-# API_PROVIDER_MODEL=deepseek-v4-flash
-# API_PROVIDER_BASE_URL=https://agentrouter.org/v1
+# AGENTROUTER_MODEL=deepseek-v4-flash
+# AGENTROUTER_BASE_URL=https://agentrouter.org/v1
 # MAX_OUTPUT_TOKENS=8192
 # REASONING_EFFORT=medium
-# OPENROUTER_MODEL=z-ai/glm-5.2:free
-# OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-# OPENROUTER_TOKEN_PARAM=max_tokens
-# OPENROUTER_REASONING_EFFORT=true
-# OPENROUTER_VISION=false
 # POLLINATIONS_MODEL=flux
 # POLLINATIONS_BASE_URL=https://gen.pollinations.ai
 # POLLINATIONS_ENABLED=true

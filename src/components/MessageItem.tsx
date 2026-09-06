@@ -364,6 +364,14 @@ function AssistantMessage({
                 <RotateCcw size={15} />
               </button>
             )}
+            {message.model && (
+              <span
+                className="ml-1.5 rounded bg-surface-3 px-1.5 py-0.5 font-mono text-[10px] text-ink-2"
+                title={`Model: ${message.model}`}
+              >
+                {message.model}
+              </span>
+            )}
           </div>
         )}
       </div>

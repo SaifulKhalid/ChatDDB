@@ -30,24 +30,19 @@
  */
 
 import {
+  createChatCompletion,
+  generateTitle,
   listModels,
   NotConfiguredError,
   resolveConfig,
   UpstreamError,
   type ChatMessage,
   type ContentPart,
+  type ProviderId,
   type ToolCall,
   type ToolDefinition,
   type UpstreamConfig,
 } from '../provider.ts'
-import {
-  chainFor,
-  completeWithFailover,
-  resolveProviders,
-  titleWithFailover,
-  type CrossoverReporter,
-  type UpstreamAttempt,
-} from '../failover.ts'
 import { peekToolCalls, toClientStream, type StreamResult } from '../sse.ts'
 import { ApiError, badRequest, corsHeaders, json, notConfigured, notFound } from '../lib/http.ts'
 import { MAX_PROMPT_CHARS, resolveImageProviders } from '../images.ts'
@@ -69,6 +64,9 @@ import { buildDocumentContext, imageDataUrl } from '../lib/files/context.ts'
 import {
   resolveModel,
   isKnownModel,
+  routeAutoModel,
+  defaultModel,
+  toPublicModel,
   NO_VISION_MESSAGE,
   MODELS,
   type ModelSpec,
@@ -358,10 +356,63 @@ function parseBody(raw: Record<string, unknown>): ChatBody {
   }
 }
 
+interface UpstreamAttempt {
+  res: Response
+  cfg: UpstreamConfig
+  provider: ProviderId
+  model: string
+}
+
 export async function postChat(ctx: AuthedContext): Promise<Response> {
-  let providers: UpstreamConfig[]
+  const body = parseBody(await readJsonBody(ctx.request))
+
+  // Validate model requested by client
+  if (body.model && body.model !== 'auto') {
+    if (!isKnownModel(body.model)) {
+      throw badRequest(
+        `Unknown model \`${body.model}\`. Available: ${MODELS.map((m) => m.modelId).join(', ')}.`,
+        'unknown_model',
+      )
+    }
+  }
+
+  // Pre-load attachment rows to verify readiness and determine file types
+  let attachmentRows: FileRow[] = []
+  if (body.attachments.length > 0) {
+    if (body.attachments.length > ctx.policy.maxAttachmentsPerMessage) {
+      throw badRequest(
+        `Up to ${ctx.policy.maxAttachmentsPerMessage} attachments per message.`,
+        'too_many_attachments',
+      )
+    }
+    attachmentRows = await filesDb.getManyOwned(ctx.db, body.attachments, ctx.user.id)
+    if (attachmentRows.length !== body.attachments.length) {
+      throw notFound('One of those attachments is no longer available.', 'attachment_not_found')
+    }
+    const unfinished = attachmentRows.find((r) => r.upload_status !== 'stored')
+    if (unfinished) {
+      throw badRequest(
+        `"${unfinished.original_filename}" has not finished uploading.`,
+        'attachment_not_ready',
+      )
+    }
+  }
+
+  const hasImages = attachmentRows.some((f) => f.file_type === 'image')
+
+  const model = pickModel(
+    body.model,
+    ctx.env.API_PROVIDER_MODEL ?? ctx.env.AGENTROUTER_MODEL ?? 'deepseek',
+    { text: body.content, hasImages },
+    ctx.env,
+  )
+
+  // Verify vision capability if explicit model was selected
+  assertVisionOk(attachmentRows, model)
+
+  let config: UpstreamConfig
   try {
-    providers = resolveProviders(ctx.env)
+    config = resolveConfig(ctx.env, model)
   } catch (err) {
     if (err instanceof NotConfiguredError) {
       // 503 on purpose: the frontend reads it as "backend not wired up" and
@@ -373,64 +424,33 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
     throw err
   }
 
-  const body = parseBody(await readJsonBody(ctx.request))
-  const model = pickModel(body.model, providers[0].model)
-
   await limitChat(ctx)
 
-  const session = await resolveSession(ctx, body, model.id)
-  const turn = await prepareTurn(ctx, body, session.id, model)
+  const session = await resolveSession(ctx, body, model.key)
+  const turn = await prepareTurn(ctx, body, session.id, model, attachmentRows)
 
   // Offered only when there is something behind it. With no `AI` binding the
   // request body is byte-for-byte what it was before the tool existed.
   const toolsArmed = resolveImageProviders(ctx.env).length > 0
   const upstream = buildUpstreamMessages(ctx, turn, toolsArmed)
 
-  // The images flag is the one filter left: an image turn never crosses to a
-  // backup that is not declared vision-capable. Every model — Auto and an
-  // explicit pick alike — keeps the backup otherwise, because the substitution
-  // is announced (X-ChatDDB-Upstream) rather than silent. See `chainFor`.
-  const chain = chainFor(providers, model, turn.images.length > 0)
-
-  // Which gateway owns a failure below. Advanced on each crossover so
-  // `persistFailure` blames the one that actually refused last.
-  let failed = chain[0]
-
-  const onCrossover: CrossoverReporter = (from, to, err) => {
-    failed = chain.find((cfg) => cfg.provider === to) ?? failed
-    ctx.exec.waitUntil(
-      activity.log(ctx.db, {
-        userId: ctx.user.id,
-        action: 'upstream_failover',
-        severity: 'warn',
-        metadata: {
-          from,
-          to,
-          reason: err.type,
-          upstreamStatus: err.upstreamStatus ?? null,
-          sessionId: session.id,
-        },
-      }),
-    )
-  }
-
   let attempt: UpstreamAttempt
   let generated: filesDb.PublicFile | null = null
   try {
-    attempt = await completeWithFailover(
-      chain,
+    const res = await createChatCompletion(
+      config,
       upstream,
       ctx.request.signal,
-      onCrossover,
-      toolsArmed ? [IMAGE_TOOL] : undefined,
+      { tools: toolsArmed ? [IMAGE_TOOL] : undefined },
     )
+    attempt = { res, cfg: config, provider: config.provider, model: config.model }
 
     // Runs entirely in front of `toClientStream`, so the invariant that no
     // already-open stream is ever restarted still holds structurally rather than
-    // by care — `completeWithFailover` resolves on headers, and nothing below
+    // by care — `createChatCompletion` resolves on headers, and nothing below
     // has written a byte to the client yet. See `peekToolCalls` in `sse.ts`.
     if (toolsArmed) {
-      const outcome = await runToolLoop(ctx, chain, upstream, attempt, session.id, onCrossover)
+      const outcome = await runToolLoop(ctx, config, upstream, attempt, session.id)
       attempt = outcome.attempt
       generated = outcome.file
     }
@@ -438,10 +458,10 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
     // Nothing streamed, so the user turn we just wrote has no answer. Record the
     // failure against the session rather than leaving a silent gap.
     if (err instanceof UpstreamError) {
-      ctx.exec.waitUntil(persistFailure(ctx, session.id, model, failed, err.message))
+      ctx.exec.waitUntil(persistFailure(ctx, session.id, model, config, err.message))
       console.error(
         '[chatddb] upstream %s %s (%s): %s',
-        failed.provider, err.upstreamStatus ?? '-', err.type, err.message,
+        config.provider, err.upstreamStatus ?? '-', err.type, err.message,
       )
     }
     throw err
@@ -449,7 +469,7 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
 
   const attached = generated
   const stream = toClientStream(attempt.res, (result) => {
-    ctx.exec.waitUntil(persistAssistant(ctx, session, chain, attempt, model, turn, result, attached))
+    ctx.exec.waitUntil(persistAssistant(ctx, session, config, attempt, model, turn, result, attached))
   })
 
   return new Response(stream, {
@@ -459,10 +479,7 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
       Connection: 'keep-alive',
       // Stops intermediate proxies buffering the stream into one blob.
       'X-Accel-Buffering': 'no',
-      'X-ChatDDB-Model': model.id,
-      ...(attempt.crossedOver
-        ? { 'X-ChatDDB-Upstream': attempt.provider, 'X-ChatDDB-Upstream-Model': attempt.model }
-        : {}),
+      'X-ChatDDB-Model': model.modelId,
       'X-ChatDDB-Session-Id': session.id,
       ...(turn.userMessageId ? { 'X-ChatDDB-Message-Id': turn.userMessageId } : {}),
       ...(attached
@@ -476,10 +493,10 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
   })
 }
 
-/** `GET /api/models` — the registry. */
+/** `GET /api/models` — the safe public model registry. */
 export function getModels(ctx: AuthedContext): Response {
   return json(
-    { models: MODELS, default: resolveModel(undefined, ctx.env.API_PROVIDER_MODEL ?? ctx.env.AGENTROUTER_MODEL ?? '').id },
+    { models: MODELS.map(toPublicModel), default: defaultModel().key },
     200,
     ctx.request,
     ctx.env,
@@ -513,14 +530,26 @@ export async function getUpstreamModels(ctx: AuthedContext): Promise<Response> {
 // Steps
 // ---------------------------------------------------------------------------
 
-function pickModel(requested: string | undefined, configured: string): ModelSpec {
-  if (requested && !isKnownModel(requested)) {
-    throw badRequest(
-      `Unknown model \`${requested}\`. Available: ${MODELS.map((m) => m.id).join(', ')}.`,
-      'unknown_model',
-    )
+function pickModel(
+  requested: string | undefined,
+  configured: string,
+  autoInput?: { text?: string; hasImages?: boolean },
+  env?: WorkerEnv,
+): ModelSpec {
+  if (requested && requested !== 'auto') {
+    if (!isKnownModel(requested)) {
+      throw badRequest(
+        `Unknown model \`${requested}\`. Available: ${MODELS.map((m) => m.key).join(', ')}.`,
+        'unknown_model',
+      )
+    }
+    return resolveModel(requested, configured)
   }
-  return resolveModel(requested, configured)
+
+  if (env && autoInput) {
+    return routeAutoModel(autoInput, env)
+  }
+  return defaultModel()
 }
 
 /**
@@ -614,11 +643,12 @@ async function prepareTurn(
   body: ChatBody,
   sessionId: string,
   model: ModelSpec,
+  preloadedFiles?: FileRow[],
 ): Promise<Turn> {
   if (body.regenerate) return prepareRegenerate(ctx, sessionId, model)
 
   const content = body.content as string
-  const files = await loadAttachments(ctx, body.attachments, model)
+  const files = preloadedFiles ?? (await loadAttachments(ctx, body.attachments, model))
 
   if (body.replaceFromMessageId) {
     await truncateFrom(ctx, sessionId, body.replaceFromMessageId)
@@ -923,11 +953,10 @@ interface ToolOutcome {
  */
 async function runToolLoop(
   ctx: AuthedContext,
-  chain: UpstreamConfig[],
+  config: UpstreamConfig,
   messages: ChatMessage[],
   first: UpstreamAttempt,
   sessionId: string,
-  onCrossover: CrossoverReporter,
 ): Promise<ToolOutcome> {
   let attempt = first
   let file: filesDb.PublicFile | null = null
@@ -952,7 +981,8 @@ async function runToolLoop(
       messages.push({ role: 'tool', tool_call_id: call.id, content: payload })
     }
 
-    attempt = await completeWithFailover(chain, messages, ctx.request.signal, onCrossover)
+    const res = await createChatCompletion(config, messages, ctx.request.signal)
+    attempt = { res, cfg: config, provider: config.provider, model: config.model }
   }
 
   // The model kept calling tools past the cap. Stream whatever the last response
@@ -1130,7 +1160,7 @@ async function limitToolImage(ctx: AuthedContext): Promise<void> {
 async function persistAssistant(
   ctx: AuthedContext,
   session: sessionsDb.SessionRow,
-  chain: UpstreamConfig[],
+  config: UpstreamConfig,
   attempt: UpstreamAttempt,
   model: ModelSpec,
   turn: Turn,
@@ -1174,9 +1204,6 @@ async function persistAssistant(
     userId: ctx.user.id,
     role: 'assistant',
     content: result.text,
-    // What actually answered, not what was asked for: on a crossover this is
-    // `gpt-5.5` / `freemodel`, so the admin inspector and any later token
-    // accounting describe the request that really happened.
     model: attempt.model,
     modelProvider: attempt.provider,
     promptTokens: prompt,
@@ -1190,13 +1217,9 @@ async function persistAssistant(
 
   // Awaited before the batch so the retitle can join the same transaction. A
   // null title (declined, failed, or not needed) simply adds no statement.
-  //
-  // After a crossover, only the gateway that answered is asked for a name. The
-  // primary just failed seconds ago; walking the chain from the top would spend
-  // a 20-second timeout re-learning that before getting to the one that works.
-  const title = await autoTitle(session, attempt.crossedOver ? [attempt.cfg] : chain, turn, result)
+  const title = await autoTitle(session, config, turn, result)
 
-  const statements = [inserted.stmt, sessionsDb.touchStmt(sessionId, 1, model.id)]
+  const statements = [inserted.stmt, sessionsDb.touchStmt(sessionId, 1, model.modelId)]
   if (title) statements.push(sessionsDb.retitleStmt(sessionId, title))
   // The file row already exists and is already `stored` — the tool wrote it
   // mid-turn. All that is left is pointing it at a message id that could not be
@@ -1226,7 +1249,7 @@ async function persistAssistant(
  */
 async function autoTitle(
   session: sessionsDb.SessionRow,
-  chain: UpstreamConfig[],
+  config: UpstreamConfig,
   turn: Turn,
   result: StreamResult,
 ): Promise<string | null> {
@@ -1241,7 +1264,7 @@ async function autoTitle(
   // No signal is passed: the client's connection is closed by now, and on an
   // aborted stream it is already aborted — passing it would cancel every title
   // for exactly the turns that still deserve one.
-  return titleWithFailover(chain, { user: turn.userText, assistant: result.text })
+  return generateTitle(config, { user: turn.userText, assistant: result.text })
 }
 
 /**
@@ -1269,7 +1292,7 @@ async function persistFailure(
     error: message.slice(0, 1_000),
   })
   try {
-    await batch(ctx.db, [inserted.stmt, sessionsDb.touchStmt(sessionId, 1, model.id)])
+    await batch(ctx.db, [inserted.stmt, sessionsDb.touchStmt(sessionId, 1, model.modelId)])
   } catch (err) {
     console.error('[chatddb] failed to record upstream failure: %s', err)
   }

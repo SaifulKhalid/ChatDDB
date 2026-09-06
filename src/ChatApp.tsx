@@ -96,6 +96,7 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
       role: m.role,
       content: m.content,
       createdAt: m.createdAt,
+      model: m.model ?? undefined,
       error: m.error ?? undefined,
       attachments: m.attachments.length > 0 ? m.attachments : undefined,
     }
@@ -245,19 +246,18 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
       }
 
       for await (const delta of streamChat(req, ctrl.signal, (meta) => {
-        // A backup gateway answered because the primary failed. Auto already
-        // promises "retries elsewhere", so the notice is only owed when the
-        // user actually picked a model — the substitution is fine, but never
-        // silent. `model` is what was requested; `upstreamModel` answered.
-        if (meta.upstream && model) {
-          const requested = models.find((m) => m.id === model)
-          setNotice(
-            `${requested ? requested.label : model} is unavailable right now — ` +
-              `this reply came from ${meta.upstreamModel ?? 'a backup model'} on OpenRouter.`,
-          )
-        }
         if (meta.messageId) {
           targetId = meta.messageId
+        }
+        if (meta.model) {
+          const modelUsed = meta.model
+          setMessages(sid, (m) =>
+            m.map((x) =>
+              x.id === assistantLocalId || x.id === targetId
+                ? { ...x, model: modelUsed }
+                : x,
+            ),
+          )
         }
         if (meta.generatedFile) {
           const gen = meta.generatedFile
@@ -670,7 +670,7 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
           attachments={pending}
           onAttach={(files) => void attach(files)}
           onRemoveAttachment={removeAttachment}
-          canAttachImages={activeModel?.vision}
+          canAttachImages={model === null ? models.some((m) => m.vision) : activeModel?.vision}
           canAttachDocuments={activeModel?.documents}
           maxAttachments={quota?.maxAttachmentsPerMessage}
           canGenerateImages={imageGeneration}

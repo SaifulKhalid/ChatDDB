@@ -118,9 +118,7 @@ and must never be committed.
 | `npm run smoke:svg-sanitizer` | The HTMLRewriter allowlist, in workerd. No key needed |
 | `npm run smoke:figure-gate` | The streaming fence transform. No key needed |
 | `npm run smoke:sse-null` | The `data: null` frame AgentRouter sends for Claude, replayed through the shipped `sse.ts`. No key needed |
-| `npm run test:failover` | Failover branches, including `chainFor`'s vision scoping. No network, no key |
-| `npm run stub:gateway` | Fake OpenAI-compatible gateway, so text crossover tests spend no free-tier allowance |
-| `npm run probe:openrouter` | What `:free` models exist, and does the configured one complete a streaming round trip |
+| `npm run test:provider` | AgentRouter provider unit tests (multi-key rotation, retries, abort). No network, no key |
 | `npm run stub:pollinations` | Fake Pollinations endpoint, so crossover tests spend no allowance |
 | `npm run smoke:image-failover` | End-to-end image crossover, both directions |
 | `npm run smoke:chat-image-tool` | End-to-end `generate_image` tool path |
@@ -133,9 +131,7 @@ and must never be committed.
 ```
 worker/
   index.ts          routes, validation, system prompt, error mapping
-  provider.ts       upstream client: config, headers, retries, timeout, abort
-  failover.ts       gateway chain: primary → OpenRouter free tier, and `chainFor`,
-                    which drops the backup for image turns unless declared vision-capable
+  provider.ts       AgentRouter client: config, headers, retries, timeout, abort (sole text routing layer)
   models.ts         the model registry: ids, vendors, measured capabilities
   images.ts         image chain: Workers AI → Pollinations, and error classification
   sse.ts            upstream stream → client SSE contract; tool-call peek; figure gate;
@@ -192,13 +188,6 @@ per-machine in `.dev.vars`.
 | `UPSTREAM_TIMEOUT_MS` | `180000` | Time-to-first-byte budget only; never caps an in-flight stream |
 | `REASONING_EFFORT` | unset | `minimal` \| `low` \| `medium` \| `high` — omitted when unset |
 | `SYSTEM_PROMPT` | built-in | Replaces the default system prompt |
-| `OPENROUTER_API_KEY` | — | **Secret.** Arms the free-tier backup text gateway |
-| `OPENROUTER_ENABLED` | armed | Kill switch; only the exact string `"false"` disables |
-| `OPENROUTER_MODEL` | `z-ai/glm-5.2:free` | What the backup serves. A `:free` id — verified by `npm run probe:openrouter`, since free ids rotate |
-| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | Backup base; trailing slashes trimmed |
-| `OPENROUTER_TOKEN_PARAM` | `max_tokens` | `max_completion_tokens` if the gateway wants the newer name — a fact `npm run probe:openrouter` establishes, not one this code can know |
-| `OPENROUTER_REASONING_EFFORT` | armed | `"false"` stops forwarding `reasoning_effort` to the backup |
-| `OPENROUTER_VISION` | unset | `"true"` declares the backup model image-capable, letting image turns cross to it. Leave unset until the probe's catalog confirms image input |
 | `POLLINATIONS_API_KEY` | — | **Secret.** Arms the backup image provider. `npm run secret:pollinations` |
 | `POLLINATIONS_ENABLED` | armed | Kill switch; only the exact string `"false"` disables |
 | `POLLINATIONS_MODEL` | `flux` | Backup image model. `turbo` was retired |
@@ -208,11 +197,11 @@ per-machine in `.dev.vars`.
 
 The literal placeholder `sk-replace-me` counts as "not configured", so copying
 `.dev.vars.example` without editing it behaves the same as having no key.
-`pk-replace-me` does the same for Pollinations, `sk-or-replace-me` for OpenRouter.
+`pk-replace-me` does the same for Pollinations.
 
 `POLLINATIONS_API_KEY` is a **secret and never a var**: Pollinations meters by
 account, so a key in `wrangler.jsonc` would be a spendable credential committed
-to git history. Same rule as `OPENROUTER_API_KEY`.
+to git history.
 
 ### Request guardrails
 
@@ -369,9 +358,8 @@ rather than a 429. Budgets consumed: `tool_image` (day) *and* `image`
   "configured": true,
   "ready": {
     "upstream": true, "db": true, "r2": true, "auth": true, "signedUrls": true,
-    "fallback": true, "image": true, "imageFallback": true
+    "image": true, "imageFallback": true
   },
-  "fallbackProvider": "openrouter", "fallbackModel": "z-ai/glm-5.2:free",
   "imageFallbackProvider": "pollinations", "imageFallbackModel": "flux"
 }
 ```
@@ -421,8 +409,8 @@ The image is stored in R2 through the same path as an upload and attached to the
 with no special handling. `file.origin` is `"generated"`, which is what the UI
 keys full-size rendering off — an uploaded attachment stays a 36px chip.
 
-Neither the primary gateway nor OpenRouter's free tier can serve this — no
-`:free` model generates images. Hence a third provider.
+AgentRouter handles text generation, while image generation uses specialized
+diffusion providers (Workers AI / Pollinations).
 
 **It spends a shared budget.** `@cf/black-forest-labs/flux-1-schnell` bills 4.80
 neurons per 512×512 tile plus 9.60 per step, so a 1024×1024 four-step image is
@@ -743,33 +731,16 @@ arrive) and a forwarder for client aborts. On success the forwarder is left
 attached deliberately: a closed tab or a pressed Stop button must cancel the
 upstream generation too.
 
-### Who may fail over, and who gets told
+### Sole Text-Generation Path: AgentRouter
 
-Every request crosses to the backup when the primary fails — Auto and an
-explicit model pick alike. The earlier design scoped the chain by vendor (a
-picked Claude request would fail rather than be answered by a GPT model), and it
-was dropped deliberately: the user chose availability, and the substitution is
-**announced** rather than silent. On a crossover the response carries
-`X-ChatDDB-Upstream` / `X-ChatDDB-Upstream-Model`, the assistant row records the
-gateway that really answered in `model_provider`/`model_used`, an
-`upstream_failover` activity row is written, and — when the user had explicitly
-picked a model — the frontend shows a notice: *"GPT-5.6 Sol is unavailable right
-now — this reply came from X on OpenRouter."* Auto stays quiet, because
-"retries elsewhere" is already what it promises.
+AgentRouter is the application's sole text-generation routing layer. There are no secondary text fallback gateways or cross-provider failover chains. When an upstream text request is initiated:
 
-The one filter left is a capability check, in `chainFor`
-(`worker/failover.ts`):
-
-| Request | Chain | Why |
-| --- | --- | --- |
-| Text turn, any model | Primary → OpenRouter | The substitution is announced, so it is allowed |
-| Image turn, backup not declared vision-capable | Primary only | Forwarding an image to a model that will refuse it spends the user's wait for nothing |
-
-`OPENROUTER_VISION: "true"` is the operator's claim — verified against the
-probe's catalog output — that the backup model takes image parts. It is unset by
-default because an unverified claim is worse than no backup here. Index 0 is
-never filtered, so the chain can never be emptied. `npm run test:failover` pins
-both directions (§10).
+1. `worker/routes/chat.ts` resolves the AgentRouter configuration (`resolveConfig(ctx.env)`), matching the selected model from the registry.
+2. `createChatCompletion` in `worker/provider.ts` manages resilient dispatch directly against AgentRouter, including:
+   - Multi-key rotation across configured keys (`AGENTROUTER_API_KEY`, `AGENTROUTER_API_KEY_2`, `AGENTROUTER_API_KEY_3`) when encountering 401/403 or host unreachable errors.
+   - In-place exponential backoff retries on 429 / 408.
+   - Upstream timeout management (TTFB) and client abort forwarding.
+3. If all attempts or keys are exhausted, an honest error status is returned rather than routing requests to an unvetted or mismatched third-party text provider.
 
 ---
 
@@ -990,18 +961,13 @@ a signed-in tab).
 
 | Script | Asserts |
 | --- | --- |
-| `npm run smoke:failover` | A real `POST /api/chat` survives a dead primary: response headers, the assistant row's `model_used`/`model_provider`, the `upstream_failover` row, the session title |
 | `npm run smoke:image-failover` | Workers AI dead → Pollinations serves: the `image_failover` row, `gen_model` recording the provider that actually drew it, `limitImage` still consumed — then every branch of `classifyPollinations` in the other direction |
 | `npm run smoke:chat-image-tool` | The `generate_image` path: an implicit mid-conversation request attaches an image and consumes a `tool_image` slot; an ordinary question fires nothing; a request past the daily cap gets a plain-text explanation rather than a 429 |
 
-Both failover scripts point the primary at something broken using
-`wrangler dev --var` overrides, so `.dev.vars` is never touched, and both drive
-the backup against a local stub (`npm run stub:gateway`,
-`npm run stub:pollinations`) so no metered credit is spent. Each script's header
-has the exact three-terminal invocation, including the kill-switch run —
-`EXPECT_FAILOVER=0` with `OPENROUTER_ENABLED:false` or
-`POLLINATIONS_ENABLED:false`, which asserts the backup *stops*. A backup that
-cannot be switched off is a dependency, not a backup.
+The image failover script drives the backup against a local stub (`npm run stub:pollinations`)
+so no metered credit is spent. The script's header has the exact invocation,
+including the kill-switch run (`POLLINATIONS_ENABLED:false`), which asserts the backup *stops*.
+A backup that cannot be switched off is a dependency, not a backup.
 
 `smoke:chat-image-tool` is the exception on cost: every case runs a real
 completion through AgentRouter, and its first case draws a real image on the
@@ -1033,15 +999,15 @@ than only that it did.
 
 | Script | Cases |
 | --- | --- |
-| `npm run test:failover` | The retry-vs-crossover branches, `resolveProviders`/`fallbackReady` including the kill switch, and `chainFor` — text turns keep the backup for every model, image turns drop it unless `OPENROUTER_VISION` declares it capable |
+| `npm run test:provider` | 17: AgentRouter provider unit tests (multi-key rotation, retries, abort, error handling) |
 | `npm run smoke:sse-null` | 19: the `data: null` frame through both readers |
 | `npm run smoke:tool-peek` | The lookahead's verdict and byte-identical replay |
 
 Both run under `--experimental-strip-types`, which is what lets a `.mjs` file
 import the Worker's `.ts` modules directly, uncompiled — so the code under test
-is the code that ships. `test:failover` replaces `globalThis.fetch` with a stub
-that counts calls per host, which is how "crossed over on the *first* 503" is
-distinguished from "crossed over eventually".
+is the code that ships. `test:provider` replaces `globalThis.fetch` with a stub
+that counts calls per host to verify multi-key rotation on 401/403/unreachable
+errors and in-place backoff.
 
 `smoke:sse-null` replays a captured Claude stream, null frame in its measured
 mid-stream position, through `peekToolCalls` and `toClientStream`. Both are
@@ -1077,7 +1043,6 @@ several decisions here turn on facts no amount of reading the docs establishes.
 | --- | --- |
 | `npm run probe:vision` | Does `gpt-5.6-sol` accept image content parts? |
 | `AGENTROUTER_MODEL=claude-opus-5 node scripts/probe-*.mjs` | The same four questions, asked of the other registry model. Every probe reads that env var, so a second model is a variable rather than a fork — results in `worker/models.ts` |
-| `npm run probe:openrouter` | What `:free` models exist right now, does the configured one take images, and does a streaming round trip succeed with the production request shape? |
 | `npm run probe:tools` | Does the model call tools reliably, *and* does it do so over a streaming request? |
 | `npm run probe:svg` | Can the model draw a usable technical figure — and does it know when not to? |
 
@@ -1252,10 +1217,10 @@ uses the **`chatddb-f5`** prefix to avoid collisions:
   Since AgentRouter buffers the whole completion before sending anything (§6),
   the pacing that hides that wait is calibrated against one model's timing only.
 - **No authenticated `POST /api/chat` through the picker was run locally.** It
-  needs a Firebase ID token only a signed-in browser can mint, and local
-  `.dev.vars` has no `OPENROUTER_API_KEY`, so there is nothing to cross over to.
-  The crossover rules are pinned by `npm run test:failover` against a stubbed
-  `fetch` instead, and the deployed path was verified in production.
+  needs a Firebase ID token only a signed-in browser can mint.
+  The provider dispatch rules and multi-key rotation are pinned by
+  `npm run test:provider` against a stubbed `fetch`, and the deployed path was
+  verified in production.
 - `errorStream()` in `worker/sse.ts` is exported but unused — pre-flight
   failures are reported as JSON status codes instead, which is the better
   behaviour. It is a leftover, not a dependency.

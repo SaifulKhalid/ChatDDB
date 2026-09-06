@@ -73,8 +73,7 @@ data: [DONE]
 | File | Role |
 | --- | --- |
 | `worker/index.ts` | Routing, request validation, system prompt, error mapping |
-| `worker/provider.ts` | Upstream provider HTTP client — headers, retries, timeout, abort |
-| `worker/failover.ts` | The gateway chain: the primary gateway, then OpenRouter's free tier — and `chainFor`, which drops the backup for image turns unless it is declared vision-capable |
+| `worker/provider.ts` | AgentRouter client — sole text routing layer, multi-key rotation, retries, timeout, abort |
 | `worker/models.ts` | The model registry: ids, vendors, measured capabilities |
 | `worker/images.ts` | The image chain: Workers AI, then Pollinations |
 | `worker/sse.ts` | Normalises upstream SSE to the contract above; peeks for tool calls; gates SVG figures; `parseChunk` guards every upstream parse |
@@ -83,21 +82,18 @@ data: [DONE]
 
 Config lives in `wrangler.jsonc` `vars` (model, base URL, token cap, timeout) and can be overridden per-machine in `.dev.vars`. Full reference in [DOCS.md § 4](DOCS.md#4-configuration).
 
-### Two failover chains
+### Text & Image Generation Architecture
 
-Each of the two things this app asks an outside provider for has a backup behind it. The image backup stays silent; the text backup announces itself.
+The application cleanly separates text and image generation paths:
 
-**Text: primary → OpenRouter free tier.** The primary gateway fails often enough that users noticed. `completeWithFailover` in `worker/failover.ts` sits *above* the stream opener, so it cannot restart a stream that has already delivered bytes — a mid-flight death still surfaces as an SSE error frame. A crossover writes an `upstream_failover` activity row and sets `X-ChatDDB-Upstream`.
+- **Text Chat (AgentRouter as sole routing layer)**: Every text generation request routes strictly through AgentRouter (`worker/provider.ts`). AgentRouter handles API key rotation (`AGENTROUTER_API_KEY`, `AGENTROUTER_API_KEY_2`, `AGENTROUTER_API_KEY_3`) and in-place backoff retries. There are no secondary text fallback gateways or cross-provider failover chains.
+- **Image Generation (Workers AI → Pollinations)**: The Cloudflare free allowance is 10,000 neurons *per account per day*, shared by every signed-in user. `generateImage` in `worker/images.ts` uses Cloudflare Workers AI (`flux-1-schnell`) with automatic crossover to Pollinations (`flux`) on quota exhaustion or model unavailability. Crossovers write an `image_failover` row, and `files.gen_model` records what actually drew the image.
 
-**Images: Workers AI → Pollinations.** The Cloudflare free allowance is 10,000 neurons *per account per day*, shared by every signed-in user, so the first person to spend it used to take image generation down for everyone until 00:00 UTC. `generateImage` in `worker/images.ts` crosses over on exactly two error classes — `image_quota_exhausted` and `image_model_unavailable`, the two that mean *this provider cannot serve right now*. A refusal is deliberately **not** one of them: resubmitting a prompt one safety filter rejected to a provider with a different policy would make the deployment's effective content policy "whichever provider is last on the chain". Crossovers write an `image_failover` row, and `files.gen_model` records what actually drew the image (`pollinations/flux`, not the Cloudflare model id).
+`POLLINATIONS_ENABLED` switches off the image fallback (only `"false"` disarms it).
 
-Both backups are metered, so both are backups rather than peers: a missing primary is an error, not a reason to run entirely on the paid one. `OPENROUTER_ENABLED` and `POLLINATIONS_ENABLED` switch them off, and only the exact string `"false"` does — a typo leaves the backup armed rather than silently removing it.
+### Picking a model
 
-### Picking a model, and what that costs
-
-The composer offers **Auto · DeepSeek · GLM · ChatGPT · Claude**. Auto sends no `model` field, which is what the Worker reads as *you choose*: it resolves `API_PROVIDER_MODEL` and keeps the full failover chain.
-
-Naming a model used to narrow the chain by vendor — a picked Claude request would fail rather than be answered by another vendor's model. That rule was dropped deliberately, in favour of availability with an announcement: every request crosses to the backup when the primary fails, and when the user had *picked* a model the UI says so — *"Claude Opus 5 is unavailable right now — this reply came from X on OpenRouter."* Auto stays quiet, because "retries elsewhere" is already what it promises. The one filter left in `chainFor` is a capability check: an image turn only crosses to a backup declared vision-capable (`OPENROUTER_VISION`), because forwarding an image to a model that will refuse it spends the user's wait for nothing. `scripts/test-failover.mjs` pins both directions.
+The composer offers **Auto · DeepSeek · GLM · ChatGPT · Claude**. All models are served through AgentRouter. Auto sends no `model` field, which the Worker resolves from `AGENTROUTER_MODEL` (or `API_PROVIDER_MODEL`).
 
 `claude-opus-5` was measured with the same probes as the default model, not assumed: vision 3/3, tool calling 10/10 trigger and 5/5 on restraint, round trip, refusal and streaming. One regression is real and is disclosed in the picker rather than hidden — on `probe:svg` phase 2 it stays quiet on 1/8 prompts that deserve no figure where `gpt-5.6-sol` manages 8/8. `DIAGRAM_CLAUSE` was tuned against the other model and does not transfer.
 

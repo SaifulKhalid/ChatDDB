@@ -7,26 +7,18 @@
  * record which gateway actually answered.
  */
 
+import { findModel, type ModelSpec } from './models.ts'
+
 export const DEFAULT_BASE_URL = 'https://agentrouter.org/v1'
 export const DEFAULT_MODEL = 'deepseek-v4-flash'
 export const DEFAULT_USER_AGENT = 'claude-cli/2.1.158 (external, sdk-cli)'
 export const DEFAULT_TIMEOUT_MS = 180_000
 
-export const DEFAULT_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1'
-/**
- * The backup's model. A `:free` id verified against the live catalog by
- * `npm run probe:openrouter` — free ids rotate, so this is a config fact, not
- * a code fact, and `OPENROUTER_MODEL` overrides it without a deploy.
- */
-export const DEFAULT_OPENROUTER_MODEL = 'z-ai/glm-5.2:free'
-
 /**
  * Which gateway a config points at. Labels logs, `chat_messages.model_provider`,
- * and error text. The only place a gateway identity is branched on is `label()`
- * and the attribution headers in `upstreamHeaders` — everything else a gateway
- * can disagree about lives in the `UpstreamConfig` fields.
+ * and internal tracking.
  */
-export type ProviderId = 'provider' | 'openrouter'
+export type ProviderId = 'codecraft' | 'agentrouter' | 'provider'
 
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool'
 
@@ -68,12 +60,14 @@ export interface ChatMessage {
 }
 
 export interface UpstreamConfig {
-  /** Which gateway this is. Never branched on — only logged and recorded. */
+  /** Which gateway this is: 'codecraft' | 'agentrouter' */
   provider: ProviderId
   /** One or more API keys. Tried in order; the next is used when one fails. */
   apiKeys: string[]
   baseUrl: string
   model: string
+  /** Product-friendly public name for user-facing error messages, e.g. 'GPT-5.3', 'DeepSeek' */
+  publicName?: string
   /** Omitted entirely when unset, for gateways with no client whitelist. */
   userAgent?: string
   /** The token cap parameter this gateway takes; omitted when 0. */
@@ -83,12 +77,6 @@ export interface UpstreamConfig {
   reasoningEffort?: string
   /** False for a gateway that rejects the whole request over `reasoning_effort`. */
   sendReasoningEffort: boolean
-  /**
-   * Operator's verified claim that this gateway's model accepts image content
-   * parts. Absent on the primary (whose models each carry a registry `vision`
-   * flag); on the backup it gates whether image turns may cross over to it —
-   * see `chainFor` in `failover.ts`.
-   */
   visionCapable?: boolean
   /** Applies to time-to-first-byte only, never to an in-flight stream. */
   timeoutMs: number
@@ -96,7 +84,6 @@ export interface UpstreamConfig {
 
 export type ProviderConfig = UpstreamConfig
 export type AgentRouterConfig = UpstreamConfig
-export type OpenRouterConfig = UpstreamConfig
 
 /** The API key is missing, so the backend cannot serve completions. */
 export class NotConfiguredError extends Error {
@@ -129,7 +116,12 @@ export class UpstreamError extends Error {
   }
 }
 
-interface EnvLike {
+export interface EnvLike {
+  CODECRAFT_API_KEY?: string
+  CODECRAFT_BASE_URL?: string
+  CODECRAFT_MODEL_CHATGPT?: string
+  CODECRAFT_MODEL_GEMINI?: string
+  CODECRAFT_MODEL_CLAUDE?: string
   PROVIDER_API_KEY?: string
   PROVIDER_API_KEY_2?: string
   PROVIDER_API_KEY_3?: string
@@ -145,14 +137,6 @@ interface EnvLike {
   MAX_OUTPUT_TOKENS?: string
   REASONING_EFFORT?: string
   UPSTREAM_TIMEOUT_MS?: string
-  // ---- OpenRouter backup --------------------------------------------------
-  OPENROUTER_API_KEY?: string
-  OPENROUTER_BASE_URL?: string
-  OPENROUTER_MODEL?: string
-  OPENROUTER_ENABLED?: string
-  OPENROUTER_TOKEN_PARAM?: string
-  OPENROUTER_REASONING_EFFORT?: string
-  OPENROUTER_VISION?: string
 }
 
 function intVar(raw: string | undefined, fallback: number): number {
@@ -163,12 +147,12 @@ function intVar(raw: string | undefined, fallback: number): number {
 function collectApiKeys(env: EnvLike): string[] {
   const keys: string[] = []
   const candidates = [
-    env.PROVIDER_API_KEY,
-    env.PROVIDER_API_KEY_2,
-    env.PROVIDER_API_KEY_3,
     env.AGENTROUTER_API_KEY,
     env.AGENTROUTER_API_KEY_2,
     env.AGENTROUTER_API_KEY_3,
+    env.PROVIDER_API_KEY,
+    env.PROVIDER_API_KEY_2,
+    env.PROVIDER_API_KEY_3,
   ]
   for (const raw of candidates) {
     const trimmed = raw?.trim()
@@ -179,88 +163,224 @@ function collectApiKeys(env: EnvLike): string[] {
   return keys
 }
 
-export function resolveConfig(env: EnvLike): UpstreamConfig {
+export const DEFAULT_CODECRAFT_BASE_URL = 'https://codecraftapi.com/v1'
+export const CODECRAFT_CHAT_URL = `${DEFAULT_CODECRAFT_BASE_URL}/chat/completions`
+
+interface CachedModels {
+  models: string[]
+  fetchedAt: number
+}
+let codecraftModelCache: CachedModels | null = null
+const MODEL_CACHE_TTL_MS = 10 * 60 * 1000 // 10 minutes
+
+/**
+ * Dynamic model discovery: queries CodeCraft's GET /v1/models endpoint when available.
+ * Cached in memory with a 10-minute TTL to avoid adding request latency.
+ * Falls back cleanly to static model definitions if discovery fails.
+ */
+export async function fetchCodeCraftModels(env: EnvLike, force = false): Promise<string[]> {
+  const now = Date.now()
+  if (!force && codecraftModelCache && (now - codecraftModelCache.fetchedAt < MODEL_CACHE_TTL_MS)) {
+    return codecraftModelCache.models
+  }
+  const rawKey = env.CODECRAFT_API_KEY?.trim()
+  const apiKey = rawKey
+    ? rawKey.replace(/^["']|["']$/g, '').replace(/^Bearer\s+/i, '').trim()
+    : undefined
+  if (!apiKey || apiKey === 'cc-replace-me') {
+    return []
+  }
+  const baseUrl = (env.CODECRAFT_BASE_URL?.trim() || DEFAULT_CODECRAFT_BASE_URL).replace(/\/+$/, '')
+  try {
+    const res = await fetch(`${baseUrl}/models`, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!res.ok) return codecraftModelCache?.models ?? []
+    const data = (await res.json()) as { data?: Array<{ id: string }> }
+    if (Array.isArray(data?.data)) {
+      const ids = data.data.map((m) => m.id).filter(Boolean)
+      codecraftModelCache = { models: ids, fetchedAt: now }
+      return ids
+    }
+  } catch (err) {
+    console.warn('[chatddb] CodeCraft model discovery failed:', describe(err))
+  }
+  return codecraftModelCache?.models ?? []
+}
+
+export function resolveCodeCraftConfig(env: EnvLike, modelOrKey?: ModelSpec | string): UpstreamConfig {
+  const rawKey = env.CODECRAFT_API_KEY?.trim()
+  const apiKey = rawKey
+    ? rawKey
+        .replace(/^["']|["']$/g, '')
+        .replace(/^Bearer\s+/i, '')
+        .trim()
+    : undefined
+  const spec = typeof modelOrKey === 'object' ? modelOrKey : (findModel(modelOrKey) ?? findModel('gpt-5.6-sol'))
+  const publicName = spec?.modelId ?? spec?.publicName ?? 'gpt-5.6-sol'
+  const shortName = spec?.modelId ?? spec?.short ?? publicName
+
+  if (!apiKey || apiKey === 'cc-replace-me') {
+    console.warn('[chatddb] CodeCraft provider is not configured: CODECRAFT_API_KEY missing')
+    throw new NotConfiguredError(
+      `${shortName} is temporarily unavailable.`,
+    )
+  }
+  const baseUrl = (env.CODECRAFT_BASE_URL?.trim() || DEFAULT_CODECRAFT_BASE_URL).replace(/\/+$/, '')
+
+  // Resolve model ID with optional environment overrides
+  let model: string
+  if (spec?.key === 'chatgpt-5.6' || spec?.modelId === 'gpt-5.6-sol') {
+    model = env.CODECRAFT_MODEL_CHATGPT?.trim() || spec?.modelId || 'gpt-5.6-sol'
+  } else if (spec?.key === 'gemini-3.7' || spec?.modelId === 'gemini-3.7-flash') {
+    model = env.CODECRAFT_MODEL_GEMINI?.trim() || spec?.modelId || 'gemini-3.7-flash'
+  } else if (spec?.key === 'claude-5' || spec?.modelId === 'claude-opus-5') {
+    model = env.CODECRAFT_MODEL_CLAUDE?.trim() || spec?.modelId || 'claude-opus-5'
+  } else {
+    model = spec?.modelId ?? (typeof modelOrKey === 'string' ? modelOrKey : 'gpt-5.6-sol')
+  }
+
+  return {
+    provider: 'codecraft',
+    apiKeys: [apiKey],
+    baseUrl,
+    model,
+    publicName,
+    tokenParam: 'max_tokens',
+    maxOutputTokens: intVar(env.MAX_OUTPUT_TOKENS, spec?.maxOutputTokens ?? 8192) || 8192,
+    reasoningEffort: undefined,
+    sendReasoningEffort: false,
+    visionCapable: spec?.vision ?? true,
+    timeoutMs: intVar(env.UPSTREAM_TIMEOUT_MS, DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
+  }
+}
+
+export function resolveAgentRouterConfig(env: EnvLike, modelOrKey?: ModelSpec | string): UpstreamConfig {
   const apiKeys = collectApiKeys(env)
   if (apiKeys.length === 0) {
     throw new NotConfiguredError(
-      'No PROVIDER_API_KEY is set. Locally: copy .dev.vars.example to ' +
-        '.dev.vars and paste your key(s). Deployed: npx wrangler secret put PROVIDER_API_KEY.',
+      'No AGENTROUTER_API_KEY or PROVIDER_API_KEY is set. Locally: copy .dev.vars.example to ' +
+        '.dev.vars and paste your key(s). Deployed: npx wrangler secret put AGENTROUTER_API_KEY.',
     )
   }
-  const baseUrl = (env.API_PROVIDER_BASE_URL?.trim() || env.AGENTROUTER_BASE_URL?.trim() || DEFAULT_BASE_URL).replace(/\/+$/, '')
-  const model = env.API_PROVIDER_MODEL?.trim() || env.AGENTROUTER_MODEL?.trim() || DEFAULT_MODEL
-  const userAgent = env.API_PROVIDER_USER_AGENT?.trim() || env.AGENTROUTER_USER_AGENT?.trim() || DEFAULT_USER_AGENT
+  const spec = typeof modelOrKey === 'object' ? modelOrKey : findModel(modelOrKey)
+  const baseUrl = (env.AGENTROUTER_BASE_URL?.trim() || env.API_PROVIDER_BASE_URL?.trim() || DEFAULT_BASE_URL).replace(/\/+$/, '')
+  const model = spec?.modelId ?? (typeof modelOrKey === 'string' && modelOrKey.trim() ? modelOrKey.trim() : env.AGENTROUTER_MODEL?.trim() || env.API_PROVIDER_MODEL?.trim() || DEFAULT_MODEL)
+  const publicName = spec?.modelId ?? spec?.publicName ?? model
+  const userAgent = env.AGENTROUTER_USER_AGENT?.trim() || env.API_PROVIDER_USER_AGENT?.trim() || DEFAULT_USER_AGENT
 
   return {
-    provider: 'provider',
+    provider: 'agentrouter',
     apiKeys,
     baseUrl,
     model,
+    publicName,
     userAgent,
     tokenParam: 'max_completion_tokens',
-    maxOutputTokens: intVar(env.MAX_OUTPUT_TOKENS, 8192),
+    maxOutputTokens: intVar(env.MAX_OUTPUT_TOKENS, spec?.maxOutputTokens ?? 8192) || 8192,
     reasoningEffort: env.REASONING_EFFORT?.trim() || undefined,
-    sendReasoningEffort: true,
+    sendReasoningEffort: Boolean(spec?.reasoning ?? true),
     timeoutMs: intVar(env.UPSTREAM_TIMEOUT_MS, DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
   }
 }
 
-/**
- * The OpenRouter backup, or null when it is unarmed or has no key.
- *
- * Null — never a throw — when unconfigured: the backup is an add-on, and a
- * deployment without it must boot exactly as it did before the backup existed.
- * A *configured-but-unusable* backup (armed, key set, gateway refusing) is a
- * runtime crossover problem, not a boot problem.
- *
- * The kill switch follows the `POLLINATIONS_ENABLED` convention: only the exact
- * string `'false'` disarms, so a typo fails armed rather than silently removing
- * the fallback.
- */
-export function resolveOpenRouterConfig(env: EnvLike): UpstreamConfig | null {
-  if (env.OPENROUTER_ENABLED?.trim() === 'false') return null
-  const apiKey = env.OPENROUTER_API_KEY?.trim()
-  if (!apiKey || apiKey === 'sk-or-replace-me') return null
-
-  const tokenParam =
-    env.OPENROUTER_TOKEN_PARAM?.trim() === 'max_completion_tokens'
-      ? ('max_completion_tokens' as const)
-      : ('max_tokens' as const)
-
-  return {
-    provider: 'openrouter',
-    apiKeys: [apiKey],
-    baseUrl: (env.OPENROUTER_BASE_URL?.trim() || DEFAULT_OPENROUTER_BASE_URL).replace(/\/+$/, ''),
-    model: env.OPENROUTER_MODEL?.trim() || DEFAULT_OPENROUTER_MODEL,
-    // No User-Agent: the claude-cli string is an AgentRouter whitelist
-    // artifact, and `upstreamHeaders` sends OpenRouter's attribution headers
-    // instead. Undefined, not empty — the header set is keyed on its presence.
-    userAgent: undefined,
-    tokenParam,
-    maxOutputTokens: intVar(env.MAX_OUTPUT_TOKENS, 8192),
-    reasoningEffort: env.REASONING_EFFORT?.trim() || undefined,
-    sendReasoningEffort: env.OPENROUTER_REASONING_EFFORT?.trim() !== 'false',
-    // `OPENROUTER_VISION` is the operator's claim, verified by eye or by the
-    // probe — not something this code can know for a free-text model id.
-    visionCapable: env.OPENROUTER_VISION?.trim() === 'true',
-    timeoutMs: intVar(env.UPSTREAM_TIMEOUT_MS, DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
+export function resolveConfig(env: EnvLike, modelOrKey?: ModelSpec | string): UpstreamConfig {
+  if (typeof modelOrKey === 'object') {
+    return modelOrKey.provider === 'codecraft'
+      ? resolveCodeCraftConfig(env, modelOrKey)
+      : resolveAgentRouterConfig(env, modelOrKey)
   }
+  if (typeof modelOrKey === 'string') {
+    const spec = findModel(modelOrKey)
+    if (spec) {
+      return spec.provider === 'codecraft'
+        ? resolveCodeCraftConfig(env, spec)
+        : resolveAgentRouterConfig(env, spec)
+    }
+    if (
+      modelOrKey.startsWith('gpt-') ||
+      modelOrKey.startsWith('gemini-') ||
+      modelOrKey.startsWith('claude-')
+    ) {
+      return resolveCodeCraftConfig(env, modelOrKey)
+    }
+    return resolveAgentRouterConfig(env, modelOrKey)
+  }
+  return resolveAgentRouterConfig(env)
+}
+
+export interface TextProvider {
+  readonly provider: ProviderId
+  readonly config: UpstreamConfig
+  createChatCompletion(messages: ChatMessage[], clientSignal: AbortSignal, options?: CompletionOptions): Promise<Response>
+  generateTitle(exchange: { user: string; assistant: string }, signal?: AbortSignal): Promise<string | null>
+  listModels(clientSignal: AbortSignal): Promise<Response>
+}
+
+export class CodeCraftProvider implements TextProvider {
+  readonly provider = 'codecraft' as const
+  readonly config: UpstreamConfig
+
+  constructor(config: UpstreamConfig) {
+    this.config = config
+  }
+
+  createChatCompletion(messages: ChatMessage[], clientSignal: AbortSignal, options?: CompletionOptions): Promise<Response> {
+    return createChatCompletion(this.config, messages, clientSignal, options)
+  }
+
+  generateTitle(exchange: { user: string; assistant: string }, signal?: AbortSignal): Promise<string | null> {
+    return generateTitle(this.config, exchange, signal)
+  }
+
+  listModels(clientSignal: AbortSignal): Promise<Response> {
+    return listModels(this.config, clientSignal)
+  }
+}
+
+export class AgentRouterProvider implements TextProvider {
+  readonly provider = 'agentrouter' as const
+  readonly config: UpstreamConfig
+
+  constructor(config: UpstreamConfig) {
+    this.config = config
+  }
+
+  createChatCompletion(messages: ChatMessage[], clientSignal: AbortSignal, options?: CompletionOptions): Promise<Response> {
+    return createChatCompletion(this.config, messages, clientSignal, options)
+  }
+
+  generateTitle(exchange: { user: string; assistant: string }, signal?: AbortSignal): Promise<string | null> {
+    return generateTitle(this.config, exchange, signal)
+  }
+
+  listModels(clientSignal: AbortSignal): Promise<Response> {
+    return listModels(this.config, clientSignal)
+  }
+}
+
+export function resolveTextProvider(env: EnvLike, model: ModelSpec): TextProvider {
+  if (model.provider === 'codecraft') {
+    return new CodeCraftProvider(resolveCodeCraftConfig(env, model))
+  }
+  return new AgentRouterProvider(resolveAgentRouterConfig(env, model))
 }
 
 export function upstreamHeaders(cfg: UpstreamConfig, apiKey: string): HeadersInit {
-  return {
+  const headers: Record<string, string> = {
     Authorization: `Bearer ${apiKey}`,
     'Content-Type': 'application/json',
     Accept: 'text/event-stream',
-    ...(cfg.provider === 'openrouter'
-      ? // OpenRouter's optional attribution headers. Free-tier keys rank by app
-        // in the dashboard, and these cost nothing. No User-Agent spoofing: the
-        // claude-cli one is an AgentRouter client-whitelist artifact.
-        { 'HTTP-Referer': 'https://chatddb.app', 'X-Title': 'ChatDDB' }
-      : cfg.userAgent
-        ? { 'User-Agent': cfg.userAgent, 'X-App': 'cli' }
-        : {}),
   }
+  if (cfg.userAgent) {
+    headers['User-Agent'] = cfg.userAgent
+    headers['X-App'] = 'cli'
+  }
+  return headers
 }
 
 function buildBody(cfg: UpstreamConfig, messages: ChatMessage[], tools?: ToolDefinition[]): string {
@@ -268,7 +388,9 @@ function buildBody(cfg: UpstreamConfig, messages: ChatMessage[], tools?: ToolDef
     model: cfg.model,
     messages,
     stream: true,
-    stream_options: { include_usage: true },
+  }
+  if (cfg.provider === 'agentrouter') {
+    body.stream_options = { include_usage: true }
   }
   if (cfg.maxOutputTokens > 0) body[cfg.tokenParam] = cfg.maxOutputTokens
   if (cfg.reasoningEffort && cfg.sendReasoningEffort) body.reasoning_effort = cfg.reasoningEffort
@@ -547,6 +669,7 @@ function cleanTitle(raw: string): string {
 interface UpstreamErrorBody {
   message: string
   type: string
+  retryAfter?: string | null
 }
 
 async function readError(cfg: UpstreamConfig, res: Response): Promise<UpstreamErrorBody> {
@@ -556,6 +679,7 @@ async function readError(cfg: UpstreamConfig, res: Response): Promise<UpstreamEr
   } catch {
     /* body already gone */
   }
+  const retryAfter = res.headers.get('retry-after')
   try {
     const json = JSON.parse(text) as {
       error?: { message?: string; type?: string }
@@ -564,18 +688,18 @@ async function readError(cfg: UpstreamConfig, res: Response): Promise<UpstreamEr
     }
     const message = json.error?.message ?? json.message ?? text
     const type = json.error?.type ?? json.type ?? 'upstream_error'
-    return { message: String(message).slice(0, 600), type }
+    return { message: String(message).slice(0, 600), type, retryAfter }
   } catch {
     return {
       message: text.slice(0, 300) || `${label(cfg)} returned HTTP ${res.status}`,
       type: 'upstream_non_json',
+      retryAfter,
     }
   }
 }
 
-/** The one place a gateway identity is branched on, for logs and error text. */
 function label(cfg: UpstreamConfig): string {
-  return cfg.provider === 'openrouter' ? 'OpenRouter' : 'API Provider'
+  return cfg.publicName || cfg.model
 }
 
 function toUpstreamError(
@@ -583,42 +707,83 @@ function toUpstreamError(
   upstreamStatus: number,
   detail: UpstreamErrorBody,
 ): UpstreamError {
-  if (detail.type === 'unauthorized_client_error') {
+  const modelName = cfg.publicName || cfg.model
+
+  // Log internal diagnostic for debugging without leaking to end-user
+  console.error(
+    '[chatddb] provider=%s model=%s status=%d errorType=%s message=%s',
+    cfg.provider,
+    cfg.model,
+    upstreamStatus,
+    detail.type,
+    detail.message,
+  )
+
+  if (
+    upstreamStatus === 402 ||
+    (upstreamStatus === 403 && /wallet|balance|plan|subscription|quota|paying customers/i.test(detail.message))
+  ) {
     return new UpstreamError(
-      `${label(cfg)} rejected this client. Check the API_PROVIDER_USER_AGENT variable.`,
+      `${modelName} service is temporarily unavailable due to quota or balance limits. Please verify account balance or try again later.`,
       500,
-      upstreamStatus,
-      detail.type,
-    )
-  }
-  if (upstreamStatus === 401 || upstreamStatus === 403) {
-    return new UpstreamError(
-      `${label(cfg)} rejected the API key (${detail.message}). Please verify your PROVIDER_API_KEY.`,
-      500,
-      upstreamStatus,
-      'invalid_api_key',
-    )
-  }
-  if (upstreamStatus === 402) {
-    return new UpstreamError(
-      `${label(cfg)} quota or budget pool exhausted: ${detail.message}`,
-      402,
       upstreamStatus,
       'quota_exhausted',
       true,
     )
   }
-  if (upstreamStatus === 429) {
+  if (detail.type === 'unauthorized_client_error' || upstreamStatus === 401) {
     return new UpstreamError(
-      `${label(cfg)} rate limit or quota reached: ${detail.message}`,
+      `${modelName} service is temporarily unavailable. Please verify configuration or try again.`,
+      500,
+      upstreamStatus,
+      'invalid_api_key',
+    )
+  }
+  if (upstreamStatus === 403) {
+    return new UpstreamError(
+      `${modelName} access is forbidden. Please verify account permissions or model access.`,
+      500,
+      upstreamStatus,
+      'forbidden',
+    )
+  }
+  if (upstreamStatus === 404) {
+    return new UpstreamError(
+      `${modelName} (${cfg.model}) was not found on the upstream provider. Please select another model.`,
+      404,
+      upstreamStatus,
+      'model_not_found',
+    )
+  }
+  if (upstreamStatus === 422) {
+    return new UpstreamError(
+      `Unable to process request with ${modelName}. Parameter validation failed.`,
+      422,
+      upstreamStatus,
+      'validation_error',
+    )
+  }
+  if (upstreamStatus === 429) {
+    const retryMsg = detail.retryAfter ? ` Please retry after ${detail.retryAfter}s.` : ' Please try again shortly.'
+    return new UpstreamError(
+      `${modelName} is temporarily rate limited.${retryMsg}`,
       429,
       upstreamStatus,
       'rate_limited',
     )
   }
+  if (upstreamStatus === 502) {
+    return new UpstreamError(
+      `${modelName} gateway reported an upstream provider error. Please try again or switch models.`,
+      502,
+      upstreamStatus,
+      'upstream_provider_error',
+      true,
+    )
+  }
   if (upstreamStatus === 400 && /model/i.test(detail.message)) {
     return new UpstreamError(
-      `${label(cfg)} will not serve this model: ${detail.message}. Check GET /api/models for what the key can access.`,
+      `${modelName} is currently unavailable. Please select another model.`,
       400,
       upstreamStatus,
       'model_unavailable',
@@ -626,7 +791,9 @@ function toUpstreamError(
   }
   const ourFault = upstreamStatus >= 400 && upstreamStatus < 500
   return new UpstreamError(
-    detail.message,
+    ourFault
+      ? `Unable to complete request with ${modelName}. Please check your prompt or switch models.`
+      : `${modelName} is temporarily unavailable. Please try again or switch models.`,
     upstreamStatus === 400 ? 400 : 500,
     upstreamStatus,
     detail.type,

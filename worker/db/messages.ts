@@ -47,13 +47,23 @@ export interface PublicMessage {
   tokens?: { prompt: number | null; completion: number | null; total: number | null; source: TokenSource | null }
 }
 
+function toPublicModelKey(modelUsed: string | null | undefined): string | null | undefined {
+  if (!modelUsed) return modelUsed
+  if (modelUsed.includes('gpt-5.6') || modelUsed.includes('sol') || modelUsed === 'chatgpt-5.6' || modelUsed === 'gpt' || modelUsed === 'gpt-5.6-sol') return 'gpt-5.6-sol'
+  if (modelUsed.includes('gemini') || modelUsed === 'gemini-3.7' || modelUsed === 'gemini-3.7-flash') return 'gemini-3.7-flash'
+  if (modelUsed.includes('claude') || modelUsed === 'claude-5' || modelUsed === 'claude-opus-5') return 'claude-opus-5'
+  if (modelUsed.includes('glm') || modelUsed === 'glm' || modelUsed === 'glm-5.3') return 'glm-5.3'
+  if (modelUsed.includes('deepseek') || modelUsed === 'deepseek' || modelUsed === 'deepseek-v4-flash') return 'deepseek-v4-flash'
+  return modelUsed
+}
+
 export function toPublicMessage(row: MessageRow): PublicMessage {
   return {
     id: row.id,
     role: row.role,
     content: row.message_content,
     createdAt: row.created_at,
-    model: row.model_used,
+    model: toPublicModelKey(row.model_used),
     attachmentCount: row.attachment_count,
     error: row.error,
     finishReason: row.finish_reason,
