@@ -170,23 +170,41 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
   async function runTurn(input: TurnInput) {
     if (streaming) return
     setError(null)
-    // A crossover notice belongs to the turn it happened in; the next turn
-    // starts from a clean slate unless the backup answers again.
     setNotice(null)
 
-    // ---- 1. Make sure a session exists BEFORE streaming -----------------
+    // ---- 1. Ensure session exists — optimistic for new chats ------------
     let sessionId = latest.current.activeId
+    let tempId: string | null = null
     if (!sessionId) {
       if (input.kind !== 'send') return
-      // Every call site is `void runTurn(...)`, so a throw here would surface as
-      // an unhandled rejection instead of a banner.
+      tempId = `temp-${newId()}`
+      const optimisticConv: Conversation = {
+        id: tempId,
+        title: 'New chat',
+        titleSource: 'placeholder',
+        messages: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }
+      setConversations((prev) => [optimisticConv, ...prev])
+      loadedRef.current.add(tempId)
+      setActiveId(tempId)
+      sessionId = tempId
+      // Now create real session in background
       try {
         const created = await createSession()
-        sessionId = created.id
-        setConversations((prev) => [toConversation(created), ...prev])
-        loadedRef.current.add(created.id)
-        setActiveId(created.id)
+        const realId = created.id
+        // Replace temp id with real id
+        setConversations((prev) => prev.map((c) => c.id === tempId ? { ...toConversation(created), messages: c.messages } : c))
+        loadedRef.current.delete(tempId!)
+        loadedRef.current.add(realId)
+        setActiveId(realId)
+        sessionId = realId
       } catch (err) {
+        // Remove optimistic conversation on failure
+        setConversations((prev) => prev.filter((c) => c.id !== tempId))
+        loadedRef.current.delete(tempId!)
+        setActiveId(null)
         setError(errorText(err))
         return
       }
@@ -194,7 +212,6 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
     const sid = sessionId
 
     // ---- 2. Optimistic local mutation -----------------------------------
-    // Resolved before the tray is cleared, so the sent message keeps its chips.
     const sentFiles: PublicFile[] =
       input.kind === 'send' && input.attachments?.length
         ? input.attachments
@@ -231,6 +248,26 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
 
     let acc = ''
     let targetId = assistantLocalId
+    // Throttled commits: accumulate immediately, flush to React at most once per frame.
+    let pendingAcc: string | null = null
+    let raf: number | null = null
+    let scheduled = false
+
+    const flush = () => {
+      scheduled = false
+      raf = null
+      if (pendingAcc === null || ctrl.signal.aborted) return
+      const snapshot = pendingAcc
+      pendingAcc = null
+      const tid = targetId
+      setMessages(sid, (m) =>
+        m.map((x) => (x.id === tid ? { ...x, content: snapshot } : x)))
+    }
+    const scheduleFlush = () => {
+      if (scheduled) return
+      scheduled = true
+      raf = requestAnimationFrame(flush)
+    }
 
     try {
       // `model` rides on all three kinds, regenerate included: re-rolling a reply
@@ -294,8 +331,13 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
         if (input.kind === 'send') setPending([])
       })) {
         acc += delta
-        setMessages(sid, (m) =>
-          m.map((x) => (x.id === targetId ? { ...x, content: acc } : x)))
+        pendingAcc = acc
+        scheduleFlush()
+      }
+      // Flush any pending frame before marking complete, unless aborted.
+      if (pendingAcc !== null && !ctrl.signal.aborted) {
+        if (raf !== null) cancelAnimationFrame(raf)
+        flush()
       }
     } catch (err) {
       const msg = ctrl.signal.aborted ? undefined : errorText(err)
@@ -645,8 +687,9 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
         )}
 
         {error && (
-          <div className="mx-3 mt-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">
-            {error}
+          <div className="mx-3 mt-2 flex items-start justify-between gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">
+            <span className="flex-1">{error}</span>
+            <button onClick={() => setError(null)} className="shrink-0 rounded p-1 hover:bg-red-500/10" aria-label="Dismiss">✕</button>
           </div>
         )}
 

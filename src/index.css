@@ -4,7 +4,7 @@
 
 @theme {
   --font-sans:
-    ui-sans-serif, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    'Inter', ui-sans-serif, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
     sans-serif;
   --font-mono:
     ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
@@ -34,11 +34,16 @@ html,
 body,
 #root {
   height: 100%;
+  height: 100dvh;
 }
 
 body {
   @apply bg-surface text-ink antialiased;
   overscroll-behavior: none;
+  font-feature-settings: 'cv02','cv03','cv04','cv11';
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* ---- Scrollbars ---- */
@@ -93,8 +98,9 @@ body {
 
 /* ---- Markdown content ---- */
 .markdown {
-  line-height: 1.75;
+  line-height: 1.7;
   word-break: break-word;
+  font-size: 0.9375rem;
 }
 .markdown > *:first-child {
   margin-top: 0;
@@ -109,17 +115,19 @@ body {
 .markdown h2,
 .markdown h3,
 .markdown h4 {
-  font-weight: 600;
-  margin: 1.25rem 0 0.5rem;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  margin: 1.5rem 0 0.6rem;
+  line-height: 1.3;
 }
 .markdown h1 {
-  font-size: 1.35rem;
+  font-size: 1.5rem;
 }
 .markdown h2 {
-  font-size: 1.2rem;
+  font-size: 1.25rem;
 }
 .markdown h3 {
-  font-size: 1.05rem;
+  font-size: 1.1rem;
 }
 .markdown ul,
 .markdown ol {
@@ -523,3 +531,29 @@ body {
   color: #ffdcd7;
   background-color: #67060c;
 }
+
+/* ---- Reduced motion ---- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+  .stream-cursor::after { animation: none; opacity: 0.6; }
+}
+
+/* ---- Composer safe area ---- */
+.composer-wrap {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
+/* ---- Message appear ---- */
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.msg-appear { animation: msg-in 180ms ease-out; }
+@media (prefers-reduced-motion: reduce) { .msg-appear { animation: none; } }
+
+/* ---- Thinking → content crossfade ---- */
+.thinking-fade { animation: thinking-fade 200ms ease-out; }
+@keyframes thinking-fade { from { opacity: 0; } to { opacity: 1; } }

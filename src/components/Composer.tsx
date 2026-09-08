@@ -67,6 +67,11 @@ export function Composer({
     .filter(Boolean)
     .join(',')
 
+  // Auto-focus on mount and when streaming ends
+  useEffect(() => {
+    if (!disabled && !streaming) textareaRef.current?.focus()
+  }, [disabled, streaming])
+
   // Auto-resize up to a max height
   useEffect(() => {
     const el = textareaRef.current
@@ -114,7 +119,7 @@ export function Composer({
       : 'Attach files'
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-3 pb-3 md:px-4 md:pb-5">
+    <div className="composer-wrap mx-auto w-full max-w-3xl px-3 pb-3 md:px-4">
       {/* Above the tray, not below it: the tray belongs to the message being
           composed and reads best next to the input, while this is a setting that
           outlives the message. */}

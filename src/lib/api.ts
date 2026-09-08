@@ -136,7 +136,7 @@ export async function* streamChat(
 /** Deltas at or below this length already look like real streaming. */
 const PACE_MIN_CHARS = 24
 /** Roughly how long one oversized delta is spread across. */
-const PACE_BUDGET_MS = 700
+const PACE_BUDGET_MS = 400
 
 /**
  * Renders a delta progressively instead of all at once.

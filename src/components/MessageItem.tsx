@@ -1,44 +1,13 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import remarkMath from 'remark-math'
-import rehypeHighlight from 'rehype-highlight'
-import rehypeKatex from 'rehype-katex'
-import type { Components, Options } from 'react-markdown'
 import { Download, Loader2, Pencil, RotateCcw } from 'lucide-react'
 import type { Message } from '../types'
 import type { PublicFile } from '../lib/apiTypes'
 import { Logo } from './Logo'
 import { CopyButton } from './CopyButton'
-import { CodeBlock } from './CodeBlock'
-import { MarkdownErrorBoundary } from './MarkdownErrorBoundary'
 import { AttachmentChip, chipFromPublicFile } from './AttachmentChip'
 import { ThinkingIndicator } from './ThinkingIndicator'
+import { StreamingMarkdown } from './StreamingMarkdown'
 import { useSignedImageUrl, viewUrl } from '../lib/fileUrl'
-import { normalizeMathDelimiters } from '../lib/mathDelimiters'
-import { StreamingContext } from '../lib/streamingContext'
-
-const MARKDOWN_COMPONENTS: Components = { pre: CodeBlock }
-
-/**
- * `singleDollarTextMath: false` keeps prose dollars literal — "$5 and then $10"
- * would otherwise parse as a formula. `\(…\)` inline math is normalised to `$$`
- * upstream by `normalizeMathDelimiters`, so nothing is lost.
- */
-const REMARK_PLUGINS: Options['remarkPlugins'] = [
-  remarkGfm,
-  [remarkMath, { singleDollarTextMath: false }],
-]
-
-/**
- * `throwOnError: false` makes KaTeX emit a `.katex-error` span for malformed
- * LaTeX rather than throwing — which matters most mid-stream, when every
- * formula is briefly half-written.
- */
-const REHYPE_PLUGINS: Options['rehypePlugins'] = [
-  [rehypeKatex, { throwOnError: false, errorColor: 'currentColor' }],
-  rehypeHighlight,
-]
 
 interface MessageItemProps {
   message: Message
@@ -295,9 +264,6 @@ function AssistantMessage({
   onRegenerate?: () => void
 }) {
   const showActions = !message.streaming && (message.content.length > 0 || !!message.error)
-  // `\[…\]` / `\(…\)` → `$$…$$` before micromark sees the text; remark-math
-  // tokenises dollars at parse time, so this cannot be a remark plugin.
-  const source = useMemo(() => normalizeMathDelimiters(message.content), [message.content])
   const generated = useMemo(
     () => (message.attachments ?? []).filter((f) => f.origin === 'generated'),
     [message.attachments],
@@ -313,23 +279,7 @@ function AssistantMessage({
           <ThinkingIndicator />
         ) : (
           <div className={`markdown ${message.streaming ? 'stream-cursor' : ''}`}>
-            <MarkdownErrorBoundary
-              resetKey={message.content}
-              fallback={<p className="whitespace-pre-wrap">{message.content}</p>}
-            >
-              {/* `SvgFigure` is reached through the static components map, so it
-                  has no props route back to the message. This is the one bit it
-                  needs: whether an unfinished figure is still coming. */}
-              <StreamingContext.Provider value={!!message.streaming}>
-                <ReactMarkdown
-                  remarkPlugins={REMARK_PLUGINS}
-                  rehypePlugins={REHYPE_PLUGINS}
-                  components={MARKDOWN_COMPONENTS}
-                >
-                  {source}
-                </ReactMarkdown>
-              </StreamingContext.Provider>
-            </MarkdownErrorBoundary>
+            <StreamingMarkdown content={message.content} streaming={!!message.streaming} />
           </div>
         )}
         {generated.map((file) => (
