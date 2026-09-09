@@ -189,7 +189,8 @@ export function AdminUsers({ onOpenSession }: { onOpenSession?: (sessionId: stri
               No users match the search criteria.
             </div>
           ) : (
-            <table className="w-full text-xs">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[650px] text-xs">
               <thead>
                 <tr className="sticky top-0 z-10 border-b border-line bg-surface-2 text-[11px] font-semibold text-ink-2">
                   <th className="px-4 py-2.5 text-left">User</th>
@@ -308,6 +309,7 @@ export function AdminUsers({ onOpenSession }: { onOpenSession?: (sessionId: stri
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </div>
 

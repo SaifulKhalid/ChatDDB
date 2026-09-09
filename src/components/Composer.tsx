@@ -113,30 +113,13 @@ export function Composer({
   }
 
   const attachTitle = !canAttach
-    ? 'This model does not support attachments'
+    ? 'This AI service does not support attachments'
     : atMaxAttachments
       ? 'Maximum attachments reached'
       : 'Attach files'
 
   return (
     <div className="composer-wrap mx-auto w-full max-w-3xl px-3 pb-3 md:px-4">
-      {/* Above the tray, not below it: the tray belongs to the message being
-          composed and reads best next to the input, while this is a setting that
-          outlives the message. */}
-      {models && models.length > 1 && onModelChange && (
-        <ModelPicker
-          models={models}
-          value={model}
-          onChange={onModelChange}
-          disabled={disabled || imageMode}
-          disabledReason={
-            imageMode
-              ? 'Image mode does not use a chat model — switch back to chat to pick one.'
-              : undefined
-          }
-        />
-      )}
-
       {attachments && attachments.length > 0 && onRemoveAttachment && (
         <AttachmentTray items={attachments} onRemove={onRemoveAttachment} />
       )}
@@ -161,7 +144,7 @@ export function Composer({
           e.currentTarget.classList.remove('border-accent')
           if (e.dataTransfer.files.length > 0) handleFiles(e.dataTransfer.files)
         }}
-        className={`flex items-end gap-2 rounded-[26px] border bg-surface-2 p-2 shadow-sm ${
+        className={`flex flex-col rounded-[24px] border bg-surface-2 p-1.5 shadow-sm transition-colors ${
           imageMode
             ? 'border-accent focus-within:border-accent'
             : 'border-line focus-within:border-ink-2/40'
@@ -180,47 +163,6 @@ export function Composer({
           }}
         />
 
-        {/* Attach button */}
-        {canAttach && (
-          <button
-            type="button"
-            disabled={disabled || streaming || atMaxAttachments}
-            onClick={() => fileInputRef.current?.click()}
-            className="flex size-9 shrink-0 items-center justify-center rounded-full text-ink-2 transition-colors hover:bg-surface-3 hover:text-ink disabled:opacity-30"
-            title={attachTitle}
-            aria-label={attachTitle}
-          >
-            <Paperclip size={18} />
-          </button>
-        )}
-
-        {/* Image-generation toggle */}
-        {canGenerateImages && onToggleImageMode && (
-          <button
-            type="button"
-            disabled={disabled || streaming}
-            onClick={onToggleImageMode}
-            aria-pressed={imageMode}
-            className={`flex size-9 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-30 ${
-              imageMode
-                ? 'bg-accent text-surface'
-                : 'text-ink-2 hover:bg-surface-3 hover:text-ink'
-            }`}
-            // "Generate an image" read as *the* way to get an image, which is
-            // wrong: the model also calls generate_image off a plain description
-            // in a normal message. The tooltip has room to say so; the
-            // aria-label stays short and describes the switch, not exclusivity.
-            title={
-              imageMode
-                ? 'Switch back to chat'
-                : 'Image mode — every message generates an image. You can also just describe a picture in a normal message.'
-            }
-            aria-label={imageMode ? 'Switch back to chat' : 'Switch to image mode'}
-          >
-            <ImagePlus size={18} />
-          </button>
-        )}
-
         <textarea
           ref={textareaRef}
           value={text}
@@ -238,33 +180,92 @@ export function Composer({
           rows={1}
           placeholder={imageMode ? 'Describe an image to generate' : 'Message ChatDDB'}
           aria-label={imageMode ? 'Describe an image to generate' : 'Message ChatDDB'}
-          className="max-h-[200px] flex-1 resize-none bg-transparent px-2 py-1.5 outline-none placeholder:text-ink-2"
+          className="min-h-[44px] max-h-[200px] w-full resize-none bg-transparent px-3 pt-2 pb-1 text-sm text-ink outline-none placeholder:text-ink-2"
         />
-        {streaming ? (
-          <button
-            type="button"
-            onClick={onStop}
-            className="flex size-9 shrink-0 items-center justify-center rounded-full bg-ink text-surface hover:opacity-80"
-            aria-label="Stop generating"
-            title="Stop generating"
-          >
-            <Square size={14} fill="currentColor" />
-          </button>
-        ) : (
-          <button
-            type="submit"
-            disabled={
-              imageMode
-                ? !text.trim() || disabled
-                : (!text.trim() && readyAttachments.length === 0) || disabled || hasBusyAttachment
-            }
-            className="flex size-9 shrink-0 items-center justify-center rounded-full bg-ink text-surface transition-opacity hover:opacity-80 disabled:opacity-25"
-            aria-label={imageMode ? 'Generate image' : 'Send message'}
-            title={imageMode ? 'Generate image' : 'Send message'}
-          >
-            <ArrowUp size={18} />
-          </button>
-        )}
+
+        {/* Bottom controls row */}
+        <div className="flex items-center justify-between gap-1.5 px-1.5 pb-1 pt-0.5">
+          {/* Left: Attach & Image generation toggle */}
+          <div className="flex items-center gap-1">
+            {canAttach && (
+              <button
+                type="button"
+                disabled={disabled || streaming || atMaxAttachments}
+                onClick={() => fileInputRef.current?.click()}
+                className="flex size-8 shrink-0 items-center justify-center rounded-full text-ink-2 transition-colors hover:bg-surface-3 hover:text-ink disabled:opacity-30"
+                title={attachTitle}
+                aria-label={attachTitle}
+              >
+                <Paperclip size={17} />
+              </button>
+            )}
+
+            {canGenerateImages && onToggleImageMode && (
+              <button
+                type="button"
+                disabled={disabled || streaming}
+                onClick={onToggleImageMode}
+                aria-pressed={imageMode}
+                className={`flex size-8 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-30 ${
+                  imageMode
+                    ? 'bg-accent text-surface'
+                    : 'text-ink-2 hover:bg-surface-3 hover:text-ink'
+                }`}
+                title={
+                  imageMode
+                    ? 'Switch back to chat'
+                    : 'Image mode — every message generates an image. You can also just describe a picture in a normal message.'
+                }
+                aria-label={imageMode ? 'Switch back to chat' : 'Switch to image mode'}
+              >
+                <ImagePlus size={17} />
+              </button>
+            )}
+          </div>
+
+          {/* Right: AI Service Picker + Send/Stop button */}
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            {models && models.length > 1 && onModelChange && (
+              <ModelPicker
+                models={models}
+                value={model}
+                onChange={onModelChange}
+                disabled={disabled || imageMode}
+                disabledReason={
+                  imageMode
+                    ? 'Image mode does not use an AI service — switch back to chat to pick one.'
+                    : undefined
+                }
+              />
+            )}
+
+            {streaming ? (
+              <button
+                type="button"
+                onClick={onStop}
+                className="flex size-8 shrink-0 items-center justify-center rounded-full bg-ink text-surface hover:opacity-80 active:scale-95"
+                aria-label="Stop generating"
+                title="Stop generating"
+              >
+                <Square size={13} fill="currentColor" />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={
+                  imageMode
+                    ? !text.trim() || disabled
+                    : (!text.trim() && readyAttachments.length === 0) || disabled || hasBusyAttachment
+                }
+                className="flex size-8 shrink-0 items-center justify-center rounded-full bg-ink text-surface transition-all hover:opacity-80 active:scale-95 disabled:opacity-25"
+                aria-label={imageMode ? 'Generate image' : 'Send message'}
+                title={imageMode ? 'Generate image' : 'Send message'}
+              >
+                <ArrowUp size={17} />
+              </button>
+            )}
+          </div>
+        </div>
       </form>
       <p className="pt-2 text-center text-xs text-ink-2">
         Thank you for believing in LabDDB

@@ -940,7 +940,7 @@ function ServiceModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="w-full max-w-md rounded-2xl border border-line bg-surface p-5 shadow-xl space-y-4">
+      <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-2xl border border-line bg-surface p-5 shadow-xl space-y-4">
         <div className="flex items-center justify-between border-b border-line pb-3">
           <h3 className="font-bold text-ink">Edit AI Service: {service.public_name}</h3>
           <button onClick={onClose} className="text-ink-2 hover:text-ink">
@@ -1104,7 +1104,7 @@ function ProviderModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="w-full max-w-md rounded-2xl border border-line bg-surface p-5 shadow-xl space-y-4">
+      <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-2xl border border-line bg-surface p-5 shadow-xl space-y-4">
         <div className="flex items-center justify-between border-b border-line pb-3">
           <h3 className="font-bold text-ink">
             {isNew ? 'Add API Provider' : `Edit Provider: ${provider?.label}`}
@@ -1286,7 +1286,7 @@ function RouteModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="w-full max-w-md rounded-2xl border border-line bg-surface p-5 shadow-xl space-y-4">
+      <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-2xl border border-line bg-surface p-5 shadow-xl space-y-4">
         <div className="flex items-center justify-between border-b border-line pb-3">
           <h3 className="font-bold text-ink">{isNew ? 'Add AI Route' : 'Edit AI Route'}</h3>
           <button onClick={onClose} className="text-ink-2 hover:text-ink">

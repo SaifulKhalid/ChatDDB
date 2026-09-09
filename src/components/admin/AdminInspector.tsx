@@ -374,8 +374,8 @@ function ActivityView({
           No audit activity found matching the criteria.
         </div>
       ) : (
-        <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-sm">
-          <table className="w-full text-xs">
+        <div className="overflow-x-auto rounded-2xl border border-line bg-surface shadow-sm">
+          <table className="w-full min-w-[640px] text-xs">
             <thead>
               <tr className="border-b border-line bg-surface-2 text-[11px] font-semibold text-ink-2">
                 <th className="px-4 py-3 text-left">Timestamp</th>
@@ -525,8 +525,8 @@ function SessionsView({
           No conversations found matching query.
         </div>
       ) : (
-        <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-sm">
-          <table className="w-full text-xs">
+        <div className="overflow-x-auto rounded-2xl border border-line bg-surface shadow-sm">
+          <table className="w-full min-w-[640px] text-xs">
             <thead>
               <tr className="border-b border-line bg-surface-2 text-[11px] font-semibold text-ink-2">
                 <th className="px-4 py-3 text-left">Conversation</th>
@@ -658,8 +658,8 @@ function FilesView({
           No files stored in R2 bucket match query.
         </div>
       ) : (
-        <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-sm">
-          <table className="w-full text-xs">
+        <div className="overflow-x-auto rounded-2xl border border-line bg-surface shadow-sm">
+          <table className="w-full min-w-[640px] text-xs">
             <thead>
               <tr className="border-b border-line bg-surface-2 text-[11px] font-semibold text-ink-2">
                 <th className="px-4 py-3 text-left">File</th>

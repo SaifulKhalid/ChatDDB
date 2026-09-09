@@ -90,7 +90,7 @@ export function AdminPanel({ onExit }: { onExit: () => void }) {
             </button>
           )}
 
-          <div className="flex rounded-lg border border-line bg-surface-2 p-0.5">
+          <div className="flex max-w-full overflow-x-auto rounded-lg border border-line bg-surface-2 p-0.5">
             {(
               [
                 { id: 'overview', label: 'Overview', icon: <TrendingUp size={13} /> },
@@ -102,7 +102,7 @@ export function AdminPanel({ onExit }: { onExit: () => void }) {
               <button
                 key={t.id}
                 onClick={() => setTab(t.id)}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                className={`flex shrink-0 items-center gap-1.5 rounded-md px-2.5 sm:px-3 py-1.5 text-xs font-medium transition-colors ${
                   tab === t.id
                     ? 'bg-ink text-surface shadow-sm'
                     : 'text-ink-2 hover:bg-surface-3 hover:text-ink'
