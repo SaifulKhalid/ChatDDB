@@ -279,7 +279,7 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
           : input.kind === 'edit'
             ? { sessionId: sid, content: input.content, replaceFromMessageId: input.replaceFromMessageId }
             : { sessionId: sid, content: input.content, attachments: input.attachments }),
-        ...(model ? { model } : {}),
+        ...(model ? { service: model, model } : {}),
       }
 
       for await (const delta of streamChat(req, ctrl.signal, (meta) => {

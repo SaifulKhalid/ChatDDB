@@ -37,6 +37,8 @@ import {
 import type { WorkerEnv } from './env.ts'
 import * as auth from './routes/auth.ts'
 import * as chat from './routes/chat.ts'
+import * as services from './routes/services.ts'
+import * as adminAi from './routes/adminAi.ts'
 import * as sessions from './routes/sessions.ts'
 import * as files from './routes/files.ts'
 import * as images from './routes/images.ts'
@@ -64,13 +66,15 @@ type Route = PublicRoute | GuardedRoute
  * The whole API surface.
  *
  * Worth reading as a privacy summary: the only `public` entries are a health
- * check, the sign-in exchange, and the HMAC-signed file view (whose signature is
- * its authorisation). Everything that touches a conversation, a file, or a user
- * record is behind `user` or `admin`.
+ * check, service discovery, the sign-in exchange, and the HMAC-signed file view
+ * (whose signature is its authorisation). Everything that touches a conversation,
+ * a file, or a user record is behind `user` or `admin`.
  */
 const ROUTES: Route[] = [
   // ---- Public -------------------------------------------------------------
   { method: 'GET', pattern: '/api/health', guard: 'public', handler: health },
+  { method: 'GET', pattern: '/api/ai-services', guard: 'public', handler: services.getAiServices },
+  { method: 'GET', pattern: '/api/models', guard: 'public', handler: services.getLegacyModels },
   { method: 'POST', pattern: '/api/auth/session', guard: 'public', handler: auth.postSession },
   { method: 'GET', pattern: '/api/files/view', guard: 'public', handler: files.viewFile },
 
@@ -78,7 +82,6 @@ const ROUTES: Route[] = [
   { method: 'POST', pattern: '/api/auth/logout', guard: 'user', handler: auth.postLogout },
   { method: 'GET', pattern: '/api/me', guard: 'user', handler: auth.getMe },
   { method: 'POST', pattern: '/api/chat', guard: 'user', handler: chat.postChat },
-  { method: 'GET', pattern: '/api/models', guard: 'user', handler: chat.getModels },
   { method: 'POST', pattern: '/api/images', guard: 'user', handler: images.postImage },
 
   { method: 'GET', pattern: '/api/sessions', guard: 'user', handler: sessions.listSessions },
@@ -105,7 +108,27 @@ const ROUTES: Route[] = [
   { method: 'GET', pattern: '/api/admin/files', guard: 'admin', handler: admin.listAdminFiles },
   { method: 'GET', pattern: '/api/admin/files/:id/url', guard: 'admin', handler: admin.getAdminFileUrl },
   { method: 'GET', pattern: '/api/admin/files/:id/text', guard: 'admin', handler: admin.getAdminFileText },
-  { method: 'GET', pattern: '/api/admin/models', guard: 'admin', handler: chat.getUpstreamModels },
+
+  // ---- Admin: AI Services & Routing ---------------------------------------
+  { method: 'GET', pattern: '/api/admin/ai-services', guard: 'admin', handler: adminAi.listAdminServices },
+  { method: 'POST', pattern: '/api/admin/ai-services', guard: 'admin', handler: adminAi.createAdminService },
+  { method: 'PATCH', pattern: '/api/admin/ai-services/:id', guard: 'admin', handler: adminAi.patchAdminService },
+  { method: 'DELETE', pattern: '/api/admin/ai-services/:id', guard: 'admin', handler: adminAi.deleteAdminService },
+
+  { method: 'POST', pattern: '/api/admin/api-providers/:id/test', guard: 'admin', handler: adminAi.testAdminProvider },
+  { method: 'GET', pattern: '/api/admin/api-providers', guard: 'admin', handler: adminAi.listAdminProviders },
+  { method: 'POST', pattern: '/api/admin/api-providers', guard: 'admin', handler: adminAi.createAdminProvider },
+  { method: 'PATCH', pattern: '/api/admin/api-providers/:id', guard: 'admin', handler: adminAi.patchAdminProvider },
+  { method: 'DELETE', pattern: '/api/admin/api-providers/:id', guard: 'admin', handler: adminAi.deleteAdminProvider },
+
+  { method: 'POST', pattern: '/api/admin/ai-routes/:id/test', guard: 'admin', handler: adminAi.testAdminRoute },
+  { method: 'GET', pattern: '/api/admin/ai-routes', guard: 'admin', handler: adminAi.listAdminRoutes },
+  { method: 'POST', pattern: '/api/admin/ai-routes', guard: 'admin', handler: adminAi.createAdminRoute },
+  { method: 'PATCH', pattern: '/api/admin/ai-routes/:id', guard: 'admin', handler: adminAi.patchAdminRoute },
+  { method: 'DELETE', pattern: '/api/admin/ai-routes/:id', guard: 'admin', handler: adminAi.deleteAdminRoute },
+
+  { method: 'POST', pattern: '/api/admin/verify-all', guard: 'admin', handler: adminAi.verifyAllRoutes },
+  { method: 'GET', pattern: '/api/admin/ai-health', guard: 'admin', handler: adminAi.getAdminAiHealth },
 ]
 
 export default {
@@ -233,7 +256,7 @@ async function health(ctx: RequestContext): Promise<Response> {
     {
       ok: true,
       service: 'chat',
-      model: 'deepseek-v4-flash',
+      platform: 'ChatDDB',
       configured,
       ...(detail && !configured ? { detail } : {}),
       ready: {

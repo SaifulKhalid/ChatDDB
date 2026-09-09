@@ -30,21 +30,13 @@
  */
 
 import {
-  createChatCompletion,
-  generateTitle,
-  listModels,
-  NotConfiguredError,
-  resolveConfig,
-  UpstreamError,
   type ChatMessage,
   type ContentPart,
-  type ProviderId,
   type ToolCall,
   type ToolDefinition,
-  type UpstreamConfig,
 } from '../provider.ts'
 import { peekToolCalls, toClientStream, type StreamResult } from '../sse.ts'
-import { ApiError, badRequest, corsHeaders, json, notConfigured, notFound } from '../lib/http.ts'
+import { ApiError, badRequest, corsHeaders, notFound } from '../lib/http.ts'
 import { MAX_PROMPT_CHARS, resolveImageProviders } from '../images.ts'
 import {
   generateAndStore,
@@ -61,16 +53,16 @@ import * as filesDb from '../db/files.ts'
 import * as ratelimit from '../lib/ratelimit.ts'
 import * as suspicious from '../lib/suspicious.ts'
 import { buildDocumentContext, imageDataUrl } from '../lib/files/context.ts'
+import { NO_VISION_MESSAGE } from '../models.ts'
 import {
-  resolveModel,
-  isKnownModel,
-  routeAutoModel,
-  defaultModel,
-  toPublicModel,
-  NO_VISION_MESSAGE,
-  MODELS,
-  type ModelSpec,
-} from '../models.ts'
+  orchestrateChat,
+  resolveService,
+  getAdapter,
+  resolveProviderCredentials,
+  type OrchestratedResult,
+} from '../orchestrator.ts'
+import { ClassifiedUpstreamError } from '../adapters/errors.ts'
+import type { AiServiceRow, ServiceCapabilities } from '../db/aiRouting.ts'
 import { sha256Hex } from '../lib/hash.ts'
 import type { AuthedContext } from '../auth/middleware.ts'
 import type { FileRow } from '../db/files.ts'
@@ -308,6 +300,7 @@ interface ChatBody {
   sessionId?: string
   content?: string
   attachments: string[]
+  service?: string
   model?: string
   replaceFromMessageId?: string
   regenerate: boolean
@@ -347,6 +340,7 @@ function parseBody(raw: Record<string, unknown>): ChatBody {
         : requireUuid(raw.sessionId, 'sessionId'),
     content,
     attachments,
+    service: optionalString(raw.service, 'service', { max: 100 }),
     model: optionalString(raw.model, 'model', { max: 100 }),
     replaceFromMessageId:
       raw.replaceFromMessageId === undefined || raw.replaceFromMessageId === null
@@ -356,25 +350,8 @@ function parseBody(raw: Record<string, unknown>): ChatBody {
   }
 }
 
-interface UpstreamAttempt {
-  res: Response
-  cfg: UpstreamConfig
-  provider: ProviderId
-  model: string
-}
-
 export async function postChat(ctx: AuthedContext): Promise<Response> {
   const body = parseBody(await readJsonBody(ctx.request))
-
-  // Validate model requested by client
-  if (body.model && body.model !== 'auto') {
-    if (!isKnownModel(body.model)) {
-      throw badRequest(
-        `Unknown model \`${body.model}\`. Available: ${MODELS.map((m) => m.modelId).join(', ')}.`,
-        'unknown_model',
-      )
-    }
-  }
 
   // Pre-load attachment rows to verify readiness and determine file types
   let attachmentRows: FileRow[] = []
@@ -399,77 +376,78 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
   }
 
   const hasImages = attachmentRows.some((f) => f.file_type === 'image')
+  const hasDocuments = attachmentRows.some((f) => f.file_type === 'pdf')
 
-  const model = pickModel(
-    body.model,
-    ctx.env.API_PROVIDER_MODEL ?? ctx.env.AGENTROUTER_MODEL ?? 'deepseek',
-    { text: body.content, hasImages },
-    ctx.env,
-  )
+  // Resolve public AI service dynamically from D1
+  const service = await resolveService(ctx.db, ctx.env, body.service || body.model, {
+    content: body.content,
+    hasImages,
+  })
 
-  // Verify vision capability if explicit model was selected
-  assertVisionOk(attachmentRows, model)
-
-  let config: UpstreamConfig
-  try {
-    config = resolveConfig(ctx.env, model)
-  } catch (err) {
-    if (err instanceof NotConfiguredError) {
-      // 503 on purpose: the frontend reads it as "backend not wired up" and
-      // streams its local mock reply, which keeps an unconfigured deployment
-      // demoable. The real reason is in the body and the logs.
-      console.warn('[chatddb] %s', err.message)
-      throw notConfigured(err.message)
-    }
-    throw err
-  }
+  // Verify vision capability if explicit turn carries images
+  assertVisionOk(attachmentRows, service)
 
   await limitChat(ctx)
 
-  const session = await resolveSession(ctx, body, model.key)
-  const turn = await prepareTurn(ctx, body, session.id, model, attachmentRows)
+  const session = await resolveSession(ctx, body, service.public_name)
+  const turn = await prepareTurn(ctx, body, session.id, service, attachmentRows)
 
-  // Offered only when there is something behind it. With no `AI` binding the
-  // request body is byte-for-byte what it was before the tool existed.
+  // Offered only when image providers exist
   const toolsArmed = resolveImageProviders(ctx.env).length > 0
   const upstream = buildUpstreamMessages(ctx, turn, toolsArmed)
 
-  let attempt: UpstreamAttempt
+  let outcome: OrchestratedResult
   let generated: filesDb.PublicFile | null = null
-  try {
-    const res = await createChatCompletion(
-      config,
-      upstream,
-      ctx.request.signal,
-      { tools: toolsArmed ? [IMAGE_TOOL] : undefined },
-    )
-    attempt = { res, cfg: config, provider: config.provider, model: config.model }
 
-    // Runs entirely in front of `toClientStream`, so the invariant that no
-    // already-open stream is ever restarted still holds structurally rather than
-    // by care — `createChatCompletion` resolves on headers, and nothing below
-    // has written a byte to the client yet. See `peekToolCalls` in `sse.ts`.
+  try {
+    outcome = await orchestrateChat(ctx.db, ctx.env, {
+      serviceOrKey: service.key,
+      content: body.content,
+      messages: upstream,
+      hasImages,
+      hasDocuments,
+      tools: toolsArmed ? [IMAGE_TOOL] : undefined,
+      clientSignal: ctx.request.signal,
+    })
+
     if (toolsArmed) {
-      const outcome = await runToolLoop(ctx, config, upstream, attempt, session.id)
-      attempt = outcome.attempt
-      generated = outcome.file
+      const toolRes = await runToolLoop(ctx, outcome, upstream, session.id)
+      outcome = { ...outcome, res: toolRes.attemptRes }
+      generated = toolRes.file
     }
   } catch (err) {
-    // Nothing streamed, so the user turn we just wrote has no answer. Record the
-    // failure against the session rather than leaving a silent gap.
-    if (err instanceof UpstreamError) {
-      ctx.exec.waitUntil(persistFailure(ctx, session.id, model, config, err.message))
+    if (err instanceof ClassifiedUpstreamError) {
+      ctx.exec.waitUntil(
+        persistFailure(ctx, session.id, service.public_name, err.classification.publicMessage),
+      )
       console.error(
-        '[chatddb] upstream %s %s (%s): %s',
-        config.provider, err.upstreamStatus ?? '-', err.type, err.message,
+        '[chatddb] upstream error for service=%s: %s',
+        service.public_name,
+        err.classification.internalDiagnostic,
+      )
+      throw new ApiError(
+        err.classification.publicStatus,
+        err.classification.category,
+        err.classification.publicMessage,
       )
     }
     throw err
   }
 
   const attached = generated
-  const stream = toClientStream(attempt.res, (result) => {
-    ctx.exec.waitUntil(persistAssistant(ctx, session, config, attempt, model, turn, result, attached))
+  const stream = toClientStream(outcome.res, (result) => {
+    ctx.exec.waitUntil(
+      persistAssistant(
+        ctx,
+        session,
+        service.public_name,
+        outcome.upstreamModelId,
+        outcome.provider.key,
+        turn,
+        result,
+        attached,
+      ),
+    )
   })
 
   return new Response(stream, {
@@ -477,9 +455,9 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
       Connection: 'keep-alive',
-      // Stops intermediate proxies buffering the stream into one blob.
       'X-Accel-Buffering': 'no',
-      'X-ChatDDB-Model': model.modelId,
+      // Public AI service name only: NEVER leaks upstream model IDs
+      'X-ChatDDB-Model': service.public_name,
       'X-ChatDDB-Session-Id': session.id,
       ...(turn.userMessageId ? { 'X-ChatDDB-Message-Id': turn.userMessageId } : {}),
       ...(attached
@@ -493,64 +471,9 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
   })
 }
 
-/** `GET /api/models` — the safe public model registry. */
-export function getModels(ctx: AuthedContext): Response {
-  return json(
-    { models: MODELS.map(toPublicModel), default: defaultModel().key },
-    200,
-    ctx.request,
-    ctx.env,
-  )
-}
-
-/**
- * `GET /api/admin/models` — provider's raw model list.
- */
-export async function getUpstreamModels(ctx: AuthedContext): Promise<Response> {
-  let config
-  try {
-    config = resolveConfig(ctx.env)
-  } catch (err) {
-    if (err instanceof NotConfiguredError) throw notConfigured(err.message)
-    throw err
-  }
-  const res = await listModels(config, ctx.request.signal)
-  const text = await res.text()
-  return new Response(text, {
-    status: res.ok ? 200 : 502,
-    headers: {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': 'no-store',
-      ...corsHeaders(ctx.request, ctx.env),
-    },
-  })
-}
-
 // ---------------------------------------------------------------------------
 // Steps
 // ---------------------------------------------------------------------------
-
-function pickModel(
-  requested: string | undefined,
-  configured: string,
-  autoInput?: { text?: string; hasImages?: boolean },
-  env?: WorkerEnv,
-): ModelSpec {
-  if (requested && requested !== 'auto') {
-    if (!isKnownModel(requested)) {
-      throw badRequest(
-        `Unknown model \`${requested}\`. Available: ${MODELS.map((m) => m.key).join(', ')}.`,
-        'unknown_model',
-      )
-    }
-    return resolveModel(requested, configured)
-  }
-
-  if (env && autoInput) {
-    return routeAutoModel(autoInput, env)
-  }
-  return defaultModel()
-}
 
 /**
  * Consumes the per-user chat budget.
@@ -642,13 +565,13 @@ async function prepareTurn(
   ctx: AuthedContext,
   body: ChatBody,
   sessionId: string,
-  model: ModelSpec,
+  service: AiServiceRow,
   preloadedFiles?: FileRow[],
 ): Promise<Turn> {
-  if (body.regenerate) return prepareRegenerate(ctx, sessionId, model)
+  if (body.regenerate) return prepareRegenerate(ctx, sessionId, service)
 
   const content = body.content as string
-  const files = preloadedFiles ?? (await loadAttachments(ctx, body.attachments, model))
+  const files = preloadedFiles ?? (await loadAttachments(ctx, body.attachments, service))
 
   if (body.replaceFromMessageId) {
     await truncateFrom(ctx, sessionId, body.replaceFromMessageId)
@@ -668,8 +591,8 @@ async function prepareTurn(
     userId: ctx.user.id,
     role: 'user',
     content,
-    model: model.id,
-    modelProvider: model.provider,
+    model: service.public_name,
+    modelProvider: null,
     attachmentCount: files.length,
     createdAt: now,
   })
@@ -677,13 +600,13 @@ async function prepareTurn(
   const promptHash = (await sha256Hex(content)).slice(0, 16)
   const statements = [
     inserted.stmt,
-    sessionsDb.touchStmt(sessionId, 1, model.id, now),
+    sessionsDb.touchStmt(sessionId, 1, service.public_name, now),
     activity.logStmt({
       userId: ctx.user.id,
       action: 'message_sent',
       metadata: {
         sessionId,
-        model: model.id,
+        model: service.public_name,
         chars: content.length,
         attachments: files.length,
         promptHash,
@@ -723,15 +646,11 @@ async function prepareTurn(
 
 /**
  * Re-answers the last user turn.
- *
- * The previous answer is deleted rather than kept as an alternative: the UI has
- * no branch picker, and a hidden branch nobody can reach is just rows nobody
- * asked to store.
  */
 async function prepareRegenerate(
   ctx: AuthedContext,
   sessionId: string,
-  model: ModelSpec,
+  service: AiServiceRow,
 ): Promise<Turn> {
   const last = await messagesDb.lastForSession(ctx.db, sessionId)
   if (!last) throw badRequest('This conversation has no messages to regenerate.', 'nothing_to_regenerate')
@@ -752,12 +671,10 @@ async function prepareRegenerate(
     ctx.policy.historyMaxTurns,
     LIMITS.maxTotalChars,
   )
-  // After the truncation the trailing entry is the turn being re-answered; it
-  // moves out of `history` and into the enriched current turn.
   if (full.length > 0 && full[full.length - 1]?.role === 'user') full.pop()
 
   const files = await filesDb.listForMessage(ctx.db, userTurn.id)
-  assertVisionOk(files, model)
+  assertVisionOk(files, service)
 
   const text = await withDocuments(ctx, files, userTurn.message_content)
   return {
@@ -775,8 +692,6 @@ async function prepareRegenerate(
 /** Drops `messageId` and everything after it, for an edited earlier turn. */
 async function truncateFrom(ctx: AuthedContext, sessionId: string, messageId: string): Promise<void> {
   const target = await messagesDb.get(ctx.db, messageId)
-  // Both the session and the owner must match: without the second check, a
-  // valid message id from another user's chat would truncate by timestamp.
   if (!target || target.session_id !== sessionId || target.user_id !== ctx.user.id) {
     throw notFound('That message does not exist in this conversation.', 'message_not_found')
   }
@@ -788,16 +703,11 @@ async function truncateFrom(ctx: AuthedContext, sessionId: string, messageId: st
 
 /**
  * Loads and authorises the turn's attachments.
- *
- * Every id is re-read from D1 scoped to the caller, so an id guessed or copied
- * from elsewhere resolves to nothing. Files still uploading are refused rather
- * than silently dropped — sending a message that quietly ignored the PDF the
- * user attached is worse than making them press send again.
  */
 async function loadAttachments(
   ctx: AuthedContext,
   ids: string[],
-  model: ModelSpec,
+  service: AiServiceRow,
 ): Promise<FileRow[]> {
   if (ids.length === 0) return []
   if (ids.length > ctx.policy.maxAttachmentsPerMessage) {
@@ -819,14 +729,18 @@ async function loadAttachments(
     )
   }
 
-  assertVisionOk(rows, model)
+  assertVisionOk(rows, service)
   return rows
 }
 
-function assertVisionOk(files: FileRow[], model: ModelSpec): void {
-  if (files.some((f) => f.file_type === 'image') && !model.vision) {
-    // Refused here rather than upstream: an upstream 400 about content parts
-    // is not something a user can act on, and this message is.
+function assertVisionOk(files: FileRow[], service: AiServiceRow): void {
+  let caps: ServiceCapabilities = {}
+  try {
+    caps = JSON.parse(service.capabilities) as ServiceCapabilities
+  } catch {
+    caps = {}
+  }
+  if (files.some((f) => f.file_type === 'image') && !caps.vision) {
     throw badRequest(NO_VISION_MESSAGE, 'model_no_vision')
   }
 }
@@ -921,58 +835,41 @@ function buildUpstreamMessages(ctx: AuthedContext, turn: Turn, toolsArmed = fals
 
 /** What the tool rounds settled on: the response to stream, and any image made. */
 interface ToolOutcome {
-  attempt: UpstreamAttempt
+  attemptRes: Response
   file: filesDb.PublicFile | null
 }
 
-/**
- * Runs tool calls until the model answers with prose.
- *
- * ## Where this sits
- *
- * Between `completeWithFailover` and `toClientStream`, which is the only place
- * it can sit. `peekToolCalls` reads far enough into the upstream response to
- * tell a tool call from an answer; on an answer it hands back a replay of that
- * same stream, so the ordinary path loses nothing and the client still gets
- * bytes as they arrive.
- *
- * ## Why the follow-up request omits `tools`
- *
- * The model has had its turn with the tool. Re-offering it invites a second call
- * that the loop would have to spend a round refusing, and every round is another
- * full round trip in front of the user's first token. `MAX_TOOL_ROUNDS` is the
- * backstop for a gateway that produces one anyway.
- *
- * ## At most one image per turn
- *
- * Enforced by the `file` check, not by asking nicely: once something has been
- * generated, every further call in this turn is answered "unavailable" without
- * touching a provider. The rate limits are a per-day budget; this is the
- * per-turn one, and it is what stops a single confused turn from spending five
- * images before the daily cap notices.
- */
 async function runToolLoop(
   ctx: AuthedContext,
-  config: UpstreamConfig,
+  outcome: OrchestratedResult,
   messages: ChatMessage[],
-  first: UpstreamAttempt,
   sessionId: string,
 ): Promise<ToolOutcome> {
-  let attempt = first
+  let currentRes = outcome.res
   let file: filesDb.PublicFile | null = null
 
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const peek = await peekToolCalls(attempt.res)
-    if (peek.kind === 'text') return { attempt: { ...attempt, res: peek.res }, file }
+  const adapter = getAdapter(outcome.provider.adapter)
+  const creds = resolveProviderCredentials(outcome.provider, ctx.env)
 
-    // Echoed back verbatim before the results, as the protocol requires: the
-    // model matches each result to its call by `tool_call_id`.
-    //
-    // `content: null` even when the model wrote a sentence before the call.
-    // `peekToolCalls` discards that preamble rather than streaming it, so the
-    // user never saw it and nothing stored it; claiming it here would leave the
-    // model believing it had already introduced an image it has not yet been
-    // told exists, and the round below would answer as if mid-sentence.
+  let routeConfig: {
+    tokenParam?: 'max_tokens' | 'max_completion_tokens'
+    maxOutputTokens?: number
+    reasoningEffort?: string
+    sendReasoningEffort?: boolean
+  } = {}
+
+  if (outcome.route.configuration) {
+    try {
+      routeConfig = JSON.parse(outcome.route.configuration) as typeof routeConfig
+    } catch {
+      routeConfig = {}
+    }
+  }
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const peek = await peekToolCalls(currentRes)
+    if (peek.kind === 'text') return { attemptRes: peek.res, file }
+
     messages.push({ role: 'assistant', content: null, tool_calls: peek.calls })
 
     for (const call of peek.calls) {
@@ -981,17 +878,19 @@ async function runToolLoop(
       messages.push({ role: 'tool', tool_call_id: call.id, content: payload })
     }
 
-    const res = await createChatCompletion(config, messages, ctx.request.signal)
-    attempt = { res, cfg: config, provider: config.provider, model: config.model }
+    currentRes = await adapter.executeChat(outcome.provider, creds, {
+      upstreamModel: outcome.route.upstream_model_id,
+      messages,
+      clientSignal: ctx.request.signal,
+      configuration: routeConfig,
+      timeoutMs: outcome.provider.timeout_ms,
+    })
   }
 
-  // The model kept calling tools past the cap. Stream whatever the last response
-  // holds rather than looping: it is a real answer more often than not, and
-  // `peekToolCalls` has already turned it back into a replayable stream.
   console.warn('[chatddb] tool loop hit %d rounds for session %s', MAX_TOOL_ROUNDS, sessionId)
-  const last = await peekToolCalls(attempt.res)
+  const last = await peekToolCalls(currentRes)
   return {
-    attempt: { ...attempt, res: last.kind === 'text' ? last.res : attempt.res },
+    attemptRes: last.kind === 'text' ? last.res : currentRes,
     file,
   }
 }
@@ -1160,41 +1059,22 @@ async function limitToolImage(ctx: AuthedContext): Promise<void> {
 async function persistAssistant(
   ctx: AuthedContext,
   session: sessionsDb.SessionRow,
-  config: UpstreamConfig,
-  attempt: UpstreamAttempt,
-  model: ModelSpec,
+  serviceName: string,
+  _upstreamModelId: string,
+  providerKey: string,
   turn: Turn,
   result: StreamResult,
   file: filesDb.PublicFile | null,
 ): Promise<void> {
   const sessionId = session.id
   const fromUpstream = result.usage !== null
-  // When upstream reports nothing, both numbers are estimates from character
-  // counts, and `token_source` says so — the admin UI labels them rather than
-  // presenting a guess as a billing figure.
   const prompt = result.usage?.promptTokens ?? Math.ceil(turn.promptChars / 4)
   const completion = result.usage?.completionTokens ?? messagesDb.estimateTokens(result.text)
   const total = result.usage?.totalTokens ?? prompt + completion
 
-  // A turn that ended in `tool_calls` with nothing attached is not a turn that
-  // ran a tool and failed — every failure inside `runToolCall` logs `image_failed`
-  // or moves a rate counter. It means the call never produced an image at all,
-  // and in production the cause was always the same: `peekToolCalls` saw prose
-  // first, returned `kind: 'text'`, and replayed the upstream stream verbatim —
-  // carrying the abandoned `tool_calls` frames and this very finish reason
-  // through to here. The user reads a sentence promising an image that was
-  // generated, billed, and dropped. `TOOL_USE_CLAUSE` now forbids the preamble
-  // that triggers it; this is the check that says whether that held.
-  //
-  // The round-cap path above can reach the same state, and logs its own warning
-  // first, so the two are distinguishable in a log tail.
-  //
-  // Checked here because both values are already in hand: a comparison, not a
-  // query. Kept as a permanent detector rather than a one-off — the signature is
-  // exact, and the failure is otherwise silent by construction.
   if (result.finishReason === 'tool_calls' && !file) {
     console.error(
-      '[chatddb] image promised but not attached for session %s: finish_reason=tool_calls with attachment_count=0 — the tool call never ran (see peekToolCalls in sse.ts)',
+      '[chatddb] image promised but not attached for session %s: finish_reason=tool_calls with attachment_count=0',
       sessionId,
     )
   }
@@ -1204,8 +1084,8 @@ async function persistAssistant(
     userId: ctx.user.id,
     role: 'assistant',
     content: result.text,
-    model: attempt.model,
-    modelProvider: attempt.provider,
+    model: serviceName, // Public AI service name (e.g. 'ChatGPT')
+    modelProvider: providerKey, // Internal provider key for admin inspector only
     promptTokens: prompt,
     completionTokens: completion,
     totalTokens: total,
@@ -1215,70 +1095,38 @@ async function persistAssistant(
     attachmentCount: file ? 1 : 0,
   })
 
-  // Awaited before the batch so the retitle can join the same transaction. A
-  // null title (declined, failed, or not needed) simply adds no statement.
-  const title = await autoTitle(session, config, turn, result)
+  const title = autoTitle(session, turn, result)
 
-  const statements = [inserted.stmt, sessionsDb.touchStmt(sessionId, 1, model.modelId)]
+  const statements = [inserted.stmt, sessionsDb.touchStmt(sessionId, 1, serviceName)]
   if (title) statements.push(sessionsDb.retitleStmt(sessionId, title))
-  // The file row already exists and is already `stored` — the tool wrote it
-  // mid-turn. All that is left is pointing it at a message id that could not be
-  // known until now, which is why this cannot happen at generation time.
   if (file) statements.push(filesDb.attachToMessageStmt([file.id], inserted.id, sessionId, ctx.user.id))
 
   try {
     await batch(ctx.db, statements)
   } catch (err) {
-    // Nothing left to salvage: the user has already read the reply. Log loudly
-    // so the gap between what they saw and what we stored is discoverable.
     console.error('[chatddb] failed to persist assistant turn for session %s: %s', sessionId, err)
   }
 }
 
-/**
- * A model-written name for a session that does not have one yet, or null.
- *
- * Only the first completed exchange is titled. A later pass would cost an
- * upstream call per turn to rename a chat the user is already navigating by, and
- * `retitleStmt` accepts `auto` rows precisely so a *future* deliberate re-title
- * remains possible — not so every turn takes one.
- *
- * Every guard here returns null rather than throwing: this runs after the user
- * has read their reply, and a session keeping its `makeTitle` placeholder is a
- * cosmetic problem, not a failed request.
- */
-async function autoTitle(
+function autoTitle(
   session: sessionsDb.SessionRow,
-  config: UpstreamConfig,
   turn: Turn,
   result: StreamResult,
-): Promise<string | null> {
-  // The user owns this name, or the model already chose one.
+): string | null {
   if (session.title_source !== 'placeholder') return null
-  // A regenerate or an edit of an existing chat — not a first exchange.
   if (session.message_count > 0) return null
-  // Nothing worth naming: an empty, aborted, or failed answer.
   if (result.error || !result.text.trim()) return null
   if (!turn.userText.trim()) return null
 
-  // No signal is passed: the client's connection is closed by now, and on an
-  // aborted stream it is already aborted — passing it would cancel every title
-  // for exactly the turns that still deserve one.
-  return generateTitle(config, { user: turn.userText, assistant: result.text })
+  const line = turn.userText.split('\n').map((l) => l.trim()).find(Boolean) ?? ''
+  const words = line.replace(/^[#\-*\d.]+\s*/, '').slice(0, 64).trim()
+  return words || 'Conversation'
 }
 
-/**
- * Records that a turn never got an answer, for an upstream failure.
- *
- * `failed` is the gateway that refused last, so a row for a turn that exhausted
- * both gateways names the backup rather than implying the primary was the only
- * thing tried.
- */
 async function persistFailure(
   ctx: AuthedContext,
   sessionId: string,
-  model: ModelSpec,
-  failed: UpstreamConfig,
+  serviceName: string,
   message: string,
 ): Promise<void> {
   const inserted = messagesDb.insertStmt({
@@ -1286,14 +1134,14 @@ async function persistFailure(
     userId: ctx.user.id,
     role: 'assistant',
     content: '',
-    model: failed.model,
-    modelProvider: failed.provider,
+    model: serviceName,
+    modelProvider: null,
     finishReason: 'error',
     error: message.slice(0, 1_000),
   })
   try {
-    await batch(ctx.db, [inserted.stmt, sessionsDb.touchStmt(sessionId, 1, model.modelId)])
+    await batch(ctx.db, [inserted.stmt, sessionsDb.touchStmt(sessionId, 1, serviceName)])
   } catch (err) {
-    console.error('[chatddb] failed to record upstream failure: %s', err)
+    console.error('[chatddb] failed to record failure: %s', err)
   }
 }

@@ -17,6 +17,7 @@ import type { AuthedContext, RequestContext } from '../auth/middleware.ts'
 import { listVar } from '../env.ts'
 import { imageReady } from '../images.ts'
 import { MODELS, toPublicModel } from '../models.ts'
+import { listServices, type ServiceCapabilities } from '../db/aiRouting.ts'
 
 /** UTC midnight for a timestamp -- the boundary all daily counters share. */
 export function dayStart(now = Date.now()): number {
@@ -130,6 +131,39 @@ export async function getMe(ctx: AuthedContext): Promise<Response> {
    */
   const imageUsedToday = await ratelimit.peek(ctx.db, `user:${ctx.user.id}`, 'image', 'day')
 
+  const aiServicesList = await listServices(ctx.db, false).catch(() => [])
+  const publicServices = aiServicesList.map((s) => {
+    let caps: ServiceCapabilities = {}
+    try {
+      caps = JSON.parse(s.capabilities) as ServiceCapabilities
+    } catch {
+      caps = {}
+    }
+    return {
+      id: s.key,
+      name: s.public_name,
+      description: s.description,
+      vision: Boolean(caps.vision),
+      documents: caps.documents !== false,
+      reasoning: Boolean(caps.reasoning),
+      tools: caps.tools !== false,
+      default: s.default_service === 1,
+    }
+  })
+
+  const legacyModels = publicServices.map((s) => ({
+    id: s.id,
+    name: s.name,
+    label: s.name,
+    short: s.name,
+    modelId: s.name,
+    vision: s.vision,
+    documents: s.documents,
+    reasoning: s.reasoning,
+    default: s.default,
+    description: s.description ?? undefined,
+  }))
+
   return json(
     {
       user: users.toPublicUser(ctx.user),
@@ -150,7 +184,8 @@ export async function getMe(ctx: AuthedContext): Promise<Response> {
             ? Math.max(0, ctx.policy.rateImagePerDay - imageUsedToday)
             : null,
       },
-      models: MODELS.map(toPublicModel),
+      services: publicServices,
+      models: legacyModels.length > 0 ? legacyModels : MODELS.map(toPublicModel),
       pdfExtractMode: ctx.policy.pdfExtractMode,
       /**
        * Whether `POST /api/images` can serve. The composer hides its image

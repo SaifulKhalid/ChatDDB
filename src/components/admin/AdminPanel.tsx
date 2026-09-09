@@ -23,8 +23,9 @@ import { errorText } from '../../lib/apiClient'
 import type { AdminStats } from '../../lib/adminApi'
 import { AdminUsers } from './AdminUsers'
 import { AdminInspector } from './AdminInspector'
+import { AdminAiRouting } from './AdminAiRouting'
 
-type Tab = 'overview' | 'users' | 'inspect'
+type Tab = 'overview' | 'users' | 'inspect' | 'ai'
 
 export function AdminPanel({ onExit }: { onExit: () => void }) {
   const [tab, setTab] = useState<Tab>('overview')
@@ -93,6 +94,7 @@ export function AdminPanel({ onExit }: { onExit: () => void }) {
             {(
               [
                 { id: 'overview', label: 'Overview', icon: <TrendingUp size={13} /> },
+                { id: 'ai', label: 'AI Services', icon: <Sparkles size={13} /> },
                 { id: 'users', label: 'Users', icon: <Users size={13} /> },
                 { id: 'inspect', label: 'Inspector', icon: <Activity size={13} /> },
               ] as const
@@ -130,6 +132,7 @@ export function AdminPanel({ onExit }: { onExit: () => void }) {
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
         {tab === 'overview' && <Overview stats={stats} failed={!!statsError} />}
+        {tab === 'ai' && <AdminAiRouting />}
         {tab === 'users' && (
           <AdminUsers
             onOpenSession={(id) => {

@@ -103,7 +103,7 @@ export function corsHeaders(request: Request, env: WorkerEnv): Record<string, st
     // upstream pair rides along: the frontend reads it to show the "unavailable
     // right now — answered by X instead" notice on a crossover.
     'Access-Control-Expose-Headers':
-      'X-ChatDDB-Model, X-ChatDDB-Session-Id, X-ChatDDB-Message-Id, X-ChatDDB-Generated-File, X-ChatDDB-Generated-File-JSON, X-ChatDDB-Upstream, X-ChatDDB-Upstream-Model, Retry-After',
+      'X-ChatDDB-Model, X-ChatDDB-Session-Id, X-ChatDDB-Message-Id, X-ChatDDB-Generated-File, X-ChatDDB-Generated-File-JSON, Retry-After',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',
   }

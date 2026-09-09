@@ -47,13 +47,15 @@ export interface PublicMessage {
   tokens?: { prompt: number | null; completion: number | null; total: number | null; source: TokenSource | null }
 }
 
-function toPublicModelKey(modelUsed: string | null | undefined): string | null | undefined {
+export function toPublicModelKey(modelUsed: string | null | undefined): string | null | undefined {
   if (!modelUsed) return modelUsed
-  if (modelUsed.includes('gpt-5.6') || modelUsed.includes('sol') || modelUsed === 'chatgpt-5.6' || modelUsed === 'gpt' || modelUsed === 'gpt-5.6-sol') return 'gpt-5.6-sol'
-  if (modelUsed.includes('gemini') || modelUsed === 'gemini-3.7' || modelUsed === 'gemini-3.7-flash') return 'gemini-3.7-flash'
-  if (modelUsed.includes('claude') || modelUsed === 'claude-5' || modelUsed === 'claude-opus-5') return 'claude-opus-5'
-  if (modelUsed.includes('glm') || modelUsed === 'glm' || modelUsed === 'glm-5.3') return 'glm-5.3'
-  if (modelUsed.includes('deepseek') || modelUsed === 'deepseek' || modelUsed === 'deepseek-v4-flash') return 'deepseek-v4-flash'
+  const lower = modelUsed.toLowerCase()
+  if (lower.includes('gpt') || lower.includes('sol') || lower.includes('chatgpt') || lower.includes('openai')) return 'ChatGPT'
+  if (lower.includes('gemini') || lower.includes('google')) return 'Gemini'
+  if (lower.includes('claude') || lower.includes('opus') || lower.includes('anthropic')) return 'Claude'
+  if (lower.includes('glm') || lower.includes('zhipu')) return 'GLM'
+  if (lower.includes('deepseek')) return 'DeepSeek'
+  if (lower.includes('grok') || lower.includes('xai')) return 'Grok'
   return modelUsed
 }
 

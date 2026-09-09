@@ -25,6 +25,7 @@ import type {
   ImageResponse,
   ImportResponse,
   ModelsResponse,
+  PublicAiService,
   PublicFile,
   SessionListResponse,
   SessionSummary,
@@ -35,6 +36,7 @@ export interface ChatRequest {
   sessionId?: string
   content?: string
   attachments?: string[]
+  service?: string
   model?: string
   replaceFromMessageId?: string
   regenerate?: boolean
@@ -207,6 +209,11 @@ export function importSessions(
 
 export function getModels(): Promise<ModelsResponse> {
   return apiJson<ModelsResponse>('/api/models')
+}
+
+export async function listAiServices(): Promise<PublicAiService[]> {
+  const data = await apiJson<{ services: PublicAiService[] }>('/api/ai-services')
+  return data.services
 }
 
 // ---------------------------------------------------------------------------

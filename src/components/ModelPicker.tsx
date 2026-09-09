@@ -23,7 +23,7 @@ export function ModelPicker({ models, value, onChange, disabled, disabledReason 
   const listRef = useRef<HTMLDivElement>(null)
   const fallbackTo = models.find((m) => m.default) ?? models[0]
   const options: Option[] = [
-    { id: null, short: 'Auto', title: fallbackTo ? `Auto \u2014 picks the best model per message (default ${fallbackTo.label}).` : 'Auto \u2014 let the server choose.' },
+    { id: null, short: 'Auto', title: fallbackTo ? `Auto \u2014 picks the best AI service per message (default ${fallbackTo.label}).` : 'Auto \u2014 let the server choose.' },
     ...models.map((m) => ({ id: m.id, short: m.short, title: [`Always ${m.label}.`, m.note].filter(Boolean).join(' '), note: m.note })),
   ]
   const selected = options.find((o) => o.id === value) ?? options[0]
@@ -62,9 +62,9 @@ export function ModelPicker({ models, value, onChange, disabled, disabledReason 
         <span>{selected.short}</span>
         <ChevronDown size={12} className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
-      {isAuto && !open && <span className="ml-2 hidden text-xs text-ink-2 sm:inline" title={selected.title}>Picks the best model per message</span>}
+      {isAuto && !open && <span className="ml-2 hidden text-xs text-ink-2 sm:inline" title={selected.title}>Picks the best AI service per message</span>}
       {open && (
-        <div ref={listRef} role="listbox" aria-label="Model" onKeyDown={onKeyDown} className="absolute left-0 top-full z-20 mt-1 min-w-[280px] rounded-xl border border-line bg-surface py-1 shadow-lg">
+        <div ref={listRef} role="listbox" aria-label="AI Service" onKeyDown={onKeyDown} className="absolute left-0 top-full z-20 mt-1 min-w-[280px] rounded-xl border border-line bg-surface py-1 shadow-lg">
           {options.map((opt) => { const on = opt === selected; return (
               <button key={opt.id ?? 'auto'} type="button" data-opt role="option" aria-selected={on} disabled={disabled} onClick={() => { onChange(opt.id); setOpen(false) }} title={disabled ? (disabledReason ?? opt.title) : opt.title} className={`flex w-full items-start gap-2 px-3 py-2 text-left transition-colors disabled:opacity-40 ${on ? 'bg-accent/10 text-accent' : 'hover:bg-surface-2'}`}>
                 <span className={`mt-0.5 size-3 shrink-0 rounded-full border-2 ${on ? 'border-accent bg-accent' : 'border-line'}`} aria-hidden />

@@ -27,6 +27,7 @@
     "smoke:auth": "node scripts/smoke-auth.mjs",
     "smoke:files": "node scripts/smoke-files.mjs",
     "smoke:admin": "node scripts/smoke-admin.mjs",
+    "smoke:ai-routing": "node scripts/smoke-ai-routing.mjs",
     "smoke:images": "node scripts/smoke-images.mjs",
     "smoke:image-failover": "node scripts/smoke-image-failover.mjs",
     "smoke:chat-image-tool": "node scripts/smoke-chat-image-tool.mjs",
