@@ -49,19 +49,29 @@ async function guard<T>(label: string, fn: () => Promise<T>): Promise<T> {
   }
 }
 
+function normalizeParams(params: unknown[]): unknown[] {
+  if (params.length === 1 && Array.isArray(params[0])) {
+    return params[0] as unknown[]
+  }
+  return params
+}
+
 export function first<T>(db: D1Database, sql: string, ...params: unknown[]): Promise<T | null> {
-  return guard('first', async () => db.prepare(sql).bind(...params).first<T>())
+  const p = normalizeParams(params)
+  return guard('first', async () => (p.length > 0 ? db.prepare(sql).bind(...p) : db.prepare(sql)).first<T>())
 }
 
 export function all<T>(db: D1Database, sql: string, ...params: unknown[]): Promise<T[]> {
+  const p = normalizeParams(params)
   return guard('all', async () => {
-    const res = await db.prepare(sql).bind(...params).all<T>()
+    const res = await (p.length > 0 ? db.prepare(sql).bind(...p) : db.prepare(sql)).all<T>()
     return res.results ?? []
   })
 }
 
 export function run(db: D1Database, sql: string, ...params: unknown[]): Promise<D1Result> {
-  return guard('run', async () => db.prepare(sql).bind(...params).run())
+  const p = normalizeParams(params)
+  return guard('run', async () => (p.length > 0 ? db.prepare(sql).bind(...p) : db.prepare(sql)).run())
 }
 
 /** Reads a single aggregate value, e.g. `SELECT COUNT(*) AS n ...`. */

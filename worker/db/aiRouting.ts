@@ -116,7 +116,7 @@ export async function getServiceById(
   id: string,
 ): Promise<AiServiceRow | null> {
   const d1 = requireDb(db)
-  return first<AiServiceRow>(d1, 'SELECT * FROM ai_services WHERE id = ?', [id])
+  return first<AiServiceRow>(d1, 'SELECT * FROM ai_services WHERE id = ?', id)
 }
 
 export async function getServiceByKey(
@@ -124,7 +124,7 @@ export async function getServiceByKey(
   key: string,
 ): Promise<AiServiceRow | null> {
   const d1 = requireDb(db)
-  return first<AiServiceRow>(d1, 'SELECT * FROM ai_services WHERE key = ?', [key])
+  return first<AiServiceRow>(d1, 'SELECT * FROM ai_services WHERE key = ?', key)
 }
 
 export async function getDefaultService(
@@ -257,7 +257,7 @@ export async function getProviderById(
   id: string,
 ): Promise<ApiProviderRow | null> {
   const d1 = requireDb(db)
-  return first<ApiProviderRow>(d1, 'SELECT * FROM api_providers WHERE id = ?', [id])
+  return first<ApiProviderRow>(d1, 'SELECT * FROM api_providers WHERE id = ?', id)
 }
 
 export async function getProviderByKey(
@@ -265,7 +265,7 @@ export async function getProviderByKey(
   key: string,
 ): Promise<ApiProviderRow | null> {
   const d1 = requireDb(db)
-  return first<ApiProviderRow>(d1, 'SELECT * FROM api_providers WHERE key = ?', [key])
+  return first<ApiProviderRow>(d1, 'SELECT * FROM api_providers WHERE key = ?', key)
 }
 
 export async function createProvider(
@@ -405,7 +405,7 @@ export async function listRoutes(
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
   const sql = `SELECT * FROM ai_routes ${where} ORDER BY service_id ASC, priority ASC, weight DESC`
-  return all<AiRouteRow>(d1, sql, params)
+  return all<AiRouteRow>(d1, sql, ...params)
 }
 
 export async function getRouteById(
@@ -413,7 +413,7 @@ export async function getRouteById(
   id: string,
 ): Promise<AiRouteRow | null> {
   const d1 = requireDb(db)
-  return first<AiRouteRow>(d1, 'SELECT * FROM ai_routes WHERE id = ?', [id])
+  return first<AiRouteRow>(d1, 'SELECT * FROM ai_routes WHERE id = ?', id)
 }
 
 export async function createRoute(
@@ -514,7 +514,7 @@ export async function getRouteHealth(
   routeId: string,
 ): Promise<RouteHealthRow | null> {
   const d1 = requireDb(db)
-  return first<RouteHealthRow>(d1, 'SELECT * FROM route_health WHERE route_id = ?', [routeId])
+  return first<RouteHealthRow>(d1, 'SELECT * FROM route_health WHERE route_id = ?', routeId)
 }
 
 export async function getHealthMap(
