@@ -16,8 +16,7 @@ import { bearerToken, verifyIdToken } from '../auth/verify.ts'
 import type { AuthedContext, RequestContext } from '../auth/middleware.ts'
 import { listVar } from '../env.ts'
 import { imageReady } from '../images.ts'
-import { MODELS, toPublicModel } from '../models.ts'
-import { listServices, type ServiceCapabilities } from '../db/aiRouting.ts'
+import { listLiveServices, type ServiceCapabilities } from '../db/aiRouting.ts'
 
 /** UTC midnight for a timestamp -- the boundary all daily counters share. */
 export function dayStart(now = Date.now()): number {
@@ -131,7 +130,8 @@ export async function getMe(ctx: AuthedContext): Promise<Response> {
    */
   const imageUsedToday = await ratelimit.peek(ctx.db, `user:${ctx.user.id}`, 'image', 'day')
 
-  const aiServicesList = await listServices(ctx.db, false).catch(() => [])
+  const aiServicesList = await listLiveServices(ctx.db).catch(() => [])
+  const defaultService = aiServicesList.find((s) => s.default_service === 1) ?? aiServicesList[0]
   const publicServices = aiServicesList.map((s) => {
     let caps: ServiceCapabilities = {}
     try {
@@ -147,7 +147,7 @@ export async function getMe(ctx: AuthedContext): Promise<Response> {
       documents: caps.documents !== false,
       reasoning: Boolean(caps.reasoning),
       tools: caps.tools !== false,
-      default: s.default_service === 1,
+      default: defaultService ? s.id === defaultService.id : false,
     }
   })
 
@@ -185,7 +185,7 @@ export async function getMe(ctx: AuthedContext): Promise<Response> {
             : null,
       },
       services: publicServices,
-      models: legacyModels.length > 0 ? legacyModels : MODELS.map(toPublicModel),
+      models: legacyModels,
       pdfExtractMode: ctx.policy.pdfExtractMode,
       /**
        * Whether `POST /api/images` can serve. The composer hides its image

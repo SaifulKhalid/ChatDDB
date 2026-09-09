@@ -16,13 +16,13 @@
 import type { WorkerEnv } from './env.ts'
 import type { ChatMessage, ToolDefinition } from './provider.ts'
 import {
-  getDefaultService,
   getHealthMap,
   getServiceById,
   getServiceByKey,
+  isServiceLive,
+  listLiveServices,
   listProviders,
   listRoutes,
-  listServices,
   recordRouteFailure,
   recordRouteSuccess,
   type AiRouteRow,
@@ -108,11 +108,25 @@ export async function resolveService(
     const normalizedKey = LEGACY_SERVICE_MAP[req] || req
     const service = await getServiceByKey(db, normalizedKey)
     if (service && service.enabled === 1) {
+      const live = await isServiceLive(db, service.id)
+      if (!live) {
+        throw badRequest(
+          `AI service "${service.public_name}" is currently unavailable.`,
+          'service_unavailable',
+        )
+      }
       return service
     }
     // Also try looking up by ID
     const byId = await getServiceById(db, req)
     if (byId && byId.enabled === 1) {
+      const live = await isServiceLive(db, byId.id)
+      if (!live) {
+        throw badRequest(
+          `AI service "${byId.public_name}" is currently unavailable.`,
+          'service_unavailable',
+        )
+      }
       return byId
     }
 
@@ -127,18 +141,16 @@ export async function resolveService(
 }
 
 /**
- * Auto-mode: dynamically determines the most appropriate enabled AI service.
+ * Auto-mode: dynamically determines the most appropriate enabled and live AI service.
  */
 async function routeAutoService(
   db: D1Database | undefined,
   _env: WorkerEnv,
   input?: { content?: string; hasImages?: boolean },
 ): Promise<AiServiceRow> {
-  const services = await listServices(db, false)
+  const services = await listLiveServices(db)
   if (services.length === 0) {
-    const fallbackDefault = await getDefaultService(db)
-    if (fallbackDefault) return fallbackDefault
-    throw badRequest('No AI services are currently enabled.', 'no_active_services')
+    throw badRequest('No AI services are currently available.', 'no_active_services')
   }
 
   const find = (k: string) => services.find((s) => s.key === k)

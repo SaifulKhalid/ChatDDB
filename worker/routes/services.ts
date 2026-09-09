@@ -7,7 +7,7 @@
  */
 
 import { json } from '../lib/http.ts'
-import { listServices, type ServiceCapabilities } from '../db/aiRouting.ts'
+import { listLiveServices, type ServiceCapabilities } from '../db/aiRouting.ts'
 import type { RequestContext } from '../auth/middleware.ts'
 
 export interface PublicAiService {
@@ -23,9 +23,11 @@ export interface PublicAiService {
 
 /**
  * `GET /api/ai-services` — The canonical public service-discovery endpoint.
+ * Only returns live, working AI services (status !== 'down').
  */
 export async function getAiServices(ctx: RequestContext): Promise<Response> {
-  const services = await listServices(ctx.env.DB, false)
+  const services = await listLiveServices(ctx.env.DB)
+  const defaultService = services.find((s) => s.default_service === 1) ?? services[0]
 
   const publicServices: PublicAiService[] = services.map((s) => {
     let caps: ServiceCapabilities = {}
@@ -43,7 +45,7 @@ export async function getAiServices(ctx: RequestContext): Promise<Response> {
       documents: caps.documents !== false,
       reasoning: Boolean(caps.reasoning),
       tools: caps.tools !== false,
-      default: s.default_service === 1,
+      default: defaultService ? s.id === defaultService.id : false,
     }
   })
 
@@ -60,9 +62,10 @@ export async function getAiServices(ctx: RequestContext): Promise<Response> {
  *
  * Formats public AI services into the legacy model shape expected by older clients
  * without ever exposing private upstream model identifiers.
+ * Only returns live, working models.
  */
 export async function getLegacyModels(ctx: RequestContext): Promise<Response> {
-  const services = await listServices(ctx.env.DB, false)
+  const services = await listLiveServices(ctx.env.DB)
   const defaultService = services.find((s) => s.default_service === 1) ?? services[0]
 
   const models = services.map((s) => {
@@ -82,7 +85,7 @@ export async function getLegacyModels(ctx: RequestContext): Promise<Response> {
       vision: Boolean(caps.vision),
       documents: caps.documents !== false,
       reasoning: Boolean(caps.reasoning),
-      default: s.default_service === 1,
+      default: defaultService ? s.id === defaultService.id : false,
       description: s.description ?? undefined,
     }
   })
@@ -90,7 +93,7 @@ export async function getLegacyModels(ctx: RequestContext): Promise<Response> {
   return json(
     {
       models,
-      default: defaultService ? defaultService.key : 'deepseek',
+      default: defaultService ? defaultService.key : (models[0]?.id ?? 'deepseek'),
     },
     200,
     ctx.request,

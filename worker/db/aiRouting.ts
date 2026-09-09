@@ -142,6 +142,51 @@ export async function getDefaultService(
   )
 }
 
+/**
+ * Returns only the AI services that are currently enabled, have enabled routes with enabled providers,
+ * and whose computed health status is NOT 'down' (i.e. at least one healthy/eligible route).
+ */
+export async function listLiveServices(
+  db: D1Database | undefined,
+): Promise<AiServiceRow[]> {
+  const d1 = requireDb(db)
+  const [services, routes, providers, healthMap] = await Promise.all([
+    listServices(d1, false), // enabled = 1
+    listRoutes(d1, { enabledOnly: true }), // route enabled = 1
+    listProviders(d1, false), // provider enabled = 1
+    getHealthMap(d1),
+  ])
+
+  const enabledProviderIds = new Set(providers.map((p) => p.id))
+
+  const live = services.filter((srv) => {
+    // Find enabled routes for this service where the provider is also enabled
+    const srvRoutes = routes.filter(
+      (r) => r.service_id === srv.id && enabledProviderIds.has(r.provider_id),
+    )
+    if (srvRoutes.length === 0) return false
+
+    const routesWithHealth = srvRoutes.map((r) => ({
+      enabled: r.enabled,
+      priority: r.priority,
+      health: healthMap.get(r.id) ?? null,
+    }))
+
+    const status = computeServiceStatus(routesWithHealth)
+    return status !== 'down'
+  })
+
+  return live
+}
+
+export async function isServiceLive(
+  db: D1Database | undefined,
+  serviceIdOrKey: string,
+): Promise<boolean> {
+  const live = await listLiveServices(db)
+  return live.some((s) => s.id === serviceIdOrKey || s.key === serviceIdOrKey.toLowerCase())
+}
+
 export async function createService(
   db: D1Database | undefined,
   input: {

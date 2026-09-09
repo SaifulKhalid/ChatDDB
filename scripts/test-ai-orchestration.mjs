@@ -140,6 +140,13 @@ test('computeServiceStatus: down when all routes have broken circuits', () => {
   assert.equal(status, 'down')
 })
 
+test('computeServiceStatus: down when single route has 3+ consecutive failures (e.g. Grok)', () => {
+  const status = computeServiceStatus([
+    { enabled: 1, priority: 1, health: { consecutive_failures: 4, circuit_until: null } },
+  ])
+  assert.equal(status, 'down')
+})
+
 // 4. Public Model Key Mapping Tests
 test('toPublicModelKey: maps internal IDs to clean public names', () => {
   assert.equal(toPublicModelKey('gpt-5.6-sol'), 'ChatGPT')
