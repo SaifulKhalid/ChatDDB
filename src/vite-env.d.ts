@@ -11,7 +11,7 @@
  * `FIREBASE_PROJECT_ID`.
  *
  * So: do not "fix" this by moving these server-side. Hiding them would break the
- * client and secure nothing. The real secrets — `AGENTROUTER_API_KEY`,
+ * client and secure nothing. The real secrets — `PROVIDER_API_KEY`,
  * `FILE_URL_SECRET`, `IP_HASH_SALT` — live in Worker secrets and never reach a
  * browser.
  */

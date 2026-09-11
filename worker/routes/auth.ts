@@ -16,7 +16,7 @@ import { bearerToken, verifyIdToken } from '../auth/verify.ts'
 import type { AuthedContext, RequestContext } from '../auth/middleware.ts'
 import { listVar } from '../env.ts'
 import { imageReady } from '../images.ts'
-import { MODELS } from '../models.ts'
+import { listLiveServices, type ServiceCapabilities } from '../db/aiRouting.ts'
 
 /** UTC midnight for a timestamp -- the boundary all daily counters share. */
 export function dayStart(now = Date.now()): number {
@@ -119,6 +119,50 @@ export async function getMe(ctx: AuthedContext): Promise<Response> {
   const today = dayStart()
   const usage = await users.usageFor(ctx.db, ctx.user.id, today)
   const usedToday = await ratelimit.peek(ctx.db, `user:${ctx.user.id}`, 'chat', 'day')
+  /**
+   * The `'image'` counter, which is the one the composer's toggle spends. Note
+   * that the model's `generate_image` tool consumes it too (see `limitImage`) --
+   * it is the user's whole image budget, not only the button's. The separate,
+   * stricter `'tool_image'` counter that caps the model's share of it is not
+   * surfaced: it bounds a decision the user did not make, so a second number
+   * next to this one would read as a second budget to ration rather than as a
+   * ceiling on the assistant.
+   */
+  const imageUsedToday = await ratelimit.peek(ctx.db, `user:${ctx.user.id}`, 'image', 'day')
+
+  const aiServicesList = await listLiveServices(ctx.db).catch(() => [])
+  const defaultService = aiServicesList.find((s) => s.default_service === 1) ?? aiServicesList[0]
+  const publicServices = aiServicesList.map((s) => {
+    let caps: ServiceCapabilities = {}
+    try {
+      caps = JSON.parse(s.capabilities) as ServiceCapabilities
+    } catch {
+      caps = {}
+    }
+    return {
+      id: s.key,
+      name: s.public_name,
+      description: s.description,
+      vision: Boolean(caps.vision),
+      documents: caps.documents !== false,
+      reasoning: Boolean(caps.reasoning),
+      tools: caps.tools !== false,
+      default: defaultService ? s.id === defaultService.id : false,
+    }
+  })
+
+  const legacyModels = publicServices.map((s) => ({
+    id: s.id,
+    name: s.name,
+    label: s.name,
+    short: s.name,
+    modelId: s.name,
+    vision: s.vision,
+    documents: s.documents,
+    reasoning: s.reasoning,
+    default: s.default,
+    description: s.description ?? undefined,
+  }))
 
   return json(
     {
@@ -134,8 +178,14 @@ export async function getMe(ctx: AuthedContext): Promise<Response> {
         maxPdfBytes: ctx.policy.maxPdfBytes,
         maxAttachmentsPerMessage: ctx.policy.maxAttachmentsPerMessage,
         imagePerDay: ctx.policy.rateImagePerDay,
+        imageUsedToday,
+        imageRemainingToday:
+          ctx.policy.rateImagePerDay > 0
+            ? Math.max(0, ctx.policy.rateImagePerDay - imageUsedToday)
+            : null,
       },
-      models: MODELS,
+      services: publicServices,
+      models: legacyModels,
       pdfExtractMode: ctx.policy.pdfExtractMode,
       /**
        * Whether `POST /api/images` can serve. The composer hides its image

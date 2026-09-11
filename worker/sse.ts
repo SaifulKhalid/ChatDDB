@@ -1,5 +1,5 @@
 /**
- * Bridges AgentRouter's upstream stream to the frontend's SSE contract.
+ * Bridges the upstream provider stream to the frontend's SSE contract.
  *
  * We re-emit rather than pass through, which buys three things:
  *  - a guaranteed shape (`data: {"choices":[{"delta":{"content":"…"}}]}` then
@@ -9,9 +9,9 @@
  *  - a way to report a mid-stream failure, as a `data: {"error":{…}}` frame,
  *    after the response headers have already been committed.
  *
- * ## AgentRouter does not really stream
+ * ## Upstream Streaming Normalisation
  *
- * It waits for the full completion upstream and then synthesises a one-frame
+ * Some gateways wait for the full completion upstream and then synthesise a one-frame
  * SSE response — the chunk comes back as `"id":"chatcmpl_temp"` carrying the
  * entire answer, so even a long reply arrives as a single delta. This Worker
  * relays that faithfully and as fast as it can; re-chunking it into a
@@ -55,7 +55,7 @@
  * back at them, feature flag or not.
  */
 
-import type { ToolCall } from './agentrouter.ts'
+import type { ToolCall } from './provider.ts'
 import { FigureGate } from './lib/figureGate.ts'
 
 const encoder = new TextEncoder()
@@ -174,6 +174,37 @@ async function drainGate(
   }
 }
 
+/**
+ * Parses one SSE payload into a chunk, or null when it does not carry one.
+ *
+ * `try { JSON.parse(x) }` is not the guard it looks like. `JSON.parse('null')`
+ * *succeeds* and returns `null`, so the catch only ever fires on malformed JSON
+ * — and every reader below then does `chunk.error` or `chunk.choices` on null and
+ * throws a `TypeError` that kills the stream mid-answer.
+ *
+ * That is not hypothetical. Certain upstream relays emit a literal `data: null` frame
+ * mid-stream for `claude-opus-5` and never for `gpt-5.6-sol`: their
+ * Anthropic-to-OpenAI re-serialiser has no OpenAI shape for one of Anthropic's
+ * native events (a `ping`, on the evidence of where it lands) and writes the
+ * JSON for "nothing" instead of dropping the frame.
+ *
+ * So anything that is not a non-null object is reported the same way an
+ * unparseable frame is: a frame with nothing in it, to be skipped. Every parse of
+ * an upstream payload in this file goes through here — a bare `JSON.parse` at any
+ * of them is the bug coming back.
+ */
+function parseChunk(payload: string): UpstreamChunk | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(payload)
+  } catch {
+    return null
+  }
+  // Arrays pass, and harmlessly: every read below is a miss on one. Excluding
+  // them would only add a branch that no upstream has ever exercised.
+  return typeof parsed === 'object' && parsed !== null ? (parsed as UpstreamChunk) : null
+}
+
 /** Pulls the assistant text out of one upstream SSE payload, if it has any. */
 function extractContent(chunk: UpstreamChunk): string | null {
   const choice = chunk.choices?.[0]
@@ -201,7 +232,7 @@ function num(value: unknown): number | null {
 /**
  * Reads a usage block, when upstream sends one.
  *
- * Requested via `stream_options.include_usage`; AgentRouter does not always
+ * Requested via `stream_options.include_usage`; upstream does not always
  * honour it, which is why `token_source` in `chat_messages` records whether a
  * count came from upstream or from our own character estimate.
  */
@@ -237,12 +268,11 @@ async function pumpEventStream(
     if (!payload) return false
     if (payload === '[DONE]') return true
 
-    let chunk: UpstreamChunk
-    try {
-      chunk = JSON.parse(payload) as UpstreamChunk
-    } catch {
-      return false
-    }
+    // A frame carrying nothing — unparseable, or the `data: null` upstream
+    // sends for Claude. Skipping it is right either way: it is not content, not
+    // an error, and not the end of the stream.
+    const chunk = parseChunk(payload)
+    if (!chunk) return false
 
     const err = extractError(chunk)
     if (err) {
@@ -331,7 +361,16 @@ async function pumpJsonBody(
   sink: Sink,
 ): Promise<void> {
   try {
-    const chunk = (await res.json()) as UpstreamChunk
+    // Via text, not `res.json()`: a body of `null` parses to null, and the same
+    // TypeError that used to kill the streaming path would kill this one.
+    const chunk = parseChunk(await res.text())
+    if (!chunk) {
+      const message = 'The model returned an empty response.'
+      sink.error = message
+      sink.finishReason = 'error'
+      await out.write(errorFrame(message, 'empty_completion'))
+      return
+    }
     const err = extractError(chunk)
     if (err) {
       sink.error = err
@@ -368,7 +407,7 @@ async function pumpJsonBody(
 }
 
 /**
- * Converts an upstream AgentRouter response into a client-facing SSE stream.
+ * Converts an upstream response into a client-facing SSE stream.
  * Returns immediately; the body fills in as upstream bytes arrive.
  *
  * `onComplete` fires exactly once, after the last frame is written, with the
@@ -472,7 +511,7 @@ export type PeekResult = PeekedToolCalls | PeekedText
  *
  * ## The shape this parses, and how it was established
  *
- * `npm run probe:tools` phase 5, against `gpt-5.6-sol` through AgentRouter, 5/5
+ * `npm run probe:tools` phase 5, against `gpt-5.6-sol` through the upstream provider, 5/5
  * runs. Two findings drive the code:
  *
  *  - The call arrives as **`delta.tool_calls`**, OpenAI's fragmented form, and
@@ -481,19 +520,43 @@ export type PeekResult = PeekedToolCalls | PeekedText
  *    which is what makes peeking cheap.
  *  - `function.arguments` is then split across roughly **150 further frames**,
  *    one token each. They have to be concatenated before `JSON.parse` — a parse
- *    of any single frame fails. This is the one place AgentRouter really does
- *    stream, incidentally: ordinary text comes back as a single blob.
+ *    of any single frame fails.
  *
  * `message.tool_calls` is accepted too, for a relay that sends a whole message
  * on one frame, the same way `extractContent` already tolerates both.
  *
- * ## First signal wins
+ * ## A tool call still wins when prose comes first
  *
- * Whichever appears first — content or a tool call — decides the turn. A model
- * that wrote a sentence *and then* called a tool gets its sentence streamed and
- * the call ignored, because the alternative is discarding text the user was
- * about to read. The probe's restraint phase (5/5 quiet on a non-visual
- * question) is the evidence that this is a corner and not the common case.
+ * The rule used to be "first signal wins": content before a call meant the call
+ * was dropped. Production showed what that costs — 29% of image-intent turns
+ * ended with the model promising a picture, the gateway billing ~273 completion
+ * tokens for the call, and nothing at all being attached. The model was obeying
+ * `TOOL_USE_CLAUSE`, which until now asked it to introduce the image in one
+ * sentence; writing that sentence first was enough to lose the call.
+ *
+ * So a content frame no longer decides the turn on its own. It starts a bounded
+ * lookahead instead, and the turn is prose only if no call appears within it.
+ * The bound is what keeps this honest, because the invariant above still holds:
+ * nothing may reach the client until the decision is made, so every frame read
+ * here is a frame the user waits for.
+ *
+ * Two things stop the lookahead early, and in practice one of them almost always
+ * fires first:
+ *
+ *  - **A terminal frame** — `finish_reason` or `[DONE]`. Nothing after it can
+ *    change the verdict. Many gateways send ordinary prose as a single blob (see
+ *    above), so this lands one frame after the content and the budget is never
+ *    touched: the common path pays one extra `read()` on an already-finished
+ *    stream.
+ *  - **`LOOKAHEAD_FRAMES`** — the backstop for a gateway that genuinely streams
+ *    prose token by token, where waiting for a terminal frame would mean
+ *    buffering the whole reply. It caps the added latency at that many frames.
+ *
+ * The preamble itself is discarded when a call is found. Keeping it would mean
+ * threading buffered bytes through `runToolLoop` and out the far side of a
+ * second upstream request, and it is not worth it: the second round writes its
+ * own introduction from `TOOL_RESULT_OK`, which is the sentence the user wanted
+ * in the first place.
  */
 export async function peekToolCalls(res: Response): Promise<PeekResult> {
   const isEventStream = (res.headers.get('content-type') ?? '').includes('text/event-stream')
@@ -503,12 +566,12 @@ export async function peekToolCalls(res: Response): Promise<PeekResult> {
   if (!isEventStream || !res.body) {
     const text = await res.text()
     const partials = new Map<number, PartialToolCall>()
-    try {
-      const chunk = JSON.parse(text) as UpstreamChunk
+    // Not JSON, or JSON carrying nothing: either way there is no call in it, and
+    // replaying it verbatim lets the pump decide what it was.
+    const chunk = parseChunk(text)
+    if (chunk) {
       const raw = chunk.choices?.[0]?.message?.tool_calls ?? chunk.choices?.[0]?.delta?.tool_calls
       if (Array.isArray(raw)) for (const call of raw) mergeToolCall(partials, call)
-    } catch {
-      /* not JSON; fall through to replaying it verbatim */
     }
     const calls = assembleToolCalls(partials)
     if (calls.length > 0) return { kind: 'tool', calls }
@@ -528,10 +591,16 @@ export async function peekToolCalls(res: Response): Promise<PeekResult> {
   const partials = new Map<number, PartialToolCall>()
   let pending = ''
   let sawTool = false
+  /** A content frame has been seen, so the lookahead below is running. */
+  let sawText = false
+  /** Frames inspected since that content frame, against `LOOKAHEAD_FRAMES`. */
+  let looked = 0
 
   try {
-    let done = false
-    while (!done) {
+    // Labelled because the budget and the terminal frame are both decided while
+    // walking the lines of a chunk, and both have to leave the read loop, not
+    // just the line loop.
+    scan: while (true) {
       const next = await reader.read()
       if (next.done) break
       head.push(next.value)
@@ -540,13 +609,28 @@ export async function peekToolCalls(res: Response): Promise<PeekResult> {
       const lines = pending.split('\n')
       pending = lines.pop() ?? ''
       for (const raw of lines) {
-        const verdict = inspectLine(raw.trim(), partials)
-        if (verdict === 'tool') sawTool = true
-        // Prose, and no tool call before it: stop reading and let the client
-        // have the stream. `reader` is handed on mid-flight, not restarted.
-        else if (verdict === 'text' && !sawTool) {
-          return { kind: 'text', res: replay(res, head, reader) }
+        const line = raw.trim()
+        const verdict = inspectLine(line, partials)
+
+        if (verdict === 'tool') {
+          // Committed. Keep reading to the end of the stream: the name arrived on
+          // this frame but `function.arguments` is still ~150 frames away.
+          sawTool = true
+          continue
         }
+        if (sawTool) continue
+
+        if (!sawText) {
+          // Anything before the first content frame — a role frame, an empty
+          // delta — tells us nothing and does not start the clock.
+          if (verdict !== 'text') continue
+          sawText = true
+        } else if (++looked > LOOKAHEAD_FRAMES) {
+          break scan
+        }
+
+        // Prose that has finished is prose: no call can follow a terminal frame.
+        if (isTerminalFrame(line)) break scan
       }
     }
   } catch (err) {
@@ -559,9 +643,41 @@ export async function peekToolCalls(res: Response): Promise<PeekResult> {
 
   const calls = sawTool ? assembleToolCalls(partials) : []
   if (calls.length > 0) return { kind: 'tool', calls }
-  // Either plain text that never produced a content frame, or a tool call too
-  // mangled to use. Both are the pump's problem now, and it has answers for both.
+  // Plain text, a lookahead that expired without a call, or a call too mangled to
+  // use. All three are the pump's problem now, and it has answers for all three —
+  // `head` still holds every byte read, so the replay is exact either way.
   return { kind: 'text', res: replay(res, head, reader) }
+}
+
+/**
+ * How far past the first content frame to keep looking for a tool call.
+ *
+ * Only ever reached on a gateway that streams prose token by token, and it is
+ * the whole latency cost of the lookahead on one: at most this many frames
+ * before the user's first byte. Many gateways buffer prose and then send
+ * `finish_reason`, so `isTerminalFrame` ends the scan long before the count
+ * matters — 16 is chosen to be ample for the one case that binds (a short
+ * introducing sentence ahead of a call) while staying too small to be felt.
+ */
+const LOOKAHEAD_FRAMES = 16
+
+/**
+ * Does this line end the completion?
+ *
+ * `[DONE]` or any frame carrying a `finish_reason`. Parsed rather than
+ * string-matched so a model writing the words "finish_reason" in its prose
+ * cannot end the scan early; the cost is bounded by `LOOKAHEAD_FRAMES`, since
+ * this is only asked during the lookahead.
+ */
+function isTerminalFrame(line: string): boolean {
+  if (!line.startsWith('data:')) return false
+  const payload = line.slice(5).trim()
+  if (!payload) return false
+  if (payload === '[DONE]') return true
+  const chunk = parseChunk(payload)
+  if (!chunk) return false
+  const reason = chunk.choices?.[0]?.finish_reason
+  return typeof reason === 'string' && reason.length > 0
 }
 
 /** One `delta.tool_calls` slot, keyed by the `index` the stream assigns it. */
@@ -577,12 +693,8 @@ function inspectLine(line: string, partials: Map<number, PartialToolCall>): 'too
   const payload = line.slice(5).trim()
   if (!payload || payload === '[DONE]') return null
 
-  let chunk: UpstreamChunk
-  try {
-    chunk = JSON.parse(payload) as UpstreamChunk
-  } catch {
-    return null
-  }
+  const chunk = parseChunk(payload)
+  if (!chunk) return null
   const choice = chunk.choices?.[0]
   if (!choice) return null
 

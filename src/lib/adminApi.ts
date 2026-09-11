@@ -13,12 +13,17 @@
 
 import { apiJson } from './apiClient'
 import type {
+  AdminAiHealthResponse,
+  AdminAiService,
+  AdminProvider,
+  AdminRoute,
   PublicFile,
   PublicUser,
   SessionSummary,
   SignedViewUrl,
   TranscriptMessage,
   UsageSummary,
+  VerifyAllReport,
 } from './apiTypes'
 
 /** `worker/db/users.ts` → `PlatformStats`. */
@@ -233,4 +238,64 @@ export const adminApi = {
   fileUrl: (id: string) => apiJson<SignedViewUrl & { audited: true }>(`/api/admin/files/${id}/url`),
 
   fileText: (id: string) => apiJson<AdminFileText>(`/api/admin/files/${id}/text`),
+
+  // ---- AI Services & Multi-AI Routing ------------------------------------
+  aiServices: {
+    list: () => apiJson<{ services: AdminAiService[] }>('/api/admin/ai-services'),
+    create: (body: Partial<AdminAiService> & { key: string; publicName: string; capabilities?: unknown }) =>
+      apiJson<{ service: AdminAiService }>('/api/admin/ai-services', { method: 'POST', json: body }),
+    patch: (id: string, body: Record<string, unknown>) =>
+      apiJson<{ service: AdminAiService }>(`/api/admin/ai-services/${id}`, { method: 'PATCH', json: body }),
+    delete: (id: string) => apiJson<{ ok: true }>(`/api/admin/ai-services/${id}`, { method: 'DELETE' }),
+  },
+
+  aiProviders: {
+    list: () => apiJson<{ providers: AdminProvider[] }>('/api/admin/api-providers'),
+    create: (body: {
+      key: string
+      label: string
+      adapter?: string
+      baseUrl: string
+      apiKey?: string
+      apiKeys?: string[]
+      headers?: Record<string, string> | null
+      timeoutMs?: number
+      enabled?: boolean
+    }) => apiJson<{ provider: AdminProvider }>('/api/admin/api-providers', { method: 'POST', json: body }),
+    patch: (id: string, body: Record<string, unknown>) =>
+      apiJson<{ provider: AdminProvider }>(`/api/admin/api-providers/${id}`, { method: 'PATCH', json: body }),
+    delete: (id: string) => apiJson<{ ok: true }>(`/api/admin/api-providers/${id}`, { method: 'DELETE' }),
+    test: (id: string) =>
+      apiJson<{ result: { ok: boolean; latencyMs: number; error?: string } }>(
+        `/api/admin/api-providers/${id}/test`,
+        { method: 'POST' },
+      ),
+  },
+
+  aiRoutes: {
+    list: (q: { serviceId?: string; providerId?: string } = {}) =>
+      apiJson<{ routes: AdminRoute[] }>(`/api/admin/ai-routes?${new URLSearchParams(clean(q))}`),
+    create: (body: {
+      serviceId: string
+      providerId: string
+      upstreamModelId: string
+      priority?: number
+      weight?: number
+      enabled?: boolean
+      capabilities?: Record<string, unknown> | null
+      configuration?: Record<string, unknown> | null
+    }) => apiJson<{ route: AdminRoute }>('/api/admin/ai-routes', { method: 'POST', json: body }),
+    patch: (id: string, body: Record<string, unknown>) =>
+      apiJson<{ route: AdminRoute }>(`/api/admin/ai-routes/${id}`, { method: 'PATCH', json: body }),
+    delete: (id: string) => apiJson<{ ok: true }>(`/api/admin/ai-routes/${id}`, { method: 'DELETE' }),
+    test: (id: string) =>
+      apiJson<{ result: { ok: boolean; latencyMs: number; error?: string } }>(
+        `/api/admin/ai-routes/${id}/test`,
+        { method: 'POST' },
+      ),
+  },
+
+  verifyAll: () => apiJson<VerifyAllReport>('/api/admin/verify-all', { method: 'POST' }),
+
+  aiHealth: () => apiJson<AdminAiHealthResponse>('/api/admin/ai-health'),
 }

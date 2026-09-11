@@ -5,6 +5,8 @@ export interface Message {
   role: Role
   content: string
   createdAt: number
+  /** Model used to generate this assistant turn (e.g. gpt-5.6-sol) */
+  model?: string
   /** True while tokens are still arriving for this message */
   streaming?: boolean
   /** Set when generation failed or was stopped before any content arrived */

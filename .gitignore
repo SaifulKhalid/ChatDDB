@@ -23,6 +23,9 @@ SECRETS.md
 # Wrangler build cache / local state
 .wrangler
 
+# Production data pulled for analysis: real emails and chat transcripts.
+.analysis/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

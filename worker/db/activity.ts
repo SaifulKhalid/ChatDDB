@@ -24,7 +24,7 @@ export const ACTIVITY_ACTIONS = [
   /**
    * The primary gateway failed and the metered backup answered instead. The
    * user saw nothing, which is the point — this row is the only durable record
-   * that money was spent, and the signal that AgentRouter is having a bad day.
+   * that money was spent, and the signal that the primary provider is having a bad day.
    */
   'upstream_failover',
   /**

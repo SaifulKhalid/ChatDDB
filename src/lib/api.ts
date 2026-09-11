@@ -25,6 +25,8 @@ import type {
   ImageResponse,
   ImportResponse,
   ModelsResponse,
+  PublicAiService,
+  PublicFile,
   SessionListResponse,
   SessionSummary,
   TranscriptResponse,
@@ -34,6 +36,7 @@ export interface ChatRequest {
   sessionId?: string
   content?: string
   attachments?: string[]
+  service?: string
   model?: string
   replaceFromMessageId?: string
   regenerate?: boolean
@@ -43,6 +46,15 @@ export interface StreamMeta {
   sessionId: string | null
   messageId: string | null
   model: string | null
+  generatedFileId: string | null
+  generatedFile: PublicFile | null
+  /**
+   * Present only when a backup gateway answered because the primary failed.
+   * The Worker sets the header pair on a crossover; its absence means the
+   * primary answered and no notice is owed.
+   */
+  upstream: string | null
+  upstreamModel: string | null
 }
 
 export async function* streamChat(
@@ -54,10 +66,24 @@ export async function* streamChat(
 
   if (!res.ok || !res.body) throw await toApiError(res)
 
+  const genFileJson = res.headers.get('X-ChatDDB-Generated-File-JSON')
+  let generatedFile: PublicFile | null = null
+  if (genFileJson) {
+    try {
+      generatedFile = JSON.parse(decodeURIComponent(genFileJson))
+    } catch {
+      generatedFile = null
+    }
+  }
+
   onMeta?.({
     sessionId: res.headers.get('X-ChatDDB-Session-Id'),
     messageId: res.headers.get('X-ChatDDB-Message-Id'),
     model: res.headers.get('X-ChatDDB-Model'),
+    generatedFileId: res.headers.get('X-ChatDDB-Generated-File'),
+    generatedFile,
+    upstream: res.headers.get('X-ChatDDB-Upstream'),
+    upstreamModel: res.headers.get('X-ChatDDB-Upstream-Model'),
   })
 
   const reader = res.body.getReader()
@@ -89,7 +115,14 @@ export async function* streamChat(
         delta?: unknown
       }
       try {
-        frame = JSON.parse(data)
+        const parsed: unknown = JSON.parse(data)
+        // `JSON.parse('null')` returns null instead of throwing, so the catch
+        // below does not cover it and `frame.error` would be a TypeError. Our
+        // Worker never emits `data: null` — it writes its own frames — but this is
+        // the bug that took Claude streams down inside `worker/sse.ts`, and the
+        // reader is a cheaper place to be wrong than the relay.
+        if (typeof parsed !== 'object' || parsed === null) continue
+        frame = parsed
       } catch {
         // Keep-alives and comments are not JSON; a malformed frame is not fatal.
         continue
@@ -105,16 +138,16 @@ export async function* streamChat(
 /** Deltas at or below this length already look like real streaming. */
 const PACE_MIN_CHARS = 24
 /** Roughly how long one oversized delta is spread across. */
-const PACE_BUDGET_MS = 700
+const PACE_BUDGET_MS = 400
 
 /**
  * Renders a delta progressively instead of all at once.
  *
- * AgentRouter does not actually stream `gpt-5.6-sol`: it buffers the full
- * completion upstream and sends it as a single SSE frame, so without this the UI
+ * The upstream gateway buffers the full
+ * completion upstream for some models and sends it as a single SSE frame, so without this the UI
  * would sit empty and then paste the whole answer in one repaint. Genuinely
  * incremental deltas are short, fall under PACE_MIN_CHARS, and pass straight
- * through — so if AgentRouter ever starts real streaming this stops doing
+ * through — so if the upstream provider performs real incremental streaming this stops doing
  * anything.
  */
 async function* paced(text: string, signal: AbortSignal): AsyncGenerator<string> {
@@ -176,6 +209,11 @@ export function importSessions(
 
 export function getModels(): Promise<ModelsResponse> {
   return apiJson<ModelsResponse>('/api/models')
+}
+
+export async function listAiServices(): Promise<PublicAiService[]> {
+  const data = await apiJson<{ services: PublicAiService[] }>('/api/ai-services')
+  return data.services
 }
 
 // ---------------------------------------------------------------------------

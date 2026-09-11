@@ -23,18 +23,25 @@ export interface PublicUser {
   lastLogin: number | null
 }
 
-/** `worker/models.ts` → `ModelSpec`. */
+export type Vendor = 'openai' | 'anthropic' | 'deepseek' | 'zhipu' | 'google'
+
 export interface ModelSpec {
   id: string
   label: string
-  provider: 'agentrouter'
+  /** The name a user picks by, e.g. `gpt-5.6-sol`. Short enough for the picker. */
+  short: string
+  name?: string
+  modelId?: string
   vision: boolean
   documents: boolean
-  contextTokens: number
-  maxOutputTokens: number
-  reasoning: boolean
   default?: boolean
+  description?: string
   note?: string
+  provider?: string
+  vendor?: string
+  contextTokens?: number
+  maxOutputTokens?: number
+  reasoning?: boolean
 }
 
 /** `worker/db/users.ts` → `UsageSummary`. */
@@ -58,9 +65,24 @@ export interface Quota {
   maxAttachmentsPerMessage: number
   /** Generated images per day, per user. `0` disables the daily window. */
   imagePerDay: number
+  imageUsedToday: number
+  /** null when the daily image limit is disabled (`RATE_IMAGE_PER_DAY=0`). */
+  imageRemainingToday: number | null
 }
 
 export type PdfExtractMode = 'client' | 'worker'
+
+/** Public AI Service returned by `GET /api/ai-services` */
+export interface PublicAiService {
+  id: string
+  name: string
+  description: string | null
+  vision: boolean
+  documents: boolean
+  reasoning: boolean
+  tools: boolean
+  default: boolean
+}
 
 /** `POST /api/auth/session`. */
 export interface SessionResponse {
@@ -72,6 +94,7 @@ export interface MeResponse {
   user: PublicUser
   usage: UsageSummary
   quota: Quota
+  services?: PublicAiService[]
   models: ModelSpec[]
   pdfExtractMode: PdfExtractMode
   /** False when the Worker has no `AI` binding, or `IMAGE_ENABLED` is "false". */
@@ -82,6 +105,102 @@ export interface MeResponse {
 export interface ModelsResponse {
   models: ModelSpec[]
   default: string
+}
+
+/** Admin AI Service */
+export interface AdminAiService {
+  id: string
+  key: string
+  public_name: string
+  description: string | null
+  capabilities: string
+  enabled: number
+  default_service: number
+  sort_order: number
+  created_at: number
+  updated_at: number
+}
+
+/** Admin API Provider */
+export interface AdminProvider {
+  id: string
+  key: string
+  label: string
+  adapter: string
+  baseUrl: string
+  maskedKey: string
+  hasKey: boolean
+  headers: Record<string, string> | null
+  timeoutMs: number
+  enabled: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+/** Admin AI Route */
+export interface AdminRoute {
+  id: string
+  service_id: string
+  provider_id: string
+  upstream_model_id: string
+  priority: number
+  weight: number
+  enabled: number
+  capabilities: string | null
+  configuration: string | null
+  created_at: number
+  updated_at: number
+}
+
+export interface RouteHealthSummary {
+  route_id: string
+  consecutive_failures: number
+  circuit_until: number | null
+  last_latency_ms: number | null
+  last_error: string | null
+  last_error_type: string | null
+  last_check: number | null
+}
+
+export interface AdminServiceHealthRoute {
+  route: AdminRoute
+  provider: { id: string; key: string; label: string }
+  health: RouteHealthSummary | null
+  status: 'healthy' | 'failing' | 'circuit_broken'
+}
+
+export interface AdminServiceHealth {
+  service: AdminAiService
+  status: 'operational' | 'degraded' | 'down'
+  routes: AdminServiceHealthRoute[]
+}
+
+export interface AdminAiHealthResponse {
+  overallStatus: 'operational' | 'degraded' | 'down'
+  services: AdminServiceHealth[]
+  timestamp: number
+}
+
+export interface RouteVerificationReport {
+  routeId: string
+  serviceId: string
+  serviceName: string
+  providerId: string
+  providerLabel: string
+  upstreamModelId: string
+  priority: number
+  status: 'healthy' | 'failed'
+  latencyMs: number
+  lastCheck: number
+  error?: string
+}
+
+export interface VerifyAllReport {
+  timestamp: number
+  totalChecked: number
+  healthyCount: number
+  failedCount: number
+  results: RouteVerificationReport[]
 }
 
 /** `worker/db/files.ts` → `PublicFile`. */
