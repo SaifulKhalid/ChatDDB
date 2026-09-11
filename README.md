@@ -1,182 +1,52 @@
 # ChatDDB
 
-A ChatGPT-style AI chatbot. React frontend + a Cloudflare Worker backend that streams **`gpt-5.6-sol`** or **`claude-opus-5`** through **AgentRouter**, with **Cloudflare D1** (chat history), **R2** (file storage) and Firebase auth.
+ChatDDB is a React chat application deployed with a Cloudflare Worker. It uses
+Firebase authentication, D1 for conversations and audit data, R2 for files, and
+Cloudflare Workers AI with Pollinations fallback for image generation.
 
-📘 **[DOCS.md](DOCS.md)** — full technical documentation: architecture, API reference, configuration, streaming internals, error handling, deployment, troubleshooting.
+Text generation is managed by the dynamic AI routing architecture:
 
-## Naming (important)
+```text
+browser service choice → ai_services → ai_routes (priority/failover) → api_providers → adapter → upstream model
+```
 
-The Cloudflare account already has a `chatddb` Pages project and a `chatddb` D1 database from an earlier prototype. **This project uses the `chatddb-f5` prefix everywhere** to avoid conflicts:
-
-| Resource | Name |
-| --- | --- |
-| Pages/Workers project | `chatddb-f5` |
-| D1 database | `chatddb-f5-db` |
-| R2 bucket | `chatddb-f5-storage` |
-
-## Status
-
-- ✅ **Frontend** — ChatGPT-clone UI
-- ✅ **Backend** — Cloudflare Worker at `/api/chat` streaming `gpt-5.6-sol` or `claude-opus-5` via AgentRouter
-- ✅ **Persistence** — D1 for conversations/messages, R2 for attachments, Firebase auth in front of both
+The public client receives service names and capabilities only. Upstream model
+IDs, provider credentials, routes, and health records remain server-side. The
+default migration seeds ChatGPT, Gemini, Claude, DeepSeek, GLM, and Grok
+services with AgentRouter and CodeCraft providers. Administrators can manage
+services, providers, and routes through `/admin`.
 
 ## Setup
 
-The AgentRouter key is a Worker secret and must never reach frontend code.
-
 ```bash
 npm install
-cp .dev.vars.example .dev.vars   # then paste your key into .dev.vars (gitignored)
-npm run dev:all                  # vite on :5173 + wrangler on :8787
+Copy-Item .dev.vars.example .dev.vars
+npm run dev:all
 ```
 
-Get a key at <https://agentrouter.org/console/token>. For the deployed Worker:
+Set `AGENTROUTER_API_KEY` and/or `CODECRAFT_API_KEY` in `.dev.vars`. These
+secrets may also be stored with `npm run secret:agentrouter` and
+`npm run secret:codecraft`. Apply D1 migrations before using a new deployment:
 
 ```bash
-npm run secret        # wrangler secret put AGENTROUTER_API_KEY
-npm run deploy        # build + wrangler deploy
+npm run db:migrate
+npm run deploy
 ```
 
-Check wiring at any time with `curl http://localhost:5173/api/health` — `"configured": true` means the key is loaded.
+The deployed Worker, D1 database, and R2 bucket use the `chatddb-f5` name.
 
-## Frontend features
-
-- Streaming responses with blinking cursor, Stop / Regenerate
-- Markdown rendering (GFM tables, lists) with syntax-highlighted code blocks in a framed header carrying the language name and a copy button
-- Technical figures drawn as SVG: a ` ```svg ` block renders as a themed figure with a caption, a Source toggle and a download, instead of printing as code
-- Edit an earlier user message to re-ask it — later turns are dropped and the answer regenerates from that point (as in ChatGPT)
-- Copy buttons on every message and code block
-- Conversation history: create, rename, delete, search, grouped by date (Today / Yesterday / …), stored in D1 against your account
-- Dark / light theme (system default, toggle, no flash on load)
-- Responsive: overlay sidebar + hamburger on mobile, ChatGPT-style layout on desktop
-- Pick the model per turn: **Auto · ChatGPT · Claude**, remembered across sessions, with each model's unproven capabilities disclosed on the segment itself
-
-## Backend
-
-`worker/` holds the Worker. It also serves the built SPA from `dist/`, so one `wrangler deploy` ships the whole app.
-
-| Endpoint | Purpose |
-| --- | --- |
-| `POST /api/chat` | Stream a completion. Body: `{ "sessionId"?, "content", "model"? }` — one turn, not a history; the Worker rebuilds context from D1 |
-| `POST /api/images` | Generate an image from a prompt. Body: `{ "prompt", "sessionId"? }`. JSON, not SSE |
-| `GET /api/health` | Config check — reports the model and whether the key is loaded |
-| `GET /api/models` | The model registry the picker renders |
-
-`/api/chat` responds with `text/event-stream`:
-
-```
-data: {"choices":[{"delta":{"content":"Hello"}}]}
-data: {"error":{"message":"...","type":"..."}}
-data: [DONE]
-```
-
-| File | Role |
-| --- | --- |
-| `worker/index.ts` | Routing, request validation, system prompt, error mapping |
-| `worker/provider.ts` | AgentRouter client — sole text routing layer, multi-key rotation, retries, timeout, abort |
-| `worker/models.ts` | The model registry: ids, vendors, measured capabilities |
-| `worker/images.ts` | The image chain: Workers AI, then Pollinations |
-| `worker/sse.ts` | Normalises upstream SSE to the contract above; peeks for tool calls; gates SVG figures; `parseChunk` guards every upstream parse |
-| `worker/lib/figureGate.ts` | Withholds a ` ```svg ` block until it is complete and sanitised |
-| `worker/lib/sanitizeSvg.ts` | HTMLRewriter allowlist — the server-side half of the SVG defence |
-
-Config lives in `wrangler.jsonc` `vars` (model, base URL, token cap, timeout) and can be overridden per-machine in `.dev.vars`. Full reference in [DOCS.md § 4](DOCS.md#4-configuration).
-
-### Text & Image Generation Architecture
-
-The application cleanly separates text and image generation paths:
-
-- **Text Chat (AgentRouter as sole routing layer)**: Every text generation request routes strictly through AgentRouter (`worker/provider.ts`). AgentRouter handles API key rotation (`AGENTROUTER_API_KEY`, `AGENTROUTER_API_KEY_2`, `AGENTROUTER_API_KEY_3`) and in-place backoff retries. There are no secondary text fallback gateways or cross-provider failover chains.
-- **Image Generation (Workers AI → Pollinations)**: The Cloudflare free allowance is 10,000 neurons *per account per day*, shared by every signed-in user. `generateImage` in `worker/images.ts` uses Cloudflare Workers AI (`flux-1-schnell`) with automatic crossover to Pollinations (`flux`) on quota exhaustion or model unavailability. Crossovers write an `image_failover` row, and `files.gen_model` records what actually drew the image.
-
-`POLLINATIONS_ENABLED` switches off the image fallback (only `"false"` disarms it).
-
-### Picking a model
-
-The composer offers **Auto · DeepSeek · GLM · ChatGPT · Claude**. All models are served through AgentRouter. Auto sends no `model` field, which the Worker resolves from `AGENTROUTER_MODEL` (or `API_PROVIDER_MODEL`).
-
-`claude-opus-5` was measured with the same probes as the default model, not assumed: vision 3/3, tool calling 10/10 trigger and 5/5 on restraint, round trip, refusal and streaming. One regression is real and is disclosed in the picker rather than hidden — on `probe:svg` phase 2 it stays quiet on 1/8 prompts that deserve no figure where `gpt-5.6-sol` manages 8/8. `DIAGRAM_CLAUSE` was tuned against the other model and does not transfer.
-
-### Generating images mid-conversation
-
-The model can attach one image to a reply by calling a `generate_image` tool, so "can you show me one?" works without the user reaching for the composer's image toggle. The toggle and `POST /api/images` are unchanged; this is an additional path.
-
-The tool is offered on the first upstream request, and `peekToolCalls` in `worker/sse.ts` reads far enough into the response to tell a tool call from ordinary text before any byte reaches the client — a stream that turns out to be text is replayed intact, so the ordinary path loses nothing. Execution runs server-side through the same image chain, the same `limitImage` gate, and the same R2 write as the button, then the result goes back upstream for a final answer.
-
-`RATE_TOOL_IMAGE_PER_DAY` (default 5) caps it *on top of* the ordinary image budget, because the guidance about when to fire is a sentence in a prompt and a sentence in a prompt has never been a spending control. Probe measurements behind the design are in `scripts/probe-tool-calling.mjs`.
-
-### Diagrams are drawn, not generated
-
-Most of this app's users are engineering students, and most of what they ask to see is a pole-zero plot, a Bode sketch, a free-body diagram or a circuit — figures where the *coordinates carry the meaning*. A diffusion model has no symbolic model of an axis, so it produces something that looks like a plot and is wrong in every position that matters. Rated 2/10 by the user who reported it, and no provider swap fixes it, because the failure is the technique rather than the vendor.
-
-So the model draws these instead of generating them: it writes SVG into a ` ```svg ` fence and the browser renders it. Coordinates come from the same reasoning that writes the prose, which is the part that was already right.
-
-**This is not a tool.** Unlike `generate_image` there is nothing to execute server-side — the figure *is* the reply text. That means no second round trip, no rate limiter, no R2 write, no `files` row, and it streams like any other answer. Routing between the two paths is a prompt clause: SVG when position means something, `generate_image` for photographic or artistic imagery. The composer's image toggle is unchanged.
-
-**Two sanitisers, deliberately not shared.** `worker/lib/sanitizeSvg.ts` runs first, in the Worker, using `HTMLRewriter` — a real parser, not a regex — against a strict element/attribute allowlist, so nothing unsanitised is ever persisted or sent. `src/components/SvgFigure.tsx` then re-sanitises with DOMPurify before touching the DOM. The client pass is defence in depth, not the primary control, and it is a *different implementation* on purpose: a shared allowlist would mean one bug defeats both layers.
-
-Between them sits the **figure gate** (`worker/lib/figureGate.ts`): a fenced SVG block is withheld from the stream until it is complete and clean, because half an `<svg>` is not markup that can be judged safe. The moment the opening fence is seen the gate emits the bare fence, so the reader gets a drawing skeleton instead of dead air. The buffer is bounded by size and by a 30-second deadline — a figure that hits `max_tokens` or an upstream drop is closed, sanitised, and captioned *"this figure was cut off"* rather than buffered forever or silently swallowed.
-
-`SVG_DIAGRAMS=false` stops the prompt inviting figures. It does **not** disable the gate or either sanitiser: a user can ask for SVG whatever the prompt says, and "no unsanitised markup reaches a browser" has no useful off position. There is no metered budget behind the switch — drawing costs the output tokens of the reply and nothing more.
-
-### Three AgentRouter quirks worth knowing
-
-**1. It enforces a client whitelist.** A request with an ordinary `User-Agent` is rejected at the edge before it reaches the router:
-
-```json
-{"error":{"message":"unauthorized client detected, ..."},"type":"unauthorized_client_error"}
-```
-
-The same request with a `claude-cli/<version> (external, ...)` User-Agent is accepted — a bad key then fails with `new_api_error` instead, which is how you tell the two apart. So `AGENTROUTER_USER_AGENT` is mandatory, not cosmetic; it is a `var` so it can be changed without a code edit if the accepted pattern moves.
-
-**2. It does not really stream.** AgentRouter waits for the full completion upstream, then synthesises a single-frame SSE response (the chunk arrives as `"id":"chatcmpl_temp"` carrying the whole answer). The Worker relays that faithfully and adds no delay; the progressive typing effect is produced client-side by `paced()` in `src/lib/api.ts`, which reveals a buffered delta over ~700 ms. Short deltas pass through untouched, so if AgentRouter ever starts real streaming the pacing stops applying on its own.
-
-Pacing was tried in the Worker first and removed: Workers pin `Date.now()` between I/O, so a paced loop cannot measure its own drift and overshot its budget by 2–4×, while billing the sleep as wall-clock time.
-
-**3. For Claude, it sends a `data: null` frame.** Measured live: one null frame in twelve for `claude-opus-5`, none in forty-two for `gpt-5.6-sol`. Its Anthropic-to-OpenAI re-serialiser has no OpenAI shape for one of Anthropic's native events and writes the JSON for *nothing* rather than dropping the frame.
-
-This is worth knowing because `try { JSON.parse(x) }` does not defend against it. `JSON.parse('null')` **succeeds**, so the catch never fires and the next line reads `.error` off null — a `TypeError` that killed the stream mid-answer and surfaced as *"Stream interrupted: Cannot read properties of null."* Every parse of an upstream payload in `worker/sse.ts` therefore goes through one `parseChunk` helper that treats a non-object exactly as it treats unparseable JSON. `npm run smoke:sse-null` replays a captured Claude stream through the shipped module to pin it; a bare `JSON.parse` at any of those sites is the bug coming back.
-
-### Notes on the model
-
-`gpt-5.6-sol` is a reasoning model, so the Worker sends `max_completion_tokens` (not `max_tokens`) and no `temperature`. Set `REASONING_EFFORT` to trade latency for depth. Reasoning deltas are dropped — the UI has nowhere to show them.
-
-It also calls tools reliably, which is what the `generate_image` path depends on. `npm run probe:tools` measured 10/10 on prompts that should fire it, 5/5 restraint on one that should not, 5/5 on relaying a tool result, 5/5 on explaining a failed one, and 5/5 producing usable `tool_calls` over a *streaming* request — the last of which is why the decision leg keeps `stream: true` instead of being downgraded to a buffered request. Arguments arrive as ~150 delta fragments, so anything reading them has to reassemble by `index` rather than expecting one frame.
-
-The free-tier backup model's tool support has never been probed. The backup is offered `tools` anyway and ignoring the field is survivable by construction: no `tool_calls` just means the turn is answered as plain text, which is what it would have been.
-
-It writes usable SVG, and — the part that actually needed measuring — it knows when not to. `npm run probe:svg` runs two phases. Phase 1 asked for five figures twice each: 10/10 came back as parseable SVG with a `viewBox`, a `<title>`, text labels, `currentColor` fills, and no script, handler or external reference; label counts ran 5–21 and sizes 1.3–3.8 kB. Phase 2 is restraint, three prompts that deserve a figure against four adversarially chosen ones that do not (a derivation, a TCP-vs-UDP comparison, a request for linked-list code, plain prose): 6/6 drew, 8/8 stayed quiet. Structural checks cannot tell you whether an axis is in the right place, so the probe also renders every figure to `shots/svg-probe/*.png` for a human to look at.
-
-## Development
+## Validation
 
 ```bash
-npm run dev:all      # vite (:5173) + worker (:8787) together — use this
-npm run dev          # frontend only; /api proxies to :8787
-npm run dev:worker   # worker only
-npm run build        # typecheck (app + worker) + production build to dist/
-npm run lint         # oxlint
-npm run cf-typegen   # regenerate worker-configuration.d.ts after editing wrangler.jsonc
-npm run deploy       # build + deploy to Cloudflare
-
-node smoke.mjs         # headless-Edge UI smoke test (needs dev server; screenshots in shots/)
-node smoke-backend.mjs # real gpt-5.6-sol reply, asserts it renders progressively
-node smoke-edit.mjs    # message-edit flow: rewrite, drop later turns, regenerate
-node smoke-mobile.mjs  # mobile viewport / overlay sidebar
-
-npm run smoke:svg-sanitizer  # HTMLRewriter allowlist, incl. mXSS + case-mangling cases
-npm run smoke:figure-gate    # the streaming fence transform: placeholder timing, truncation, overflow
-npm run smoke:sse-null       # the `data: null` frame AgentRouter sends for Claude
-npm run probe:svg            # real model: can it draw, and does it know when not to
+npm run build
+npm run lint
+npm run test:provider
+npm run test:orchestration
+npm run smoke:svg-sanitizer
+npm run smoke:figure-gate
+npm run smoke:sse-null
 ```
 
-Both SVG smoke tests run the *shipped* modules inside a throwaway one-route
-Worker (`scripts/*-harness/`), because `HTMLRewriter` only exists in workerd —
-testing a Node re-implementation would test the wrong parser. Neither needs a
-key. `PHASE=1` / `PHASE=2` and `RUNS=n` narrow the probe, which does spend
-tokens.
-
-The UI smoke tests key off the assistant bubble filling in rather than any fixed
-text, so they pass against the real Worker whatever it answers.
-`smoke-backend.mjs` is the exception: it fails if the key is missing, since a
-reply from anywhere else would make a broken backend look healthy.
-
+Some integration smoke tests require a local Worker, Firebase token, or live
+provider credentials. See [DOCS.md](DOCS.md) for the full command list and
+operations reference.

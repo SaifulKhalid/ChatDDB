@@ -2,8 +2,35 @@
  * Provider adapter interface and shared contracts.
  */
 
-import type { ChatMessage, ToolDefinition } from '../provider.ts'
 import type { ApiProviderRow } from '../db/aiRouting.ts'
+
+export type ChatRole = 'system' | 'user' | 'assistant' | 'tool'
+
+export type ContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }
+
+export interface ToolDefinition {
+  type: 'function'
+  function: {
+    name: string
+    description: string
+    parameters: Record<string, unknown>
+  }
+}
+
+export interface ToolCall {
+  id: string
+  type: 'function'
+  function: { name: string; arguments: string }
+}
+
+export interface ChatMessage {
+  role: ChatRole
+  content: string | ContentPart[] | null
+  tool_calls?: ToolCall[]
+  tool_call_id?: string
+}
 
 export interface ProviderCredentials {
   apiKey?: string

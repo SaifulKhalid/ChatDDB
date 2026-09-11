@@ -15,14 +15,6 @@ export function loadConversations(): Conversation[] {
   }
 }
 
-export function saveConversations(conversations: Conversation[]): void {
-  try {
-    localStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(conversations))
-  } catch {
-    // Storage full or unavailable — keep the app usable in memory
-  }
-}
-
 /**
  * Marks the pre-Phase-2 local history as imported.
  *

@@ -22,11 +22,8 @@ CODECRAFT_API_KEY=cc-replace-me
 # Deployed:  npm run secret:pollinations
 # POLLINATIONS_API_KEY=pk-replace-me
 
-# Optional overrides — defaults live in wrangler.jsonc `vars`.
-# AGENTROUTER_MODEL=deepseek-v4-flash
-# AGENTROUTER_BASE_URL=https://agentrouter.org/v1
-# MAX_OUTPUT_TOKENS=8192
-# REASONING_EFFORT=medium
+# Optional overrides — defaults live in the dynamic AI service/provider/route
+# records created by migrations/0007_ai_services_and_routing.sql.
 # POLLINATIONS_MODEL=flux
 # POLLINATIONS_BASE_URL=https://gen.pollinations.ai
 # POLLINATIONS_ENABLED=true

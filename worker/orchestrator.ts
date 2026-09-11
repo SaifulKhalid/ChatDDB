@@ -14,7 +14,6 @@
  */
 
 import type { WorkerEnv } from './env.ts'
-import type { ChatMessage, ToolDefinition } from './provider.ts'
 import {
   getHealthMap,
   getServiceById,
@@ -31,7 +30,7 @@ import {
   type RouteHealthRow,
   type ServiceCapabilities,
 } from './db/aiRouting.ts'
-import type { ProviderAdapter, ProviderCredentials } from './adapters/types.ts'
+import type { ChatMessage, ProviderAdapter, ProviderCredentials, ToolDefinition } from './adapters/types.ts'
 import { OpenAICompatibleAdapter } from './adapters/openai.ts'
 import { ClassifiedUpstreamError } from './adapters/errors.ts'
 import { badRequest } from './lib/http.ts'
@@ -355,9 +354,6 @@ export function resolveProviderCredentials(
         env.AGENTROUTER_API_KEY,
         env.AGENTROUTER_API_KEY_2,
         env.AGENTROUTER_API_KEY_3,
-        env.PROVIDER_API_KEY,
-        env.PROVIDER_API_KEY_2,
-        env.PROVIDER_API_KEY_3,
       ]
       for (const cand of candidates) {
         const trimmed = cand?.trim()

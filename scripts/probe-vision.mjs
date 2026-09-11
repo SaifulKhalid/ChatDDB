@@ -3,7 +3,7 @@
 /**
  * Probes whether AgentRouter forwards multimodal content parts to the model.
  *
- * This is the check that certifies `vision` in `worker/models.ts`, so it has to
+ * This is the check that certifies vision capabilities on an AI service route, so it has to
  * be hard to pass by accident. An earlier version posted a 1x1 PNG and asked
  * what colour it was; the model answered confidently and *wrongly*, which reads
  * as a pass. A 1x1 image is also small enough that a gateway could drop the part
@@ -202,7 +202,7 @@ async function main() {
     // Reaching here means the parts were accepted but not understood: the model
     // answered about images it evidently could not see. Treat that as no vision.
     console.log(`\nvision: no — ${failures}/${CASES.length} case(s) answered incorrectly.`)
-    console.log('Leave `vision: false` in worker/models.ts.')
+    console.log('Keep the affected AI service routes marked vision-ineligible.')
     process.exit(1)
   }
 

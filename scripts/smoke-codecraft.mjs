@@ -73,12 +73,10 @@ async function main() {
   report('1. CODECRAFT_API_KEY presence', hasKey, hasKey ? 'key configured' : 'missing or placeholder')
 
   // 2. Network connectivity to GET /v1/models
-  let networkOk = false
   try {
     const res = await fetch(MODELS_URL, {
       headers: hasKey ? { Authorization: `Bearer ${apiKey}` } : {},
     })
-    networkOk = res.ok
     report('2. GET /v1/models connectivity', res.ok, `HTTP ${res.status}`)
     if (res.ok) {
       const data = await res.json().catch(() => ({}))

@@ -29,12 +29,7 @@
  *   - regenerate  `regenerate: true` (drops the last answer, re-sends the turn)
  */
 
-import {
-  type ChatMessage,
-  type ContentPart,
-  type ToolCall,
-  type ToolDefinition,
-} from '../provider.ts'
+import type { ChatMessage, ContentPart, ToolCall, ToolDefinition } from '../adapters/types.ts'
 import { peekToolCalls, toClientStream, type StreamResult } from '../sse.ts'
 import { ApiError, badRequest, corsHeaders, notFound } from '../lib/http.ts'
 import { MAX_PROMPT_CHARS, resolveImageProviders } from '../images.ts'
@@ -53,7 +48,6 @@ import * as filesDb from '../db/files.ts'
 import * as ratelimit from '../lib/ratelimit.ts'
 import * as suspicious from '../lib/suspicious.ts'
 import { buildDocumentContext, imageDataUrl } from '../lib/files/context.ts'
-import { NO_VISION_MESSAGE } from '../models.ts'
 import {
   orchestrateChat,
   resolveService,
@@ -74,6 +68,9 @@ const DEFAULT_SYSTEM_PROMPT = [
   'Use Markdown — fenced code blocks with a language tag, tables where they help.',
   'If you are unsure or lack the information, say so rather than guessing.',
 ].join(' ')
+
+const NO_VISION_MESSAGE =
+  'This model does not support image analysis. Please select a vision-capable model.'
 
 // ---------------------------------------------------------------------------
 // The generate_image tool

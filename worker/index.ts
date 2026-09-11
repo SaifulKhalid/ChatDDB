@@ -23,7 +23,6 @@
  * here means the asset handler already passed on it.
  */
 
-import { NotConfiguredError, resolveConfig } from './provider.ts'
 import { imageFallbackReady, imageReady, resolvePollinations } from './images.ts'
 import { bucketReady, dbReady } from './db/client.ts'
 import { errorResponse, json, methodNotAllowed, preflight } from './lib/http.ts'
@@ -225,18 +224,14 @@ function match(pattern: string, path: string): string | null {
  * otherwise pass against a deployment that cannot sign in.
  */
 async function health(ctx: RequestContext): Promise<Response> {
-  const rawKey = ctx.env.CODECRAFT_API_KEY?.trim()
-  const cleanKey = rawKey ? rawKey.replace(/^["']|["']$/g, '').replace(/^Bearer\s+/i, '').trim() : undefined
-  const codecraftConfigured = Boolean(cleanKey && cleanKey !== 'cc-replace-me')
-  let agentrouterConfigured = true
-  let detail: string | undefined
-  try {
-    resolveConfig(ctx.env)
-  } catch (err) {
-    agentrouterConfigured = false
-    detail = err instanceof NotConfiguredError || err instanceof Error ? err.message : String(err)
+  const hasConfiguredKey = (key: string | undefined, placeholder: string) => {
+    const value = key?.trim().replace(/^["']|["']$/g, '').replace(/^Bearer\s+/i, '').trim()
+    return Boolean(value && value !== placeholder)
   }
-  const configured = agentrouterConfigured || codecraftConfigured
+  const configured =
+    hasConfiguredKey(ctx.env.CODECRAFT_API_KEY, 'cc-replace-me') ||
+    [ctx.env.AGENTROUTER_API_KEY, ctx.env.AGENTROUTER_API_KEY_2, ctx.env.AGENTROUTER_API_KEY_3]
+      .some((key) => hasConfiguredKey(key, 'sk-replace-me'))
 
   const [db, r2] = await Promise.all([dbReady(ctx.env.DB), bucketReady(ctx.env.FILES)])
 
@@ -258,7 +253,6 @@ async function health(ctx: RequestContext): Promise<Response> {
       service: 'chat',
       platform: 'ChatDDB',
       configured,
-      ...(detail && !configured ? { detail } : {}),
       ready: {
         upstream: configured,
         db,

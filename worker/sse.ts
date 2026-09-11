@@ -55,7 +55,7 @@
  * back at them, feature flag or not.
  */
 
-import type { ToolCall } from './provider.ts'
+import type { ToolCall } from './adapters/types.ts'
 import { FigureGate } from './lib/figureGate.ts'
 
 const encoder = new TextEncoder()
@@ -783,15 +783,6 @@ function rebuild(res: Response, body: BodyInit): Response {
 }
 
 /** A stream that only carries one error, for failures found before streaming. */
-export function errorStream(message: string, type: string): ReadableStream<Uint8Array> {
-  return new ReadableStream({
-    start(controller) {
-      controller.enqueue(errorFrame(message, type))
-      controller.enqueue(doneFrame())
-      controller.close()
-    },
-  })
-}
 
 function isAbort(err: unknown): boolean {
   return err instanceof Error && (err.name === 'AbortError' || /abort/i.test(err.message))

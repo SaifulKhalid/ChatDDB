@@ -112,6 +112,10 @@ function TailBlock({ content }: { content: string }) {
 
 export function StreamingMarkdown({ content, streaming }: { content: string; streaming: boolean }) {
   const normalized = useMemo(() => normalizeMathDelimiters(content), [content])
+  const { stable, tail } = useMemo(
+    () => (streaming ? splitStableTail(normalized) : { stable: '', tail: '' }),
+    [normalized, streaming],
+  )
   if (!streaming) {
     return (
       <MarkdownErrorBoundary resetKey={normalized} fallback={<p className="whitespace-pre-wrap">{normalized}</p>}>
@@ -123,7 +127,6 @@ export function StreamingMarkdown({ content, streaming }: { content: string; str
       </MarkdownErrorBoundary>
     )
   }
-  const { stable, tail } = useMemo(() => splitStableTail(normalized), [normalized])
   if (!stable) return <div className="streaming-wrap"><TailBlock content={tail} /></div>
   if (!tail) return <StableBlock content={stable} />
   return (

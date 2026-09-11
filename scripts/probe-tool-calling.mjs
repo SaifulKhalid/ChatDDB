@@ -146,7 +146,7 @@ async function post(messages, extra = {}) {
       Authorization: `Bearer ${API_KEY}`,
       'Content-Type': 'application/json',
       Accept: 'application/json',
-      // Upstream gateway client whitelist; see worker/provider.ts.
+      // Upstream gateway client whitelist; see worker/adapters/openai.ts.
       'User-Agent': USER_AGENT,
       'X-App': 'cli',
     },
