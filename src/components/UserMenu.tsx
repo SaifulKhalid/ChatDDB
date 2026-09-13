@@ -16,7 +16,7 @@ import { LogOut, Shield, ShieldCheck, User as UserIcon } from 'lucide-react'
 import { useAuth } from '../lib/auth'
 
 export function UserMenu({ onOpenAdmin }: { onOpenAdmin?: () => void }) {
-  const { profile, quota, signOut, busy } = useAuth()
+  const { profile, quota, imageGeneration, signOut, busy } = useAuth()
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const menuId = useId()
@@ -45,6 +45,8 @@ export function UserMenu({ onOpenAdmin }: { onOpenAdmin?: () => void }) {
 
   const isAdmin = profile.role === 'admin'
   const label = profile.name ?? profile.email
+  const showChatQuota = quota !== null && quota.chatRemainingToday !== null
+  const showImageQuota = quota !== null && imageGeneration && quota.imageRemainingToday !== null
 
   return (
     <div ref={containerRef} className="relative">
@@ -82,11 +84,23 @@ export function UserMenu({ onOpenAdmin }: { onOpenAdmin?: () => void }) {
           )}
 
           {/* Only shown when there is a limit to report; "0 of 0 left" would be
-              a worse answer than saying nothing. */}
-          {quota && quota.chatRemainingToday !== null && (
-            <p className="border-b border-line px-3 py-2 text-xs text-ink-2">
-              {quota.chatRemainingToday} of {quota.chatPerDay} messages left today
-            </p>
+              a worse answer than saying nothing. The image line is additionally
+              gated on `imageGeneration`, so a deployment with no `AI` binding --
+              which already hides the composer's image toggle -- does not report
+              a budget for something it cannot do. */}
+          {quota && (showChatQuota || showImageQuota) && (
+            <div className="border-b border-line px-3 py-2 text-xs text-ink-2">
+              {showChatQuota && (
+                <p>
+                  {quota.chatRemainingToday} of {quota.chatPerDay} messages left today
+                </p>
+              )}
+              {showImageQuota && (
+                <p>
+                  {quota.imageRemainingToday} of {quota.imagePerDay} images left today
+                </p>
+              )}
+            </div>
           )}
 
           {isAdmin && onOpenAdmin && (

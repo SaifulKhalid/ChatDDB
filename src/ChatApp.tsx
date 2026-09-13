@@ -6,7 +6,7 @@ import type { Theme } from './lib/theme'
 import { useAuth } from './lib/auth'
 import { apiFetch, errorText, isRateLimit } from './lib/apiClient'
 import { type ChatRequest, streamChat, generateImage, listSessions, getTranscript, createSession, renameSession, deleteSession, importSessions } from './lib/api'
-import { loadConversations, localHistoryImported, markLocalHistoryImported } from './lib/storage'
+import { loadConversations, localHistoryImported, markLocalHistoryImported, loadModelChoice, saveModelChoice } from './lib/storage'
 import type { PublicFile, SessionSummary, TranscriptMessage } from './lib/apiTypes'
 import { prepareImage } from './lib/image'
 import { uploadFile } from './lib/upload'
@@ -19,7 +19,25 @@ import { navigate } from './lib/router'
 
 export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => void }) {
   const { quota, models, isAdmin, imageGeneration } = useAuth()
-  const activeModel = models.find((m) => m.default) ?? models[0]
+
+  // `null` is Auto: no `model` field on the request, so the Worker resolves its
+  // configured default *and* keeps its backup gateway. Naming a model instead
+  // pins the answer to that model — see `chainFor` in `worker/routes/chat.ts`.
+  const [model, setModel] = useState<string | null>(() => loadModelChoice())
+
+  // A stored id the registry no longer lists would earn a 400 on every send, so
+  // it decays to Auto. Runs once `models` arrives, since it starts out empty.
+  useEffect(() => {
+    if (model !== null && models.length > 0 && !models.some((m) => m.id === model)) {
+      setModel(null)
+      saveModelChoice(null)
+    }
+  }, [model, models])
+
+  // What the composer gates attachments on. Auto has no single answer before the
+  // request is made, so it falls back to the entry the registry flags as the
+  // default — the model the Worker will in fact resolve.
+  const activeModel = models.find((m) => m.id === model) ?? models.find((m) => m.default) ?? models[0]
 
   // ---- 3.1 State shape ---------------------------------------------------
   const [conversations, setConversations] = useState<Conversation[]>([])
@@ -78,6 +96,7 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
       role: m.role,
       content: m.content,
       createdAt: m.createdAt,
+      model: m.model ?? undefined,
       error: m.error ?? undefined,
       attachments: m.attachments.length > 0 ? m.attachments : undefined,
     }
@@ -151,20 +170,41 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
   async function runTurn(input: TurnInput) {
     if (streaming) return
     setError(null)
+    setNotice(null)
 
-    // ---- 1. Make sure a session exists BEFORE streaming -----------------
+    // ---- 1. Ensure session exists — optimistic for new chats ------------
     let sessionId = latest.current.activeId
+    let tempId: string | null = null
     if (!sessionId) {
       if (input.kind !== 'send') return
-      // Every call site is `void runTurn(...)`, so a throw here would surface as
-      // an unhandled rejection instead of a banner.
+      tempId = `temp-${newId()}`
+      const optimisticConv: Conversation = {
+        id: tempId,
+        title: 'New chat',
+        titleSource: 'placeholder',
+        messages: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }
+      setConversations((prev) => [optimisticConv, ...prev])
+      loadedRef.current.add(tempId)
+      setActiveId(tempId)
+      sessionId = tempId
+      // Now create real session in background
       try {
         const created = await createSession()
-        sessionId = created.id
-        setConversations((prev) => [toConversation(created), ...prev])
-        loadedRef.current.add(created.id)
-        setActiveId(created.id)
+        const realId = created.id
+        // Replace temp id with real id
+        setConversations((prev) => prev.map((c) => c.id === tempId ? { ...toConversation(created), messages: c.messages } : c))
+        loadedRef.current.delete(tempId!)
+        loadedRef.current.add(realId)
+        setActiveId(realId)
+        sessionId = realId
       } catch (err) {
+        // Remove optimistic conversation on failure
+        setConversations((prev) => prev.filter((c) => c.id !== tempId))
+        loadedRef.current.delete(tempId!)
+        setActiveId(null)
         setError(errorText(err))
         return
       }
@@ -172,7 +212,6 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
     const sid = sessionId
 
     // ---- 2. Optimistic local mutation -----------------------------------
-    // Resolved before the tray is cleared, so the sent message keeps its chips.
     const sentFiles: PublicFile[] =
       input.kind === 'send' && input.attachments?.length
         ? input.attachments
@@ -209,28 +248,96 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
 
     let acc = ''
     let targetId = assistantLocalId
+    // Throttled commits: accumulate immediately, flush to React at most once per frame.
+    let pendingAcc: string | null = null
+    let raf: number | null = null
+    let scheduled = false
+
+    const flush = () => {
+      scheduled = false
+      raf = null
+      if (pendingAcc === null || ctrl.signal.aborted) return
+      const snapshot = pendingAcc
+      pendingAcc = null
+      const tid = targetId
+      setMessages(sid, (m) =>
+        m.map((x) => (x.id === tid ? { ...x, content: snapshot } : x)))
+    }
+    const scheduleFlush = () => {
+      if (scheduled) return
+      scheduled = true
+      raf = requestAnimationFrame(flush)
+    }
 
     try {
-      const req: ChatRequest =
-        input.kind === 'regenerate'
+      // `model` rides on all three kinds, regenerate included: re-rolling a reply
+      // under the model now selected is the point of picking one. Omitted for
+      // Auto, and an omitted field is what the Worker reads as "you choose".
+      const req: ChatRequest = {
+        ...(input.kind === 'regenerate'
           ? { sessionId: sid, regenerate: true }
           : input.kind === 'edit'
             ? { sessionId: sid, content: input.content, replaceFromMessageId: input.replaceFromMessageId }
-            : { sessionId: sid, content: input.content, attachments: input.attachments }
+            : { sessionId: sid, content: input.content, attachments: input.attachments }),
+        ...(model ? { service: model, model } : {}),
+      }
 
       for await (const delta of streamChat(req, ctrl.signal, (meta) => {
         if (meta.messageId) {
           targetId = meta.messageId
+        }
+        if (meta.model) {
+          const modelUsed = meta.model
           setMessages(sid, (m) =>
-            m.map((x) => (x.id === assistantLocalId ? { ...x, id: meta.messageId! } : x)))
+            m.map((x) =>
+              x.id === assistantLocalId || x.id === targetId
+                ? { ...x, model: modelUsed }
+                : x,
+            ),
+          )
+        }
+        if (meta.generatedFile) {
+          const gen = meta.generatedFile
+          setMessages(sid, (m) =>
+            m.map((x) =>
+              x.id === assistantLocalId || x.id === targetId
+                ? { ...x, id: meta.messageId ?? x.id, attachments: [gen] }
+                : x,
+            ),
+          )
+        } else if (meta.generatedFileId) {
+          const fileId = meta.generatedFileId
+          apiFetch(`/api/files/${fileId}`)
+            .then((r) => r.json() as Promise<{ file: PublicFile }>)
+            .then((res) => {
+              if (res?.file) {
+                setMessages(sid, (m) =>
+                  m.map((x) =>
+                    x.id === assistantLocalId || x.id === targetId
+                      ? { ...x, attachments: [res.file] }
+                      : x,
+                  ),
+                )
+              }
+            })
+            .catch(() => {})
+        } else if (meta.messageId) {
+          setMessages(sid, (m) =>
+            m.map((x) => (x.id === assistantLocalId ? { ...x, id: meta.messageId! } : x)),
+          )
         }
         // Only a `send` consumed the tray. Clearing it on edit/regenerate would
         // silently discard files the user had queued for their next message.
         if (input.kind === 'send') setPending([])
       })) {
         acc += delta
-        setMessages(sid, (m) =>
-          m.map((x) => (x.id === targetId ? { ...x, content: acc } : x)))
+        pendingAcc = acc
+        scheduleFlush()
+      }
+      // Flush any pending frame before marking complete, unless aborted.
+      if (pendingAcc !== null && !ctrl.signal.aborted) {
+        if (raf !== null) cancelAnimationFrame(raf)
+        flush()
       }
     } catch (err) {
       const msg = ctrl.signal.aborted ? undefined : errorText(err)
@@ -580,8 +687,9 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
         )}
 
         {error && (
-          <div className="mx-3 mt-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">
-            {error}
+          <div className="mx-3 mt-2 flex items-start justify-between gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">
+            <span className="flex-1">{error}</span>
+            <button onClick={() => setError(null)} className="shrink-0 rounded p-1 hover:bg-red-500/10" aria-label="Dismiss">✕</button>
           </div>
         )}
 
@@ -605,12 +713,15 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
           attachments={pending}
           onAttach={(files) => void attach(files)}
           onRemoveAttachment={removeAttachment}
-          canAttachImages={activeModel?.vision}
+          canAttachImages={model === null ? models.some((m) => m.vision) : activeModel?.vision}
           canAttachDocuments={activeModel?.documents}
           maxAttachments={quota?.maxAttachmentsPerMessage}
           canGenerateImages={imageGeneration}
           imageMode={imageMode}
           onToggleImageMode={() => setImageMode((v) => !v)}
+          models={models}
+          model={model}
+          onModelChange={(id) => { setModel(id); saveModelChoice(id) }}
         />
       </div>
     </div>

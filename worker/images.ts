@@ -1,16 +1,10 @@
 /**
  * Image generation, on two providers: Workers AI first, Pollinations behind it.
  *
- * ## Why not AgentRouter or freemodel
+ * ## Dedicated Image Providers
  *
- * Neither can serve it. AgentRouter *has* the route — `/v1/images/generations`
- * exists, and it knows what an image model is (`gpt-5.6-sol` is refused with
- * `model gpt-5.6-sol does not support the image_gen interface`, while a genuinely
- * unknown path 404s with `Invalid URL`) — but every image model on this account's
- * tier answers `503 无可用渠道`, "no available channel": `gpt-image-1`,
- * `dall-e-2`, `dall-e-3`, `flux-pro` alike. Its `/v1/models` lists three models,
- * all text. freemodel lists four, all text. So this had to be a new provider, and
- * Workers AI is the one with a standing free allowance.
+ * Workers AI is used as the primary image provider with standing free allowance,
+ * with Pollinations configured as fallback.
  *
  * ## Why flux-1-schnell specifically
  *
@@ -25,7 +19,7 @@
  *
  * This file used to say there was no retry ladder because "there is no second
  * gateway to fall back to". There is one now. Pollinations sits behind Workers AI
- * exactly as freemodel.dev sits behind AgentRouter in `failover.ts`, and for the
+ * exactly as backup providers sit behind the primary in `failover.ts`, and for the
  * same reason: the allowance in front is a hard daily wall shared by every user,
  * so the first person to spend it used to take image generation down for
  * everybody until 00:00 UTC.

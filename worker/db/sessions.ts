@@ -71,7 +71,7 @@ const TITLE_MAX_WORDS = 8
  *
  * This is the fallback, not the main event: a session is named properly by the
  * model after the first exchange completes (see `generateTitle` in
- * `../agentrouter.ts`). But the sidebar row exists the moment the request
+ * `../provider.ts`). But the sidebar row exists the moment the request
  * arrives, so it needs something better than "New chat" to show meanwhile.
  *
  * The old version sliced the first 40 characters of the first line, which put

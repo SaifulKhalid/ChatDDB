@@ -23,8 +23,7 @@
  * here means the asset handler already passed on it.
  */
 
-import { NotConfiguredError, resolveConfig } from './agentrouter.ts'
-import { resolveFallback } from './failover.ts'
+import { NotConfiguredError, resolveConfig } from './provider.ts'
 import { imageFallbackReady, imageReady, resolvePollinations } from './images.ts'
 import { bucketReady, dbReady } from './db/client.ts'
 import { errorResponse, json, methodNotAllowed, preflight } from './lib/http.ts'
@@ -38,6 +37,8 @@ import {
 import type { WorkerEnv } from './env.ts'
 import * as auth from './routes/auth.ts'
 import * as chat from './routes/chat.ts'
+import * as services from './routes/services.ts'
+import * as adminAi from './routes/adminAi.ts'
 import * as sessions from './routes/sessions.ts'
 import * as files from './routes/files.ts'
 import * as images from './routes/images.ts'
@@ -65,13 +66,15 @@ type Route = PublicRoute | GuardedRoute
  * The whole API surface.
  *
  * Worth reading as a privacy summary: the only `public` entries are a health
- * check, the sign-in exchange, and the HMAC-signed file view (whose signature is
- * its authorisation). Everything that touches a conversation, a file, or a user
- * record is behind `user` or `admin`.
+ * check, service discovery, the sign-in exchange, and the HMAC-signed file view
+ * (whose signature is its authorisation). Everything that touches a conversation,
+ * a file, or a user record is behind `user` or `admin`.
  */
 const ROUTES: Route[] = [
   // ---- Public -------------------------------------------------------------
   { method: 'GET', pattern: '/api/health', guard: 'public', handler: health },
+  { method: 'GET', pattern: '/api/ai-services', guard: 'public', handler: services.getAiServices },
+  { method: 'GET', pattern: '/api/models', guard: 'public', handler: services.getLegacyModels },
   { method: 'POST', pattern: '/api/auth/session', guard: 'public', handler: auth.postSession },
   { method: 'GET', pattern: '/api/files/view', guard: 'public', handler: files.viewFile },
 
@@ -79,7 +82,6 @@ const ROUTES: Route[] = [
   { method: 'POST', pattern: '/api/auth/logout', guard: 'user', handler: auth.postLogout },
   { method: 'GET', pattern: '/api/me', guard: 'user', handler: auth.getMe },
   { method: 'POST', pattern: '/api/chat', guard: 'user', handler: chat.postChat },
-  { method: 'GET', pattern: '/api/models', guard: 'user', handler: chat.getModels },
   { method: 'POST', pattern: '/api/images', guard: 'user', handler: images.postImage },
 
   { method: 'GET', pattern: '/api/sessions', guard: 'user', handler: sessions.listSessions },
@@ -106,7 +108,27 @@ const ROUTES: Route[] = [
   { method: 'GET', pattern: '/api/admin/files', guard: 'admin', handler: admin.listAdminFiles },
   { method: 'GET', pattern: '/api/admin/files/:id/url', guard: 'admin', handler: admin.getAdminFileUrl },
   { method: 'GET', pattern: '/api/admin/files/:id/text', guard: 'admin', handler: admin.getAdminFileText },
-  { method: 'GET', pattern: '/api/admin/models', guard: 'admin', handler: chat.getUpstreamModels },
+
+  // ---- Admin: AI Services & Routing ---------------------------------------
+  { method: 'GET', pattern: '/api/admin/ai-services', guard: 'admin', handler: adminAi.listAdminServices },
+  { method: 'POST', pattern: '/api/admin/ai-services', guard: 'admin', handler: adminAi.createAdminService },
+  { method: 'PATCH', pattern: '/api/admin/ai-services/:id', guard: 'admin', handler: adminAi.patchAdminService },
+  { method: 'DELETE', pattern: '/api/admin/ai-services/:id', guard: 'admin', handler: adminAi.deleteAdminService },
+
+  { method: 'POST', pattern: '/api/admin/api-providers/:id/test', guard: 'admin', handler: adminAi.testAdminProvider },
+  { method: 'GET', pattern: '/api/admin/api-providers', guard: 'admin', handler: adminAi.listAdminProviders },
+  { method: 'POST', pattern: '/api/admin/api-providers', guard: 'admin', handler: adminAi.createAdminProvider },
+  { method: 'PATCH', pattern: '/api/admin/api-providers/:id', guard: 'admin', handler: adminAi.patchAdminProvider },
+  { method: 'DELETE', pattern: '/api/admin/api-providers/:id', guard: 'admin', handler: adminAi.deleteAdminProvider },
+
+  { method: 'POST', pattern: '/api/admin/ai-routes/:id/test', guard: 'admin', handler: adminAi.testAdminRoute },
+  { method: 'GET', pattern: '/api/admin/ai-routes', guard: 'admin', handler: adminAi.listAdminRoutes },
+  { method: 'POST', pattern: '/api/admin/ai-routes', guard: 'admin', handler: adminAi.createAdminRoute },
+  { method: 'PATCH', pattern: '/api/admin/ai-routes/:id', guard: 'admin', handler: adminAi.patchAdminRoute },
+  { method: 'DELETE', pattern: '/api/admin/ai-routes/:id', guard: 'admin', handler: adminAi.deleteAdminRoute },
+
+  { method: 'POST', pattern: '/api/admin/verify-all', guard: 'admin', handler: adminAi.verifyAllRoutes },
+  { method: 'GET', pattern: '/api/admin/ai-health', guard: 'admin', handler: adminAi.getAdminAiHealth },
 ]
 
 export default {
@@ -203,25 +225,21 @@ function match(pattern: string, path: string): string | null {
  * otherwise pass against a deployment that cannot sign in.
  */
 async function health(ctx: RequestContext): Promise<Response> {
-  let configured = true
+  const rawKey = ctx.env.CODECRAFT_API_KEY?.trim()
+  const cleanKey = rawKey ? rawKey.replace(/^["']|["']$/g, '').replace(/^Bearer\s+/i, '').trim() : undefined
+  const codecraftConfigured = Boolean(cleanKey && cleanKey !== 'cc-replace-me')
+  let agentrouterConfigured = true
   let detail: string | undefined
   try {
     resolveConfig(ctx.env)
   } catch (err) {
-    configured = false
+    agentrouterConfigured = false
     detail = err instanceof NotConfiguredError || err instanceof Error ? err.message : String(err)
   }
+  const configured = agentrouterConfigured || codecraftConfigured
 
   const [db, r2] = await Promise.all([dbReady(ctx.env.DB), bucketReady(ctx.env.FILES)])
 
-  // The silent backup gateway. Not part of `configured`/`ok`: it is optional by
-  // design, and a deployment without it is healthy, just less resilient.
-  const fallback = resolveFallback(ctx.env)
-  // The backup image provider, reported the same way for the same reason.
-  // `resolvePollinations` returns null for both "no key" and "switched off", so
-  // there is no third "unconfigured" state to represent here either — an unarmed
-  // backup is `false` with no `imageFallbackProvider` beside it, exactly as an
-  // unarmed gateway is. What is missing shows up in `missing` below.
   const imageFallback = resolvePollinations(ctx.env)
 
   const missing: string[] = []
@@ -229,13 +247,7 @@ async function health(ctx: RequestContext): Promise<Response> {
   if (!ctx.env.FILES) missing.push('FILES binding')
   if (!ctx.env.FIREBASE_PROJECT_ID) missing.push('FIREBASE_PROJECT_ID')
   if (!ctx.env.FILE_URL_SECRET) missing.push('FILE_URL_SECRET')
-  // Not fatal: without a salt, `ipHash` returns undefined and the audit log
-  // simply records no origin, which is a privacy-safe degradation.
   if (!ctx.env.IP_HASH_SALT) missing.push('IP_HASH_SALT (optional)')
-  // Named only when the switch says the backup should be armed and the key is
-  // what is stopping it. Silence here means "nobody asked for a backup"; this
-  // line means "a backup was asked for and cannot run", which is a
-  // misconfiguration rather than a choice.
   if (ctx.env.POLLINATIONS_ENABLED?.trim() !== 'false' && !ctx.env.POLLINATIONS_API_KEY?.trim()) {
     missing.push('POLLINATIONS_API_KEY (optional; image fallback unconfigured)')
   }
@@ -244,36 +256,19 @@ async function health(ctx: RequestContext): Promise<Response> {
     {
       ok: true,
       service: 'chat',
-      model: ctx.env.AGENTROUTER_MODEL ?? 'gpt-5.6-sol',
-      provider: 'agentrouter',
+      platform: 'ChatDDB',
       configured,
-      ...(detail ? { detail } : {}),
+      ...(detail && !configured ? { detail } : {}),
       ready: {
         upstream: configured,
         db,
         r2,
-        // "Can a token be verified at all?" — the project id is the only auth
-        // config there is, since verification uses Google's public JWKS.
         auth: Boolean(ctx.env.FIREBASE_PROJECT_ID),
         signedUrls: Boolean(ctx.env.FILE_URL_SECRET),
-        /** Is a second gateway armed to take over silently? */
-        fallback: fallback !== null,
-        /**
-         * Can `POST /api/images` serve? Also what the frontend reads to decide
-         * whether to show the composer's image toggle at all — a deployment
-         * without the AI binding should not offer a button that always 503s.
-         */
         image: imageReady(ctx.env),
-        /**
-         * Is a second image provider armed to draw silently when the shared
-         * Cloudflare allowance runs out? False when the key is absent, when the
-         * kill switch is off, *and* when image generation itself is off — a
-         * backup behind a disabled feature is not armed in any useful sense.
-         */
         imageFallback: imageFallbackReady(ctx.env),
       },
       ...(missing.length > 0 ? { missing } : {}),
-      ...(fallback ? { fallbackProvider: fallback.provider, fallbackModel: fallback.model } : {}),
       ...(imageFallback
         ? { imageFallbackProvider: imageFallback.provider, imageFallbackModel: imageFallback.model }
         : {}),

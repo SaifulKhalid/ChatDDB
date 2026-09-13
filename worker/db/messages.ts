@@ -47,13 +47,25 @@ export interface PublicMessage {
   tokens?: { prompt: number | null; completion: number | null; total: number | null; source: TokenSource | null }
 }
 
+export function toPublicModelKey(modelUsed: string | null | undefined): string | null | undefined {
+  if (!modelUsed) return modelUsed
+  const lower = modelUsed.toLowerCase()
+  if (lower.includes('gpt') || lower.includes('sol') || lower.includes('chatgpt') || lower.includes('openai')) return 'ChatGPT'
+  if (lower.includes('gemini') || lower.includes('google')) return 'Gemini'
+  if (lower.includes('claude') || lower.includes('opus') || lower.includes('anthropic')) return 'Claude'
+  if (lower.includes('glm') || lower.includes('zhipu')) return 'GLM'
+  if (lower.includes('deepseek')) return 'DeepSeek'
+  if (lower.includes('grok') || lower.includes('xai')) return 'Grok'
+  return modelUsed
+}
+
 export function toPublicMessage(row: MessageRow): PublicMessage {
   return {
     id: row.id,
     role: row.role,
     content: row.message_content,
     createdAt: row.created_at,
-    model: row.model_used,
+    model: toPublicModelKey(row.model_used),
     attachmentCount: row.attachment_count,
     error: row.error,
     finishReason: row.finish_reason,
@@ -252,7 +264,7 @@ export function countForSession(db: D1Database, sessionId: string): Promise<numb
 }
 
 /**
- * A crude token estimate for when AgentRouter reports no usage block.
+ * A crude token estimate for when the upstream provider reports no usage block.
  *
  * Four characters per token is the usual English rule of thumb. Anything stored
  * from here is marked `token_source='estimate'` and the admin UI labels it, so

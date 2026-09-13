@@ -38,36 +38,41 @@ export function ChatArea({
   const messages = conversation?.messages ?? []
   const lastContent = messages.length ? messages[messages.length - 1].content : ''
 
-  // Follow the stream while the user is at the bottom
+  // Follow the stream while the user is at the bottom — rAF to avoid jank
   useEffect(() => {
     const el = scrollRef.current
-    if (el && pinnedToBottom) el.scrollTop = el.scrollHeight
+    if (!el || !pinnedToBottom) return
+    let raf = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight
+    })
+    return () => cancelAnimationFrame(raf)
   }, [lastContent, messages.length, conversation?.id, pinnedToBottom])
 
   function handleScroll() {
     const el = scrollRef.current
     if (!el) return
-    setPinnedToBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 60)
+    setPinnedToBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 120)
   }
 
   if (!conversation || messages.length === 0) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-6 px-4">
-        <div className="flex flex-col items-center gap-3">
-          <Logo size={44} />
-          <h1 className="text-2xl font-semibold md:text-3xl">
+      <div className="flex flex-1 flex-col items-center justify-center gap-8 px-4 py-8">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <Logo size={48} />
+          <h1 className="text-[1.7rem] font-semibold tracking-tight md:text-[1.9rem]">
             How can I help you today?
           </h1>
+          <p className="max-w-md text-sm text-ink-2">Ask anything — code, math, diagrams, or describe a picture and watch it appear.</p>
         </div>
-        <div className="grid w-full max-w-2xl grid-cols-1 gap-2 sm:grid-cols-2">
+        <div className="grid w-full max-w-2xl grid-cols-1 gap-2.5 sm:grid-cols-2">
           {SUGGESTIONS.map((s) => (
             <button
               key={s.title}
               onClick={() => onSuggestion(s.prompt)}
-              className="rounded-2xl border border-line px-4 py-3 text-left hover:bg-surface-2"
+              className="rounded-2xl border border-line bg-surface px-4 py-3.5 text-left shadow-sm transition-colors hover:bg-surface-2 hover:border-ink-2/20"
             >
               <span className="block text-sm font-medium">{s.title}</span>
-              <span className="mt-0.5 block truncate text-xs text-ink-2">
+              <span className="mt-1 block truncate text-xs leading-relaxed text-ink-2">
                 {s.prompt}
               </span>
             </button>
