@@ -5,27 +5,30 @@
 The React SPA and API deploy together as the `chatddb-f5` Cloudflare Worker.
 `/api/*` requests run in the Worker; static assets come from `dist/`. Firebase
 ID tokens are verified in the Worker. D1 stores users, sessions, messages,
-files, rate counters, activity, AI services, providers, routes, and route
-health. R2 stores uploaded files, extracted text, and generated images.
+files, rate counters, and audit activity. R2 stores uploaded files, extracted text, and generated images.
 
-Text requests use the database-backed routing path:
+Text requests use a streamlined, zero-D1 static catalogue routing path:
 
-1. `POST /api/chat` rebuilds the user's history from D1 and resolves the
-   requested public service (or automatically selects a live service).
-2. `worker/orchestrator.ts` filters enabled routes by required capabilities,
-   orders them by priority and weight, observes circuit breakers, and fails over
-   before the response stream starts.
-3. The selected provider is executed through `worker/adapters/openai.ts`.
-   The adapter applies provider headers, route-specific completion options,
-   timeout handling, and key rotation. It never exposes internal identifiers to
-   the client.
-4. `worker/sse.ts` normalises upstream SSE, handles tool-call lookahead, and
+1. `POST /api/chat` resolves the public AI model statically from `worker/catalog.ts`
+   (zero database queries).
+2. Rate-limiting check, session verification/creation, history read, and preloaded
+   attachment checks run concurrently via `Promise.all` in a single parallel step.
+3. `worker/routing.ts` selects eligible targets for the model across the two supported
+   providers (**AgentRouter** and **ApiNex**), observing per-isolate in-memory
+   circuit breakers (trips for 60s after 3 consecutive failures).
+4. `callUpstream()` executes the request against the provider using its configured
+   wire protocol (`/v1/responses` for AgentRouter, `/v1/chat/completions` for ApiNex),
+   enforcing separate TTFB timeouts (default 20s) and total timeouts (default 180s),
+   with multi-key rotation and last-good key memory.
+5. If the primary target fails prior to sending the first byte, the router fails
+   over silently to the next target. If a failure occurs post-first-byte, it is
+   emitted as a stream error frame without corrupting or restarting the client response.
+6. `worker/sse.ts` normalises upstream SSE, handles tool-call lookahead, and
    passes all SVG fences through `FigureGate` before streaming or persistence.
 
-`GET /api/ai-services` is the canonical public discovery endpoint. `GET
-/api/models` remains only as a compatibility response with the same safe public
-service data. Admin routes under `/api/admin/ai-*` manage the private routing
-records.
+`GET /api/ai-services` and `GET /api/models` are served directly from the static
+catalogue with `Cache-Control: public, max-age=300` (zero D1 queries). Admin health
+is monitored via `GET /api/admin/provider-health`.
 
 ## Configuration
 
@@ -34,8 +37,9 @@ Non-secret operational settings are in `wrangler.jsonc`; secrets belong in
 
 | Secret | Purpose |
 | --- | --- |
-| `AGENTROUTER_API_KEY`, `_2`, `_3` | Credentials for routes using the AgentRouter provider; keys are rotated on eligible failures. |
-| `CODECRAFT_API_KEY` | Credential for CodeCraft routes. |
+| `AGENTROUTER_API_KEY`, `_2`, `_3` | Credentials for AgentRouter (`https://agentrouter.org/v1`); rotated on 401/429. |
+| `APINEX_API_KEY`, `_2`, `_3` | Credentials for ApiNex (`https://api.apinex.bond/v1`); rotated on 401/429. |
+| `UPSTREAM_TTFB_TIMEOUT_MS` | Optional time-to-first-byte timeout in ms (default 20,000). |
 | `POLLINATIONS_API_KEY` | Optional fallback image provider credential. |
 | `FILE_URL_SECRET` | Signs short-lived file-view URLs. |
 | `IP_HASH_SALT` | Salts IP hashes written to audit data. |
@@ -77,6 +81,7 @@ and `SVG_DIAGRAMS` are disabled only by the literal value `false`.
 | `npm run smoke:svg-sanitizer` | Worker SVG sanitizer tests. |
 | `npm run smoke:figure-gate` | Streaming SVG gate tests. |
 | `npm run smoke:sse-null` | SSE null-frame regression test. |
+| `npm run smoke:failover` | Stub upstream failover & SSE resilience test (TTFB timeout, 429, 502, null frames, mid-stream drops). |
 | `npm run smoke:ai-routing` | Live/public-boundary routing smoke test (requires a Worker; admin cases need a token). |
 | `npm run smoke:files` | File/R2 smoke test (requires an authenticated local deployment). |
 | `npm run smoke:images` | Workers AI image-generation smoke test. |

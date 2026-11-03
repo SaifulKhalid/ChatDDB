@@ -388,20 +388,22 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
   ])
   const parallelDur = performance.now() - tParallelStart
 
-  if (body.sessionId) {
-    if (!resolvedSession) throw notFound('That conversation does not exist.', 'session_not_found')
-  } else {
+  if (!resolvedSession) {
+    throw notFound('That conversation does not exist.', 'session_not_found')
+  }
+  const session = resolvedSession
+
+  if (!body.sessionId) {
     ctx.exec.waitUntil(
       activity.log(ctx.db, {
         userId: ctx.user.id,
         action: 'chat_started',
-        metadata: { sessionId: resolvedSession.id, model: model.name },
+        metadata: { sessionId: session.id, model: model.name },
         ipHash: ctx.ipHash,
         userAgent: ctx.userAgent,
       }),
     )
   }
-  const session = resolvedSession
 
   if (body.attachments.length > 0) {
     if (attachmentRows.length !== body.attachments.length) {

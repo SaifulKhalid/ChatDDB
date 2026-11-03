@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 
 /**
- * Unit test for AI Routing core logic:
+ * Unit test for AI Routing & Catalog core logic:
  * - Error classification (transient vs terminal, crossable vs non-crossable)
  * - Safe message sanitization (no internal model/provider leakage)
- * - Service health status computation (operational, degraded, down)
- * - Credential masking (••••••••1234)
+ * - Static catalogue resolution & fallback ladder definition
+ * - In-memory circuit breaker behavior
  * - Public model key mapping
  */
 
 import { strict as assert } from 'assert'
 import { classifyHttpResponse, classifyNetworkError } from '../worker/adapters/errors.ts'
-import { computeServiceStatus, maskCredentialsJson } from '../worker/db/aiRouting.ts'
+import { MODELS, PROVIDERS, resolveModel } from '../worker/catalog.ts'
+import { getCircuitBreakerStatus } from '../worker/routing.ts'
 import { toPublicModelKey } from '../worker/db/messages.ts'
 
 let passed = 0
@@ -29,17 +30,17 @@ function test(label, fn) {
 }
 
 console.log('\n======================================================')
-console.log('AI Routing Core Unit Tests')
+console.log('AI Routing & Catalog Core Unit Tests')
 console.log('======================================================\n')
 
 // 1. Error Classification & Sanitization Tests
 test('classifyHttpResponse: 429 Rate Limit is crossable with sanitized message', () => {
   const classified = classifyHttpResponse(
     429,
-    { message: 'Rate limit exceeded on upstream model gpt-5.6-sol' },
+    { message: 'Rate limit exceeded on upstream model gpt-6.1-sol' },
     'ChatGPT',
-    'CodeCraft',
-    'gpt-5.6-sol',
+    'AgentRouter',
+    'gpt-6.1-sol',
     '30',
   )
   assert.equal(classified.crossable, true)
@@ -47,8 +48,8 @@ test('classifyHttpResponse: 429 Rate Limit is crossable with sanitized message',
   assert.equal(classified.category, 'rate_limited')
   assert.equal(classified.retryAfterSeconds, 30)
   // Strict sanitization: must NEVER contain upstream model or provider name
-  assert(!classified.publicMessage.includes('gpt-5.6-sol'), 'Should not contain model ID')
-  assert(!classified.publicMessage.includes('CodeCraft'), 'Should not contain provider name')
+  assert(!classified.publicMessage.includes('gpt-6.1-sol'), 'Should not contain model ID')
+  assert(!classified.publicMessage.includes('AgentRouter'), 'Should not contain provider name')
   assert(classified.publicMessage.includes('ChatGPT'), 'Should reference public service name')
 })
 
@@ -56,24 +57,24 @@ test('classifyHttpResponse: 502/503 Gateway Error is crossable', () => {
   const classified = classifyHttpResponse(
     502,
     { message: 'Bad Gateway from agentrouter.org/v1' },
-    'DeepSeek',
+    'ChatGPT',
     'AgentRouter',
-    'deepseek-v4-flash',
+    'gpt-6.1-sol',
   )
   assert.equal(classified.crossable, true)
   assert.equal(classified.publicStatus, 502)
   assert.equal(classified.category, 'upstream_server_error')
   assert(!classified.publicMessage.includes('agentrouter'), 'Should not leak upstream domain')
-  assert(!classified.publicMessage.includes('deepseek-v4-flash'), 'Should not leak model ID')
+  assert(!classified.publicMessage.includes('gpt-6.1-sol'), 'Should not leak model ID')
 })
 
 test('classifyHttpResponse: 400 Bad Request is NOT crossable (client issue)', () => {
   const classified = classifyHttpResponse(
     400,
     { message: 'Invalid format' },
-    'Gemini',
-    'CodeCraft',
-    'gemini-3.7-flash',
+    'ChatGPT',
+    'ApiNex',
+    'free/gpt-6-luna',
   )
   assert.equal(classified.crossable, false)
   assert.equal(classified.publicStatus, 400)
@@ -84,9 +85,9 @@ test('classifyHttpResponse: 401 Insufficient Quota is crossable to backup provid
   const classified = classifyHttpResponse(
     401,
     { message: 'insufficient_user_quota: please recharge balance' },
-    'Claude',
-    'CodeCraft',
-    'claude-opus-5',
+    'ChatGPT',
+    'AgentRouter',
+    'gpt-6.1-sol',
   )
   assert.equal(classified.crossable, true)
   assert.equal(classified.category, 'quota_exhausted')
@@ -95,56 +96,46 @@ test('classifyHttpResponse: 401 Insufficient Quota is crossable to backup provid
 test('classifyNetworkError: Abort / Timeout is crossable', () => {
   const timeoutErr = new Error('The operation was aborted due to timeout')
   timeoutErr.name = 'TimeoutError'
-  const classified = classifyNetworkError(timeoutErr, 'Grok', 'AgentRouter', 'gpt-5.6-sol')
+  const classified = classifyNetworkError(timeoutErr, 'ChatGPT', 'AgentRouter', 'gpt-6.1-sol')
   assert.equal(classified.crossable, true)
   assert.equal(classified.category, 'timeout')
   assert.equal(classified.publicStatus, 504)
   assert(!classified.publicMessage.includes('AgentRouter'))
 })
 
-// 2. Secret Masking Tests
-test('maskCredentialsJson: safely masks API keys (••••••••1234)', () => {
-  const jsonWithKey = JSON.stringify({ apiKey: 'sk-proj-9876543210abcdef' })
-  const { maskedKey, hasKey } = maskCredentialsJson(jsonWithKey)
-  assert.equal(hasKey, true)
-  assert.equal(maskedKey, '••••••••cdef')
-
-  const jsonEmpty = JSON.stringify({})
-  const emptyRes = maskCredentialsJson(jsonEmpty)
-  assert.equal(emptyRes.hasKey, false)
-  assert.equal(emptyRes.maskedKey, '')
+// 2. Static Catalogue Tests
+test('catalog: exactly two providers configured (AgentRouter & ApiNex)', () => {
+  assert.deepEqual(Object.keys(PROVIDERS).sort(), ['agentrouter', 'apinex'])
+  assert.equal(PROVIDERS.agentrouter.protocol, 'responses')
+  assert.equal(PROVIDERS.apinex.protocol, 'chat_completions')
 })
 
-// 3. Service Status Computation Tests
-test('computeServiceStatus: operational when P1 is healthy', () => {
-  const status = computeServiceStatus([
-    { enabled: 1, priority: 1, health: { consecutive_failures: 0, circuit_until: null } },
-    { enabled: 1, priority: 2, health: { consecutive_failures: 0, circuit_until: null } },
-  ])
-  assert.equal(status, 'operational')
+test('catalog: resolveModel resolves default and aliases', () => {
+  const defaultModel = resolveModel()
+  assert.equal(defaultModel.key, 'chatgpt')
+  assert.ok(defaultModel.targets.length >= 2, 'Default model has primary and fallback targets')
+
+  const byAlias = resolveModel('gpt-5.6-sol')
+  assert.equal(byAlias.key, 'chatgpt')
+
+  const auto = resolveModel('auto')
+  assert.equal(auto.key, 'chatgpt')
 })
 
-test('computeServiceStatus: degraded when P1 is failing or circuit broken but P2 is operational', () => {
-  const status = computeServiceStatus([
-    { enabled: 1, priority: 1, health: { consecutive_failures: 3, circuit_until: Date.now() + 60000 } },
-    { enabled: 1, priority: 2, health: { consecutive_failures: 0, circuit_until: null } },
-  ])
-  assert.equal(status, 'degraded')
+test('catalog: models define fallback targets across the two providers', () => {
+  for (const model of MODELS) {
+    assert.ok(model.targets.length >= 1)
+    for (const tgt of model.targets) {
+      assert.ok(tgt.provider === 'agentrouter' || tgt.provider === 'apinex')
+      assert.ok(tgt.upstreamModel.length > 0)
+    }
+  }
 })
 
-test('computeServiceStatus: down when all routes have broken circuits', () => {
-  const status = computeServiceStatus([
-    { enabled: 1, priority: 1, health: { consecutive_failures: 3, circuit_until: Date.now() + 60000 } },
-    { enabled: 1, priority: 2, health: { consecutive_failures: 3, circuit_until: Date.now() + 60000 } },
-  ])
-  assert.equal(status, 'down')
-})
-
-test('computeServiceStatus: down when single route has 3+ consecutive failures (e.g. Grok)', () => {
-  const status = computeServiceStatus([
-    { enabled: 1, priority: 1, health: { consecutive_failures: 4, circuit_until: null } },
-  ])
-  assert.equal(status, 'down')
+// 3. Circuit Breaker & Health Tests
+test('circuit breaker: getCircuitBreakerStatus returns object', () => {
+  const status = getCircuitBreakerStatus()
+  assert.equal(typeof status, 'object')
 })
 
 // 4. Public Model Key Mapping Tests
@@ -159,32 +150,25 @@ test('toPublicModelKey: maps internal IDs to clean public names', () => {
 })
 
 test('toPublicModelKey: passes through every seeded public name unchanged', () => {
-  // These are what `persistAssistant` actually stores, so this is the hot path.
   for (const name of ['ChatGPT', 'Gemini', 'Claude', 'DeepSeek', 'GLM', 'Grok']) {
     assert.equal(toPublicModelKey(name), name)
   }
 })
 
 test('toPublicModelKey: anchors on a prefix, so "sol" no longer means ChatGPT', () => {
-  // The old matcher asked `lower.includes('sol')`, which classified any id
-  // containing those three letters as ChatGPT.
   assert.equal(toPublicModelKey('solar-10.7b'), null)
   assert.equal(toPublicModelKey('console-preview'), null)
-  // Same trap in the other direction: a vendor fragment buried mid-string.
   assert.equal(toPublicModelKey('my-gpt-clone'), null)
   assert.equal(toPublicModelKey('not-a-claude-model'), null)
 })
 
 test('toPublicModelKey: never leaks an image vendor or model id', () => {
-  // `routes/images.ts` stores `image.model` on the assistant row, and
-  // `MessageItem.tsx` renders `message.model` verbatim in a badge.
   assert.equal(toPublicModelKey('@cf/black-forest-labs/flux-1-schnell'), 'Image')
   assert.equal(toPublicModelKey('pollinations/flux'), 'Image')
   assert.equal(toPublicModelKey('pollinations/turbo'), 'Image')
 })
 
 test('toPublicModelKey: withholds anything it cannot classify', () => {
-  // Returning the raw value was the leak; the badge simply does not render.
   assert.equal(toPublicModelKey('some-unreleased-model-v9'), null)
   assert.equal(toPublicModelKey('gpt'), null)
   assert.equal(toPublicModelKey(undefined), undefined)
