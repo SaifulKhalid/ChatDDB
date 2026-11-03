@@ -148,14 +148,38 @@ export async function callUpstream(
   }
 
   if (isResponsesApi) {
-    bodyObj.input = request.messages
+    const systemParts: string[] = []
+    const inputItems: ChatMessage[] = []
+
+    for (const msg of request.messages) {
+      if (msg.role === 'system') {
+        if (typeof msg.content === 'string') {
+          systemParts.push(msg.content)
+        }
+      } else {
+        inputItems.push(msg)
+      }
+    }
+
+    if (systemParts.length > 0) {
+      bodyObj.instructions = systemParts.join('\n\n')
+    }
+    bodyObj.input = inputItems
+
+    if (request.tools && request.tools.length > 0) {
+      bodyObj.tools = request.tools.map((t) => ({
+        type: 'function',
+        name: t.function.name,
+        description: t.function.description,
+        parameters: t.function.parameters,
+      }))
+    }
   } else {
     bodyObj.messages = request.messages
-  }
-
-  if (request.tools && request.tools.length > 0) {
-    bodyObj.tools = request.tools
-    bodyObj.tool_choice = 'auto'
+    if (request.tools && request.tools.length > 0) {
+      bodyObj.tools = request.tools
+      bodyObj.tool_choice = 'auto'
+    }
   }
 
   const bodyJson = JSON.stringify(bodyObj)
@@ -342,10 +366,10 @@ export async function routeChat(input: RouteInput): Promise<RoutedResult> {
       lastError = classified
       recordFailure(target)
 
-      // Silent failover if error is crossable (network, timeout, 5xx, 429/401) and more targets exist
-      if (classified.classification.crossable && idx < orderedTargets.length - 1) {
+      // Silent failover if more targets exist in the priority ladder
+      if (idx < orderedTargets.length - 1) {
         console.warn(
-          `[routing] target failed, failing over silently: ${provider.label} ${target.upstreamModel} (${classified.classification.category})`,
+          `[routing] target failed, failing over silently: ${provider.label} ${target.upstreamModel} (${classified.classification.category}) - ${classified.classification.internalDiagnostic}`,
         )
         continue
       }
