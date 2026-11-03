@@ -415,15 +415,28 @@ async function pumpJsonBody(
  * must be handed to `ctx.waitUntil` by the tap itself — which is exactly what
  * `routes/chat.ts` does with its D1 writes.
  */
-export function toClientStream(res: Response, onComplete?: StreamTap): ReadableStream<Uint8Array> {
+export function toClientStream(
+  res: Response,
+  onComplete?: StreamTap,
+  onFirstByte?: () => void,
+): ReadableStream<Uint8Array> {
   const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>()
   const writer = writable.getWriter()
   const isEventStream = (res.headers.get('content-type') ?? '').includes('text/event-stream')
   const sink = newSink()
 
   void (async () => {
+    let firstByteFired = false
+    const fireFirstByte = () => {
+      if (!firstByteFired) {
+        firstByteFired = true
+        onFirstByte?.()
+      }
+    }
+
     try {
       await writer.write(commentFrame('chatddb stream open'))
+      fireFirstByte()
       if (isEventStream && res.body) {
         await pumpEventStream(res.body, writer, sink)
       } else {

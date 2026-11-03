@@ -35,6 +35,7 @@ export interface AuthedContext extends RequestContext {
   db: D1Database
   user: UserRow
   token: VerifiedToken
+  authDur?: number
 }
 
 export async function buildContext(
@@ -62,6 +63,7 @@ export async function buildContext(
  * hour for Firebase's token to expire.
  */
 export async function requireAuth(ctx: RequestContext): Promise<AuthedContext> {
+  const tAuthStart = performance.now()
   const raw = bearerToken(ctx.request)
   if (!raw) {
     throw unauthorized('Sign in to continue.', 'missing_token')
@@ -85,7 +87,8 @@ export async function requireAuth(ctx: RequestContext): Promise<AuthedContext> {
     )
   }
 
-  return { ...ctx, db, user, token }
+  const authDur = performance.now() - tAuthStart
+  return { ...ctx, db, user, token, authDur }
 }
 
 /**

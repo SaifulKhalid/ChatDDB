@@ -348,6 +348,8 @@ function parseBody(raw: Record<string, unknown>): ChatBody {
 }
 
 export async function postChat(ctx: AuthedContext): Promise<Response> {
+  const tPostChatStart = performance.now()
+  const authDur = ctx.authDur ?? 0
   const body = parseBody(await readJsonBody(ctx.request))
 
   // Pre-load attachment rows to verify readiness and determine file types
@@ -375,15 +377,19 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
   const hasImages = attachmentRows.some((f) => f.file_type === 'image')
 
   // Resolve public AI service dynamically from D1
+  const tRouteStart = performance.now()
   const service = await resolveService(ctx.db, ctx.env, body.service || body.model, {
     content: body.content,
     hasImages,
   })
+  const routingDur = performance.now() - tRouteStart
 
   // Verify vision capability if explicit turn carries images
   assertVisionOk(attachmentRows, service)
 
+  const tRateStart = performance.now()
   await limitChat(ctx)
+  const rateLimitDur = performance.now() - tRateStart
 
   const session = await resolveSession(ctx, body, service.public_name)
   const turn = await prepareTurn(ctx, body, session.id, service, attachmentRows)
@@ -429,21 +435,40 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
     throw err
   }
 
+  const upstreamTtfb = outcome.latencyMs
+  const serverTiming = [
+    `auth;dur=${authDur.toFixed(1)}`,
+    `routing;dur=${routingDur.toFixed(1)}`,
+    `rate_limit;dur=${rateLimitDur.toFixed(1)}`,
+    `history_read;dur=${turn.historyReadDur.toFixed(1)}`,
+    `message_insert;dur=${turn.messageInsertDur.toFixed(1)}`,
+    `upstream_ttfb;dur=${upstreamTtfb.toFixed(1)}`,
+  ].join(', ')
+
   const attached = generated
-  const stream = toClientStream(outcome.res, (result) => {
-    ctx.exec.waitUntil(
-      persistAssistant(
-        ctx,
-        session,
-        service.public_name,
-        outcome.upstreamModelId,
-        outcome.provider.key,
-        turn,
-        result,
-        attached,
-      ),
-    )
-  })
+  const stream = toClientStream(
+    outcome.res,
+    (result) => {
+      ctx.exec.waitUntil(
+        persistAssistant(
+          ctx,
+          session,
+          service.public_name,
+          outcome.upstreamModelId,
+          outcome.provider.key,
+          turn,
+          result,
+          attached,
+        ),
+      )
+    },
+    () => {
+      const firstByteDur = performance.now() - tPostChatStart
+      console.log(
+        `[timing] auth=${authDur.toFixed(1)}ms routing=${routingDur.toFixed(1)}ms rate_limit=${rateLimitDur.toFixed(1)}ms history_read=${turn.historyReadDur.toFixed(1)}ms message_insert=${turn.messageInsertDur.toFixed(1)}ms upstream_ttfb=${upstreamTtfb.toFixed(1)}ms first_byte=${firstByteDur.toFixed(1)}ms`,
+      )
+    },
+  )
 
   return new Response(stream, {
     headers: {
@@ -451,6 +476,7 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
       'Cache-Control': 'no-cache, no-transform',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
+      'Server-Timing': serverTiming,
       // Public AI service name only: NEVER leaks upstream model IDs
       'X-ChatDDB-Model': service.public_name,
       'X-ChatDDB-Session-Id': session.id,
@@ -554,6 +580,8 @@ interface Turn {
   promptChars: number
   promptHash: string
   attachmentCount: number
+  historyReadDur: number
+  messageInsertDur: number
 }
 
 async function prepareTurn(
@@ -573,12 +601,14 @@ async function prepareTurn(
   }
 
   // Read before the insert, so the history is everything *except* this turn.
+  const tHistStart = performance.now()
   const history = await messagesDb.historyFor(
     ctx.db,
     sessionId,
     ctx.policy.historyMaxTurns,
     LIMITS.maxTotalChars,
   )
+  const historyReadDur = performance.now() - tHistStart
 
   const now = Date.now()
   const inserted = messagesDb.insertStmt({
@@ -617,7 +647,9 @@ async function prepareTurn(
   }
   // One transaction: the message, the counters, the audit row, and the file
   // links all land together or not at all.
+  const tInsertStart = performance.now()
   await batch(ctx.db, statements)
+  const messageInsertDur = performance.now() - tInsertStart
 
   ctx.exec.waitUntil(
     suspicious.afterMessage(
@@ -636,6 +668,8 @@ async function prepareTurn(
     promptChars: history.reduce((n, m) => n + m.content.length, 0) + text.length,
     promptHash,
     attachmentCount: files.length,
+    historyReadDur,
+    messageInsertDur,
   }
 }
 
@@ -660,12 +694,14 @@ async function prepareRegenerate(
   const userTurn = await messagesDb.lastUserForSession(ctx.db, sessionId)
   if (!userTurn) throw badRequest('This conversation has no user message to answer.', 'nothing_to_regenerate')
 
+  const tHistStart = performance.now()
   const full = await messagesDb.historyFor(
     ctx.db,
     sessionId,
     ctx.policy.historyMaxTurns,
     LIMITS.maxTotalChars,
   )
+  const historyReadDur = performance.now() - tHistStart
   if (full.length > 0 && full[full.length - 1]?.role === 'user') full.pop()
 
   const files = await filesDb.listForMessage(ctx.db, userTurn.id)
@@ -681,6 +717,8 @@ async function prepareRegenerate(
     promptChars: full.reduce((n, m) => n + m.content.length, 0) + text.length,
     promptHash: (await sha256Hex(userTurn.message_content)).slice(0, 16),
     attachmentCount: files.length,
+    historyReadDur,
+    messageInsertDur: 0,
   }
 }
 
