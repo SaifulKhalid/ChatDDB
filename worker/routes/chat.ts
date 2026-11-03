@@ -49,14 +49,13 @@ import * as ratelimit from '../lib/ratelimit.ts'
 import * as suspicious from '../lib/suspicious.ts'
 import { buildDocumentContext, imageDataUrl } from '../lib/files/context.ts'
 import {
-  orchestrateChat,
-  resolveService,
-  getAdapter,
-  resolveProviderCredentials,
-  type OrchestratedResult,
-} from '../orchestrator.ts'
+  routeChat,
+  callUpstream,
+  resolveApiKeys,
+  type RoutedResult,
+} from '../routing.ts'
+import { resolveModel, type PublicModel } from '../catalog.ts'
 import { ClassifiedUpstreamError } from '../adapters/errors.ts'
-import { parseCapabilities, type AiServiceRow } from '../db/aiRouting.ts'
 import { sha256Hex } from '../lib/hash.ts'
 import type { AuthedContext } from '../auth/middleware.ts'
 import type { FileRow } from '../db/files.ts'
@@ -376,39 +375,37 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
 
   const hasImages = attachmentRows.some((f) => f.file_type === 'image')
 
-  // Resolve public AI service dynamically from D1
+  // Resolve public AI model from static catalogue (zero D1)
   const tRouteStart = performance.now()
-  const service = await resolveService(ctx.db, ctx.env, body.service || body.model, {
-    content: body.content,
-    hasImages,
-  })
+  const model = resolveModel(body.service || body.model)
   const routingDur = performance.now() - tRouteStart
 
   // Verify vision capability if explicit turn carries images
-  assertVisionOk(attachmentRows, service)
+  assertVisionOk(attachmentRows, model)
 
   const tRateStart = performance.now()
   await limitChat(ctx)
   const rateLimitDur = performance.now() - tRateStart
 
-  const session = await resolveSession(ctx, body, service.public_name)
-  const turn = await prepareTurn(ctx, body, session.id, service, attachmentRows)
+  const session = await resolveSession(ctx, body, model.name)
+  const turn = await prepareTurn(ctx, body, session.id, model, attachmentRows)
 
   // Offered only when image providers exist
   const toolsArmed = resolveImageProviders(ctx.env).length > 0
   const upstream = buildUpstreamMessages(ctx, turn, toolsArmed)
 
-  let outcome: OrchestratedResult
+  let outcome: RoutedResult
   let generated: filesDb.PublicFile | null = null
 
   try {
-    outcome = await orchestrateChat(ctx.db, ctx.env, {
-      serviceOrKey: service.key,
+    outcome = await routeChat({
+      serviceOrKey: model.key,
       content: body.content,
       messages: upstream,
       hasImages,
       tools: toolsArmed ? [IMAGE_TOOL] : undefined,
       clientSignal: ctx.request.signal,
+      env: ctx.env,
     })
 
     if (toolsArmed) {
@@ -419,11 +416,11 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
   } catch (err) {
     if (err instanceof ClassifiedUpstreamError) {
       ctx.exec.waitUntil(
-        persistFailure(ctx, session.id, service.public_name, err.classification.publicMessage),
+        persistFailure(ctx, session.id, model.name, err.classification.publicMessage),
       )
       console.error(
         '[chatddb] upstream error for service=%s: %s',
-        service.public_name,
+        model.name,
         err.classification.internalDiagnostic,
       )
       throw new ApiError(
@@ -453,7 +450,7 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
         persistAssistant(
           ctx,
           session,
-          service.public_name,
+          model.name,
           outcome.upstreamModelId,
           outcome.provider.key,
           turn,
@@ -478,7 +475,7 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
       'X-Accel-Buffering': 'no',
       'Server-Timing': serverTiming,
       // Public AI service name only: NEVER leaks upstream model IDs
-      'X-ChatDDB-Model': service.public_name,
+      'X-ChatDDB-Model': model.name,
       'X-ChatDDB-Session-Id': session.id,
       ...(turn.userMessageId ? { 'X-ChatDDB-Message-Id': turn.userMessageId } : {}),
       ...(attached
@@ -588,13 +585,13 @@ async function prepareTurn(
   ctx: AuthedContext,
   body: ChatBody,
   sessionId: string,
-  service: AiServiceRow,
+  model: PublicModel,
   preloadedFiles?: FileRow[],
 ): Promise<Turn> {
-  if (body.regenerate) return prepareRegenerate(ctx, sessionId, service)
+  if (body.regenerate) return prepareRegenerate(ctx, sessionId, model)
 
   const content = body.content as string
-  const files = preloadedFiles ?? (await loadAttachments(ctx, body.attachments, service))
+  const files = preloadedFiles ?? (await loadAttachments(ctx, body.attachments, model))
 
   if (body.replaceFromMessageId) {
     await truncateFrom(ctx, sessionId, body.replaceFromMessageId)
@@ -616,7 +613,7 @@ async function prepareTurn(
     userId: ctx.user.id,
     role: 'user',
     content,
-    model: service.public_name,
+    model: model.name,
     modelProvider: null,
     attachmentCount: files.length,
     createdAt: now,
@@ -625,13 +622,13 @@ async function prepareTurn(
   const promptHash = (await sha256Hex(content)).slice(0, 16)
   const statements = [
     inserted.stmt,
-    sessionsDb.touchStmt(sessionId, 1, service.public_name, now),
+    sessionsDb.touchStmt(sessionId, 1, model.name, now),
     activity.logStmt({
       userId: ctx.user.id,
       action: 'message_sent',
       metadata: {
         sessionId,
-        model: service.public_name,
+        model: model.name,
         chars: content.length,
         attachments: files.length,
         promptHash,
@@ -679,7 +676,7 @@ async function prepareTurn(
 async function prepareRegenerate(
   ctx: AuthedContext,
   sessionId: string,
-  service: AiServiceRow,
+  model: PublicModel,
 ): Promise<Turn> {
   const last = await messagesDb.lastForSession(ctx.db, sessionId)
   if (!last) throw badRequest('This conversation has no messages to regenerate.', 'nothing_to_regenerate')
@@ -705,7 +702,7 @@ async function prepareRegenerate(
   if (full.length > 0 && full[full.length - 1]?.role === 'user') full.pop()
 
   const files = await filesDb.listForMessage(ctx.db, userTurn.id)
-  assertVisionOk(files, service)
+  assertVisionOk(files, model)
 
   const text = await withDocuments(ctx, files, userTurn.message_content)
   return {
@@ -740,7 +737,7 @@ async function truncateFrom(ctx: AuthedContext, sessionId: string, messageId: st
 async function loadAttachments(
   ctx: AuthedContext,
   ids: string[],
-  service: AiServiceRow,
+  model: PublicModel,
 ): Promise<FileRow[]> {
   if (ids.length === 0) return []
   if (ids.length > ctx.policy.maxAttachmentsPerMessage) {
@@ -762,22 +759,15 @@ async function loadAttachments(
     )
   }
 
-  assertVisionOk(rows, service)
+  assertVisionOk(rows, model)
   return rows
 }
 
 /**
- * Refuses an image turn on a service that has no vision.
- *
- * Checked here rather than left to routing because the failure it prevents is a
- * bad one: without it the image bytes would be posted upstream and come back as
- * an opaque 4xx mid-stream, after the user had already waited. `routeAutoService`
- * picks a vision-capable service when one exists, so this is the backstop for
- * when the caller named a service explicitly.
+ * Refuses an image turn on a model that has no vision.
  */
-function assertVisionOk(files: FileRow[], service: AiServiceRow): void {
-  const caps = parseCapabilities(service.capabilities)
-  if (files.some((f) => f.file_type === 'image') && caps.vision !== true) {
+function assertVisionOk(files: FileRow[], model: PublicModel): void {
+  if (files.some((f) => f.file_type === 'image') && !model.capabilities.vision) {
     throw badRequest(NO_VISION_MESSAGE, 'model_no_vision')
   }
 }
@@ -878,30 +868,13 @@ interface ToolOutcome {
 
 async function runToolLoop(
   ctx: AuthedContext,
-  outcome: OrchestratedResult,
+  outcome: RoutedResult,
   messages: ChatMessage[],
   sessionId: string,
 ): Promise<ToolOutcome> {
   let currentRes = outcome.res
   let file: filesDb.PublicFile | null = null
-
-  const adapter = getAdapter(outcome.provider.adapter)
-  const creds = resolveProviderCredentials(outcome.provider, ctx.env)
-
-  let routeConfig: {
-    tokenParam?: 'max_tokens' | 'max_completion_tokens'
-    maxOutputTokens?: number
-    reasoningEffort?: string
-    sendReasoningEffort?: boolean
-  } = {}
-
-  if (outcome.route.configuration) {
-    try {
-      routeConfig = JSON.parse(outcome.route.configuration) as typeof routeConfig
-    } catch {
-      routeConfig = {}
-    }
-  }
+  const keys = resolveApiKeys(ctx.env, outcome.target.provider)
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const peek = await peekToolCalls(currentRes)
@@ -915,13 +888,11 @@ async function runToolLoop(
       messages.push({ role: 'tool', tool_call_id: call.id, content: payload })
     }
 
-    currentRes = await adapter.executeChat(outcome.provider, creds, {
-      upstreamModel: outcome.route.upstream_model_id,
+    const followUp = await callUpstream(outcome.target, outcome.provider, keys, {
       messages,
       clientSignal: ctx.request.signal,
-      configuration: routeConfig,
-      timeoutMs: outcome.provider.timeout_ms,
     })
+    currentRes = followUp.res
   }
 
   console.warn('[chatddb] tool loop hit %d rounds for session %s', MAX_TOOL_ROUNDS, sessionId)

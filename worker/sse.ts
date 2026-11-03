@@ -207,6 +207,10 @@ function parseChunk(payload: string): UpstreamChunk | null {
 
 /** Pulls the assistant text out of one upstream SSE payload, if it has any. */
 function extractContent(chunk: UpstreamChunk): string | null {
+  // OpenAI Responses API format: event carries `delta: "..."` directly
+  const directDelta = (chunk as unknown as { delta?: unknown }).delta
+  if (typeof directDelta === 'string' && directDelta.length > 0) return directDelta
+
   const choice = chunk.choices?.[0]
   if (!choice) return null
   const delta = choice.delta?.content
@@ -221,6 +225,10 @@ function extractError(chunk: UpstreamChunk): string | null {
   if (chunk.error) {
     const message = chunk.error.message
     return typeof message === 'string' ? message : JSON.stringify(chunk.error)
+  }
+  const status = (chunk as unknown as { status?: unknown; error?: unknown }).status
+  if (status === 'failed') {
+    return 'Upstream response generation failed'
   }
   return null
 }

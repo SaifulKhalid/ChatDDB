@@ -16,7 +16,7 @@ import { bearerToken, verifyIdToken } from '../auth/verify.ts'
 import type { AuthedContext, RequestContext } from '../auth/middleware.ts'
 import { listVar } from '../env.ts'
 import { imageReady } from '../images.ts'
-import { listLiveServices, toPublicCapabilities } from '../db/aiRouting.ts'
+import { MODELS } from '../catalog.ts'
 
 /** UTC midnight for a timestamp -- the boundary all daily counters share. */
 export function dayStart(now = Date.now()): number {
@@ -147,20 +147,16 @@ export async function getMe(ctx: AuthedContext): Promise<Response> {
    */
   const imageUsedToday = await ratelimit.peek(ctx.db, `user:${ctx.user.id}`, 'image', 'day')
 
-  const aiServicesList = await listLiveServices(ctx.db).catch(() => [])
-  const defaultService = aiServicesList.find((s) => s.default_service === 1) ?? aiServicesList[0]
-  /**
-   * The canonical public projection, shared with `GET /api/ai-services` so the
-   * capability contract cannot drift between the two. `models` used to carry a
-   * second, hand-built copy of this same list in the legacy shape; the client now
-   * reads `services` directly, so the duplicate block is gone.
-   */
-  const publicServices = aiServicesList.map((s) => ({
-    id: s.key,
-    name: s.public_name,
-    description: s.description,
-    ...toPublicCapabilities(s.capabilities),
-    default: defaultService ? s.id === defaultService.id : false,
+  const defaultModel = MODELS.find((m) => m.default) ?? MODELS[0]
+  const publicServices = MODELS.map((m) => ({
+    id: m.key,
+    name: m.name,
+    description: m.description,
+    vision: m.capabilities.vision,
+    documents: m.capabilities.documents,
+    reasoning: m.capabilities.reasoning,
+    tools: m.capabilities.tools,
+    default: m.key === defaultModel.key,
   }))
 
   return json(
