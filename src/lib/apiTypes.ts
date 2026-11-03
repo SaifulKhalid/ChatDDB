@@ -23,27 +23,6 @@ export interface PublicUser {
   lastLogin: number | null
 }
 
-export type Vendor = 'openai' | 'anthropic' | 'deepseek' | 'zhipu' | 'google'
-
-export interface ModelSpec {
-  id: string
-  label: string
-  /** The name a user picks by, e.g. `gpt-5.6-sol`. Short enough for the picker. */
-  short: string
-  name?: string
-  modelId?: string
-  vision: boolean
-  documents: boolean
-  default?: boolean
-  description?: string
-  note?: string
-  provider?: string
-  vendor?: string
-  contextTokens?: number
-  maxOutputTokens?: number
-  reasoning?: boolean
-}
-
 /** `worker/db/users.ts` → `UsageSummary`. */
 export interface UsageSummary {
   sessions: number
@@ -89,22 +68,21 @@ export interface SessionResponse {
   user: PublicUser
 }
 
-/** `GET /api/me`. */
+/** `worker/routes/auth.ts` → `GET /api/me`. */
 export interface MeResponse {
   user: PublicUser
   usage: UsageSummary
   quota: Quota
-  services?: PublicAiService[]
-  models: ModelSpec[]
+  /**
+   * The same projection `GET /api/ai-services` returns, built by the same
+   * `toPublicCapabilities` helper. `/api/me` carries it so the app needs one
+   * round trip rather than two on load; the standalone endpoint stays for
+   * callers that want the catalogue without a session.
+   */
+  services: PublicAiService[]
   pdfExtractMode: PdfExtractMode
   /** False when the Worker has no `AI` binding, or `IMAGE_ENABLED` is "false". */
   imageGeneration: boolean
-}
-
-/** `GET /api/models`. */
-export interface ModelsResponse {
-  models: ModelSpec[]
-  default: string
 }
 
 /** Admin AI Service */
@@ -223,7 +201,6 @@ export interface PublicFile {
   origin: 'upload' | 'generated'
   /** The prompt that produced it. Non-null only for `origin: 'generated'`. */
   genPrompt: string | null
-  genModel: string | null
   createdAt: number
 }
 

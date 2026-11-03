@@ -29,6 +29,18 @@ interface SvgFigureProps {
 export function SvgFigure({ source, highlighted }: SvgFigureProps) {
   const streaming = useStreaming()
   const hostRef = useRef<HTMLDivElement>(null)
+  /**
+   * The single sanitised, id-namespaced document every rendering path shares.
+   *
+   * Sanitising is done once, here, and the result is cloned into whichever host
+   * needs it. The fullscreen viewer used to be handed the raw `source` and
+   * injected it with `dangerouslySetInnerHTML`, which meant the one path a user
+   * opens deliberately — the expand button — rendered model output that had
+   * only ever been sanitised for the *inline* view. Nothing renders from
+   * `source` now; downloads still do, and that is safe because an SVG loaded
+   * through `<img>` cannot run script or fetch external resources.
+   */
+  const [fragment, setFragment] = useState<DocumentFragment | null>(null)
   const [status, setStatus] = useState<Status>('drawing')
   const [caption, setCaption] = useState<string | null>(null)
   const [showSource, setShowSource] = useState(false)
@@ -57,6 +69,7 @@ export function SvgFigure({ source, highlighted }: SvgFigureProps) {
 
       const root = fragment.querySelector('svg')
       if (!root) {
+        setFragment(null)
         setStatus('unrenderable')
         return
       }
@@ -66,9 +79,12 @@ export function SvgFigure({ source, highlighted }: SvgFigureProps) {
       const title = root.querySelector('title')?.textContent?.trim() ?? null
       root.setAttribute('role', 'img')
 
-      const host = hostRef.current
-      if (!host) return
-      host.replaceChildren(fragment)
+      // The sanitised fragment is the canonical artefact and each host gets a
+      // clone: `replaceChildren` moves nodes, so handing the original to the
+      // inline host would leave the fullscreen viewer with nothing to render.
+      setFragment(fragment)
+      hostRef.current?.replaceChildren(fragment.cloneNode(true))
+
       setCaption(title && title.length > 0 ? title : null)
       setStatus('ready')
     })()
@@ -142,8 +158,9 @@ export function SvgFigure({ source, highlighted }: SvgFigureProps) {
       </figure>
 
       {/* Fullscreen Zoom / Pan Modal */}
-      {fullscreen && (
+      {fullscreen && status === 'ready' && fragment && (
         <FullscreenViewer
+          fragment={fragment}
           source={source}
           caption={caption}
           onClose={() => setFullscreen(false)}
@@ -153,17 +170,33 @@ export function SvgFigure({ source, highlighted }: SvgFigureProps) {
   )
 }
 
+/**
+ * The expanded viewer.
+ *
+ * It renders the **sanitised** fragment it is handed — never `source`, which is
+ * raw model output. `source` is still passed through because the download
+ * buttons need the original bytes, and those are safe: an SVG fetched through
+ * `<img>` (the PNG rasteriser's path) cannot run script or load external
+ * resources, and the SVG download is a plain file the user chose to save.
+ */
 function FullscreenViewer({
+  fragment,
   source,
   caption,
   onClose,
 }: {
+  fragment: DocumentFragment
   source: string
   caption: string | null
   onClose: () => void
 }) {
   const [scale, setScale] = useState(1)
   const containerRef = useRef<HTMLDivElement>(null)
+  const hostRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    hostRef.current?.replaceChildren(fragment.cloneNode(true))
+  }, [fragment])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -225,9 +258,9 @@ function FullscreenViewer({
         className="flex-1 overflow-auto flex items-center justify-center p-4 select-none"
       >
         <div
+          ref={hostRef}
           style={{ transform: `scale(${scale})`, transformOrigin: 'center center' }}
           className="transition-transform duration-150 flex items-center justify-center max-w-full"
-          dangerouslySetInnerHTML={{ __html: source }}
         />
       </div>
     </div>

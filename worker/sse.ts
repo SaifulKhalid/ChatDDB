@@ -500,8 +500,10 @@ export type PeekResult = PeekedToolCalls | PeekedText
  *
  * `routes/chat.ts` must know whether the model wants a tool *before*
  * `toClientStream` writes its first frame, because once a byte reaches the
- * client the turn is committed — that is the invariant `failover.ts` is built
- * around. But the only way to know is to read the body, and reading the body is
+ * client the turn is committed — that is the invariant the route ladder in
+ * `orchestrator.ts` is built around (a candidate is only failed over before its
+ * first byte lands). But the only way to know is to read the body, and reading
+ * the body is
  * exactly what would consume it. So this reads, decides, and then hands back
  * either the assembled calls or a response that replays what it read.
  *

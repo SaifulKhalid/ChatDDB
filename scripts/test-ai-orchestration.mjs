@@ -158,6 +158,39 @@ test('toPublicModelKey: maps internal IDs to clean public names', () => {
   assert.equal(toPublicModelKey(null), null)
 })
 
+test('toPublicModelKey: passes through every seeded public name unchanged', () => {
+  // These are what `persistAssistant` actually stores, so this is the hot path.
+  for (const name of ['ChatGPT', 'Gemini', 'Claude', 'DeepSeek', 'GLM', 'Grok']) {
+    assert.equal(toPublicModelKey(name), name)
+  }
+})
+
+test('toPublicModelKey: anchors on a prefix, so "sol" no longer means ChatGPT', () => {
+  // The old matcher asked `lower.includes('sol')`, which classified any id
+  // containing those three letters as ChatGPT.
+  assert.equal(toPublicModelKey('solar-10.7b'), null)
+  assert.equal(toPublicModelKey('console-preview'), null)
+  // Same trap in the other direction: a vendor fragment buried mid-string.
+  assert.equal(toPublicModelKey('my-gpt-clone'), null)
+  assert.equal(toPublicModelKey('not-a-claude-model'), null)
+})
+
+test('toPublicModelKey: never leaks an image vendor or model id', () => {
+  // `routes/images.ts` stores `image.model` on the assistant row, and
+  // `MessageItem.tsx` renders `message.model` verbatim in a badge.
+  assert.equal(toPublicModelKey('@cf/black-forest-labs/flux-1-schnell'), 'Image')
+  assert.equal(toPublicModelKey('pollinations/flux'), 'Image')
+  assert.equal(toPublicModelKey('pollinations/turbo'), 'Image')
+})
+
+test('toPublicModelKey: withholds anything it cannot classify', () => {
+  // Returning the raw value was the leak; the badge simply does not render.
+  assert.equal(toPublicModelKey('some-unreleased-model-v9'), null)
+  assert.equal(toPublicModelKey('gpt'), null)
+  assert.equal(toPublicModelKey(undefined), undefined)
+  assert.equal(toPublicModelKey(''), '')
+})
+
 console.log(`\n======================================================`)
 console.log(`Results: ${passed} passed, ${failed} failed`)
 console.log(`======================================================\n`)

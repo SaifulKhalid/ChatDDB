@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowUp, ImagePlus, Paperclip, Square } from 'lucide-react'
 import type { PendingAttachment } from './AttachmentChip'
-import type { ModelSpec } from '../lib/apiTypes'
+import type { PublicAiService } from '../lib/apiTypes'
 import { AttachmentTray } from './AttachmentTray'
-import { ModelPicker } from './ModelPicker'
+import { ServicePicker } from './ServicePicker'
 
 interface ComposerProps {
   disabled?: boolean
@@ -21,8 +21,8 @@ interface ComposerProps {
   /** When true, submitting generates an image instead of sending a message. */
   imageMode?: boolean
   onToggleImageMode?: () => void
-  /** The registry. The picker is hidden below two entries — nothing to choose. */
-  models?: ModelSpec[]
+  /** The catalogue. The picker is hidden below two entries — nothing to choose. */
+  services?: PublicAiService[]
   /** `null` is Auto. */
   model?: string | null
   onModelChange?: (modelId: string | null) => void
@@ -42,7 +42,7 @@ export function Composer({
   canGenerateImages,
   imageMode,
   onToggleImageMode,
-  models,
+  services,
   model = null,
   onModelChange,
 }: ComposerProps) {
@@ -225,9 +225,9 @@ export function Composer({
 
           {/* Right: AI Service Picker + Send/Stop button */}
           <div className="flex items-center gap-1.5 sm:gap-2">
-            {models && models.length > 1 && onModelChange && (
-              <ModelPicker
-                models={models}
+            {services && services.length > 1 && onModelChange && (
+              <ServicePicker
+                services={services}
                 value={model}
                 onChange={onModelChange}
                 disabled={disabled || imageMode}

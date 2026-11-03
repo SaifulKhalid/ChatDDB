@@ -118,6 +118,7 @@ export interface WorkerEnv {
   RATE_UPLOAD_PER_DAY?: string
   RATE_AUTH_PER_MIN?: string
   RATE_ADMIN_PER_MIN?: string
+  RATE_ADMIN_VERIFY_PER_MIN?: string
   ACTIVITY_RETENTION_DAYS?: string
 }
 
@@ -150,6 +151,13 @@ export interface Policy {
   rateUploadPerDay: number
   rateAuthPerMin: number
   rateAdminPerMin: number
+  /**
+   * A stricter second window for admin actions that make live upstream calls
+   * (`testAdminProvider`, `testAdminRoute`, `verifyAllRoutes`). Each one spends
+   * provider quota, and `verifyAllRoutes` walks the whole routing table
+   * sequentially, so this is deliberately a fraction of `rateAdminPerMin`.
+   */
+  rateAdminVerifyPerMin: number
   rateImagePerMin: number
   rateImagePerDay: number
   rateToolImagePerDay: number
@@ -174,6 +182,7 @@ export function resolvePolicy(env: WorkerEnv): Policy {
     rateUploadPerDay: intVar(env.RATE_UPLOAD_PER_DAY, 100),
     rateAuthPerMin: intVar(env.RATE_AUTH_PER_MIN, 30),
     rateAdminPerMin: intVar(env.RATE_ADMIN_PER_MIN, 120),
+    rateAdminVerifyPerMin: intVar(env.RATE_ADMIN_VERIFY_PER_MIN, 12),
     rateImagePerMin: intVar(env.RATE_IMAGE_PER_MIN, 3),
     rateImagePerDay: intVar(env.RATE_IMAGE_PER_DAY, 20),
     // Deliberately a quarter of the button's daily budget. The tool fires on the

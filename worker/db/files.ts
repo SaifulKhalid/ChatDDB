@@ -62,7 +62,6 @@ export interface PublicFile {
   origin: FileOrigin
   /** Non-null only for `origin: 'generated'`. Shown as the image's caption. */
   genPrompt: string | null
-  genModel: string | null
   createdAt: number
 }
 
@@ -84,7 +83,12 @@ export function toPublicFile(row: FileRow): PublicFile {
     // value at all when read back from a stale local database.
     origin: row.origin ?? 'upload',
     genPrompt: row.gen_prompt ?? null,
-    genModel: row.gen_model ?? null,
+    // `gen_model` is deliberately not projected. It holds the upstream vendor's
+    // own id (`@cf/black-forest-labs/flux-1-schnell`, `pollinations/<model>`),
+    // which is provenance for operators rather than something a client is told --
+    // the column stays, the admin inspector reads it there, and the
+    // `image_generated` activity row records it per generation. No component ever
+    // rendered this field; it was only ever visible to anyone reading the JSON.
     createdAt: row.created_at,
   }
 }

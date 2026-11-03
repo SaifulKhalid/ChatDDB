@@ -97,6 +97,74 @@ export function maskCredentialsJson(rawJson: string | null | undefined): {
 }
 
 // ---------------------------------------------------------------------------
+// Capability projection
+// ---------------------------------------------------------------------------
+
+/** The capability flags a client is allowed to see, all resolved to booleans. */
+export interface PublicCapabilities {
+  vision: boolean
+  documents: boolean
+  reasoning: boolean
+  tools: boolean
+}
+
+export function parseCapabilities(raw: string | null | undefined): ServiceCapabilities {
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    // A JSON scalar or array would sail through `as ServiceCapabilities` and
+    // hand back something whose `.vision` is undefined but whose prototype
+    // could be anything. Only a plain object is a capability blob.
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return parsed as ServiceCapabilities
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * The one place a stored capability blob becomes the four flags a client sees.
+ *
+ * It lives here, beside the `ServiceCapabilities` type and the column it reads,
+ * because three separate call sites used to re-implement this projection --
+ * `routes/services.ts` twice and `routes/auth.ts` once -- with two duplicate
+ * copies of the JSON parse in each. That is four chances for the public
+ * contract to drift, and no single line to point at when someone asks what
+ * `vision: true` means.
+ *
+ * ## Why the defaults are asymmetric
+ *
+ * `vision` and `reasoning` default to **false**; `documents` and `tools` default
+ * to **true**. That is not an oversight, and it is deliberately not
+ * "made consistent" here -- the two groups fail in opposite directions:
+ *
+ *  - `vision` gates whether image bytes are sent as image parts. A service that
+ *    cannot actually see would be handed a payload it cannot parse -- an
+ *    upstream 4xx mid-stream, after the user has already typed the message.
+ *    So an unstated `vision` means no.
+ *  - `documents` gates nothing at routing time at all. The Worker extracts PDF
+ *    text and prepends it as an ordinary text block (`withDocuments` in
+ *    `routes/chat.ts`), so *every* route consumes a document equally well.
+ *    An unstated `documents` therefore means yes, because saying no would hide
+ *    a capability that genuinely works.
+ *
+ * `tools` follows the same reasoning: passing a `tools` array is a request-shape
+ * decision the adapter makes, not a property of the upstream model.
+ *
+ * A caller that wants a capability to be false must say so explicitly, which is
+ * exactly what migration 0007's seed data does.
+ */
+export function toPublicCapabilities(raw: string | null | undefined): PublicCapabilities {
+  const caps = parseCapabilities(raw)
+  return {
+    vision: caps.vision === true,
+    documents: caps.documents !== false,
+    reasoning: caps.reasoning === true,
+    tools: caps.tools !== false,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // AI Services
 // ---------------------------------------------------------------------------
 

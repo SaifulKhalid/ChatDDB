@@ -22,26 +22,56 @@ import {
   listLiveServices,
   listProviders,
   listRoutes,
+  parseCapabilities,
   recordRouteFailure,
   recordRouteSuccess,
   type AiRouteRow,
   type AiServiceRow,
   type ApiProviderRow,
   type RouteHealthRow,
-  type ServiceCapabilities,
 } from './db/aiRouting.ts'
 import type { ChatMessage, ProviderAdapter, ProviderCredentials, ToolDefinition } from './adapters/types.ts'
 import { OpenAICompatibleAdapter } from './adapters/openai.ts'
 import { ClassifiedUpstreamError } from './adapters/errors.ts'
-import { badRequest } from './lib/http.ts'
+import { ApiError, badRequest } from './lib/http.ts'
 
 const openAIAdapter = new OpenAICompatibleAdapter()
 
+/**
+ * Maps a stored provider `adapter` string to an implementation.
+ *
+ * ## Why unknown values throw instead of defaulting
+ *
+ * This used to be `case 'openai': default: return openAIAdapter`, so a typo — or
+ * an adapter added to the admin UI before its implementation shipped — silently
+ * routed the provider's traffic to the OpenAI-compatible client. The failure
+ * that produces is the worst kind: a request that goes to a real, billable
+ * endpoint with the wrong wire format, returns a provider-shaped 4xx, and looks
+ * like an upstream outage rather than a configuration error. The circuit breaker
+ * then trips a route that was never actually unhealthy.
+ *
+ * An unrecognised adapter is a server-side configuration fault, so it is raised
+ * as an `ApiError` (the only shape `errorResponse` renders; anything else is
+ * flattened to an opaque 500). The public message is deliberately generic — the
+ * adapter string and the supported list are internal architecture, and
+ * `orchestrateChat` reaches this from ordinary user traffic. The detail goes to
+ * the log, where the operator can see it, and the admin panel already shows the
+ * offending `adapter` on the provider row.
+ */
 export function getAdapter(adapterName: string): ProviderAdapter {
   switch (adapterName.toLowerCase()) {
     case 'openai':
-    default:
       return openAIAdapter
+    default:
+      console.error(
+        '[chatddb] unsupported provider adapter "%s" — expected one of: openai',
+        adapterName,
+      )
+      throw new ApiError(
+        500,
+        'unsupported_adapter',
+        'This AI service is misconfigured and cannot be used. Check the provider adapter in the admin panel.',
+      )
   }
 }
 
@@ -50,7 +80,6 @@ export interface OrchestrationInput {
   content?: string
   messages: ChatMessage[]
   hasImages?: boolean
-  hasDocuments?: boolean
   tools?: ToolDefinition[]
   clientSignal: AbortSignal
 }
@@ -156,14 +185,7 @@ async function routeAutoService(
 
   // 1. Vision requests require a vision-capable service
   if (input?.hasImages) {
-    const visionService = services.find((s) => {
-      try {
-        const caps = JSON.parse(s.capabilities) as ServiceCapabilities
-        return caps.vision === true
-      } catch {
-        return false
-      }
-    })
+    const visionService = services.find((s) => parseCapabilities(s.capabilities).vision === true)
     if (visionService) return visionService
   }
 
@@ -231,11 +253,24 @@ export interface RouteCandidate {
 
 /**
  * Resolves all eligible candidate routes for an AI service, ordered by priority.
+ *
+ * ## Why there is no document filter
+ *
+ * `routes/chat.ts` does not send PDFs to a route as a document part. It extracts
+ * the text and prepends it to the turn's content (`withDocuments`), so a PDF
+ * reaches the upstream as ordinary text and every route handles it equally well.
+ * A `hasDocuments` requirement was threaded through here and never consulted,
+ * which read as though document-capable routes were being filtered when the
+ * question does not arise. The parameter is gone rather than implemented: there
+ * is nothing to filter on.
+ *
+ * Vision is the opposite case and is filtered below, because image bytes really
+ * are sent as image parts and a route that cannot parse them fails upstream.
  */
 export async function resolveEligibleRoutes(
   db: D1Database | undefined,
   serviceId: string,
-  requirements: { hasImages?: boolean; hasDocuments?: boolean },
+  requirements: { hasImages?: boolean },
 ): Promise<RouteCandidate[]> {
   const routes = await listRoutes(db, { serviceId, enabledOnly: true })
   if (routes.length === 0) return []
@@ -253,17 +288,9 @@ export async function resolveEligibleRoutes(
     const provider = providerMap.get(r.provider_id)
     if (!provider || provider.enabled !== 1) continue
 
-    // Capability filtering
-    let caps: Record<string, unknown> = {}
-    if (r.capabilities) {
-      try {
-        caps = JSON.parse(r.capabilities) as Record<string, unknown>
-      } catch {
-        caps = {}
-      }
-    }
+    const caps = parseCapabilities(r.capabilities)
 
-    if (requirements.hasImages && !caps.vision) {
+    if (requirements.hasImages && caps.vision !== true) {
       // Skip routes that cannot handle images when images are present
       continue
     }
@@ -272,7 +299,10 @@ export async function resolveEligibleRoutes(
     candidates.push({ route: r, provider, health })
   }
 
-  // Sort by priority ASC (priority 1 first), then weight DESC
+  // Primary ordering is `priority` ASC (1 is attempted first). `weight` only
+  // breaks a tie *within* one priority level, so it never lets a later-priority
+  // route jump ahead of an earlier one. See `listRoutes`' doc for why weight is
+  // not a load-balancing knob.
   candidates.sort((a, b) => {
     if (a.route.priority !== b.route.priority) {
       return a.route.priority - b.route.priority
@@ -390,7 +420,6 @@ export async function orchestrateChat(
 
   const rawCandidates = await resolveEligibleRoutes(db, service.id, {
     hasImages: input.hasImages,
-    hasDocuments: input.hasDocuments,
   })
 
   if (rawCandidates.length === 0) {

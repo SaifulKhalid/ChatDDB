@@ -56,7 +56,7 @@ import {
   type OrchestratedResult,
 } from '../orchestrator.ts'
 import { ClassifiedUpstreamError } from '../adapters/errors.ts'
-import type { AiServiceRow, ServiceCapabilities } from '../db/aiRouting.ts'
+import { parseCapabilities, type AiServiceRow } from '../db/aiRouting.ts'
 import { sha256Hex } from '../lib/hash.ts'
 import type { AuthedContext } from '../auth/middleware.ts'
 import type { FileRow } from '../db/files.ts'
@@ -373,7 +373,6 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
   }
 
   const hasImages = attachmentRows.some((f) => f.file_type === 'image')
-  const hasDocuments = attachmentRows.some((f) => f.file_type === 'pdf')
 
   // Resolve public AI service dynamically from D1
   const service = await resolveService(ctx.db, ctx.env, body.service || body.model, {
@@ -402,7 +401,6 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
       content: body.content,
       messages: upstream,
       hasImages,
-      hasDocuments,
       tools: toolsArmed ? [IMAGE_TOOL] : undefined,
       clientSignal: ctx.request.signal,
     })
@@ -730,14 +728,18 @@ async function loadAttachments(
   return rows
 }
 
+/**
+ * Refuses an image turn on a service that has no vision.
+ *
+ * Checked here rather than left to routing because the failure it prevents is a
+ * bad one: without it the image bytes would be posted upstream and come back as
+ * an opaque 4xx mid-stream, after the user had already waited. `routeAutoService`
+ * picks a vision-capable service when one exists, so this is the backstop for
+ * when the caller named a service explicitly.
+ */
 function assertVisionOk(files: FileRow[], service: AiServiceRow): void {
-  let caps: ServiceCapabilities = {}
-  try {
-    caps = JSON.parse(service.capabilities) as ServiceCapabilities
-  } catch {
-    caps = {}
-  }
-  if (files.some((f) => f.file_type === 'image') && !caps.vision) {
+  const caps = parseCapabilities(service.capabilities)
+  if (files.some((f) => f.file_type === 'image') && caps.vision !== true) {
     throw badRequest(NO_VISION_MESSAGE, 'model_no_vision')
   }
 }

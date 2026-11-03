@@ -75,6 +75,10 @@
     "RATE_UPLOAD_PER_DAY": "100",
     "RATE_AUTH_PER_MIN": "30",
     "RATE_ADMIN_PER_MIN": "120",
+    // Admin actions that make live upstream calls (provider/route test probes and
+    // the full routing-table verification sweep). Much stricter, because each one
+    // spends real provider quota.
+    "RATE_ADMIN_VERIFY_PER_MIN": "12",
     "ACTIVITY_RETENTION_DAYS": "90"
   },
 

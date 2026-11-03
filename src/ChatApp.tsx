@@ -18,26 +18,27 @@ import { UserMenu } from './components/UserMenu'
 import { navigate } from './lib/router'
 
 export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => void }) {
-  const { quota, models, isAdmin, imageGeneration } = useAuth()
+  const { quota, services, isAdmin, imageGeneration } = useAuth()
 
   // `null` is Auto: no `model` field on the request, so the Worker resolves its
   // configured default *and* keeps its backup gateway. Naming a model instead
   // pins the answer to that model — see `chainFor` in `worker/routes/chat.ts`.
   const [model, setModel] = useState<string | null>(() => loadModelChoice())
 
-  // A stored id the registry no longer lists would earn a 400 on every send, so
-  // it decays to Auto. Runs once `models` arrives, since it starts out empty.
+  // A stored id the catalogue no longer lists would earn a 400 on every send, so
+  // it decays to Auto. Runs once `services` arrives, since it starts out empty.
   useEffect(() => {
-    if (model !== null && models.length > 0 && !models.some((m) => m.id === model)) {
+    if (model !== null && services.length > 0 && !services.some((s) => s.id === model)) {
       setModel(null)
       saveModelChoice(null)
     }
-  }, [model, models])
+  }, [model, services])
 
   // What the composer gates attachments on. Auto has no single answer before the
-  // request is made, so it falls back to the entry the registry flags as the
-  // default — the model the Worker will in fact resolve.
-  const activeModel = models.find((m) => m.id === model) ?? models.find((m) => m.default) ?? models[0]
+  // request is made, so it falls back to the entry the catalogue flags as the
+  // default — the service the Worker will in fact resolve.
+  const activeService =
+    services.find((s) => s.id === model) ?? services.find((s) => s.default) ?? services[0]
 
   // ---- 3.1 State shape ---------------------------------------------------
   const [conversations, setConversations] = useState<Conversation[]>([])
@@ -713,13 +714,13 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
           attachments={pending}
           onAttach={(files) => void attach(files)}
           onRemoveAttachment={removeAttachment}
-          canAttachImages={model === null ? models.some((m) => m.vision) : activeModel?.vision}
-          canAttachDocuments={activeModel?.documents}
+          canAttachImages={model === null ? services.some((s) => s.vision) : activeService?.vision}
+          canAttachDocuments={activeService?.documents}
           maxAttachments={quota?.maxAttachmentsPerMessage}
           canGenerateImages={imageGeneration}
           imageMode={imageMode}
           onToggleImageMode={() => setImageMode((v) => !v)}
-          models={models}
+          services={services}
           model={model}
           onModelChange={(id) => { setModel(id); saveModelChoice(id) }}
         />

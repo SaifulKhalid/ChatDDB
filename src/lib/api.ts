@@ -24,8 +24,6 @@ import type {
   CreateSessionResponse,
   ImageResponse,
   ImportResponse,
-  ModelsResponse,
-  PublicAiService,
   PublicFile,
   SessionListResponse,
   SessionSummary,
@@ -48,13 +46,6 @@ export interface StreamMeta {
   model: string | null
   generatedFileId: string | null
   generatedFile: PublicFile | null
-  /**
-   * Present only when a backup gateway answered because the primary failed.
-   * The Worker sets the header pair on a crossover; its absence means the
-   * primary answered and no notice is owed.
-   */
-  upstream: string | null
-  upstreamModel: string | null
 }
 
 export async function* streamChat(
@@ -82,8 +73,6 @@ export async function* streamChat(
     model: res.headers.get('X-ChatDDB-Model'),
     generatedFileId: res.headers.get('X-ChatDDB-Generated-File'),
     generatedFile,
-    upstream: res.headers.get('X-ChatDDB-Upstream'),
-    upstreamModel: res.headers.get('X-ChatDDB-Upstream-Model'),
   })
 
   const reader = res.body.getReader()
@@ -205,15 +194,6 @@ export function importSessions(
   sessions: { title: string; createdAt: number; updatedAt: number; messages: { role: string; content: string; createdAt: number }[] }[],
 ): Promise<ImportResponse> {
   return apiJson<ImportResponse>('/api/sessions/import', { method: 'POST', json: { sessions } })
-}
-
-export function getModels(): Promise<ModelsResponse> {
-  return apiJson<ModelsResponse>('/api/models')
-}
-
-export async function listAiServices(): Promise<PublicAiService[]> {
-  const data = await apiJson<{ services: PublicAiService[] }>('/api/ai-services')
-  return data.services
 }
 
 // ---------------------------------------------------------------------------
