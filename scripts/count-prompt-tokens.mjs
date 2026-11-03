@@ -48,6 +48,29 @@ const VISUAL_ROUTING_CLAUSE = [
   'where nothing depends on a value being at a particular coordinate.',
 ].join(' ')
 
+const IMAGE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'generate_image',
+    description:
+      'Generate an image and attach it to your reply. Call this only when the user is ' +
+      'asking to see, visualise, or be shown something — never to decorate an answer.',
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: {
+          type: 'string',
+          description:
+            'A complete, self-contained description of the image to generate, in English. ' +
+            'Compose it from the conversation; the image model sees nothing but this string.',
+        },
+      },
+      required: ['prompt'],
+      additionalProperties: false,
+    },
+  },
+}
+
 const full = [DEFAULT_SYSTEM_PROMPT, TOOL_USE_CLAUSE, DIAGRAM_CLAUSE, VISUAL_ROUTING_CLAUSE].join('\n\n')
 
 function estimateTokens(text) {
@@ -56,10 +79,13 @@ function estimateTokens(text) {
   return matches.length
 }
 
-console.log('--- System Prompt Token Measurement ---')
+console.log('--- System Prompt & Tool Cost Measurement ---')
 console.log('DEFAULT_SYSTEM_PROMPT: chars =', DEFAULT_SYSTEM_PROMPT.length, 'tokens =', estimateTokens(DEFAULT_SYSTEM_PROMPT))
 console.log('TOOL_USE_CLAUSE:       chars =', TOOL_USE_CLAUSE.length, 'tokens =', estimateTokens(TOOL_USE_CLAUSE))
 console.log('DIAGRAM_CLAUSE:        chars =', DIAGRAM_CLAUSE.length, 'tokens =', estimateTokens(DIAGRAM_CLAUSE))
 console.log('VISUAL_ROUTING_CLAUSE: chars =', VISUAL_ROUTING_CLAUSE.length, 'tokens =', estimateTokens(VISUAL_ROUTING_CLAUSE))
+const toolJson = JSON.stringify(IMAGE_TOOL)
+console.log('IMAGE_TOOL (schema):   chars =', toolJson.length, 'tokens =', estimateTokens(toolJson))
 console.log('----------------------------------------')
-console.log('Total Fully Assembled: chars =', full.length, 'tokens =', estimateTokens(full))
+console.log('Total System Prompt:   chars =', full.length, 'tokens =', estimateTokens(full))
+console.log('Total With Tool:       tokens =', estimateTokens(full) + estimateTokens(toolJson))

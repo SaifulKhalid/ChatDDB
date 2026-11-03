@@ -29,6 +29,7 @@ import type { WorkerEnv } from './env.ts'
 
 export interface RouteInput {
   serviceOrKey?: string
+  model?: PublicModel
   content?: string
   messages: ChatMessage[]
   hasImages?: boolean
@@ -272,7 +273,7 @@ export async function callUpstream(
 // ---------------------------------------------------------------------------
 
 export async function routeChat(input: RouteInput): Promise<RoutedResult> {
-  const model = resolveModel(input.serviceOrKey)
+  const model = input.model ?? resolveModel(input.serviceOrKey ?? 'chatgpt')
 
   // Find all candidate targets where provider has keys configured
   const candidateTargets = model.targets.filter((t) => {

@@ -92,15 +92,34 @@ if (existsSync(devVars)) {
   }
 }
 
-const API_KEY = process.env.AGENTROUTER_API_KEY
+const providerKey = (process.env.PROVIDER ?? (process.env.APINEX_API_KEY ? 'apinex' : 'agentrouter')).toLowerCase()
+
+let API_KEY = ''
+let BASE_URL = ''
+let MODEL = ''
+let USER_AGENT = ''
+let isResponsesApi = false
+
+if (providerKey === 'apinex') {
+  API_KEY = process.env.APINEX_API_KEY ?? ''
+  BASE_URL = process.env.APINEX_BASE_URL ?? 'https://api.apinex.bond/v1'
+  MODEL = process.env.APINEX_MODEL ?? 'free/gpt-6-luna'
+  USER_AGENT = 'ChatDDB/1.0'
+  isResponsesApi = false
+} else {
+  API_KEY = process.env.AGENTROUTER_API_KEY ?? ''
+  BASE_URL = process.env.AGENTROUTER_BASE_URL ?? 'https://agentrouter.org/v1'
+  MODEL = process.env.AGENTROUTER_MODEL ?? 'gpt-6.1-sol'
+  USER_AGENT = 'codex_cli_rs/0.40.0'
+  isResponsesApi = false
+}
+
 if (!API_KEY) {
-  console.error('error: AGENTROUTER_API_KEY is not set')
+  console.error(`error: ${providerKey === 'apinex' ? 'APINEX_API_KEY' : 'AGENTROUTER_API_KEY'} is not set.`)
+  console.error('Provide the environment variable or set PROVIDER=apinex / PROVIDER=agentrouter.')
   process.exit(1)
 }
 
-const BASE_URL = process.env.AGENTROUTER_BASE_URL ?? 'https://agentrouter.org/v1'
-const MODEL = process.env.AGENTROUTER_MODEL ?? 'gpt-5.6-sol'
-const USER_AGENT = process.env.AGENTROUTER_USER_AGENT ?? 'claude-cli/2.1.158 (external, sdk-cli)'
 /** Runs per prompt. Five is the floor the feature was signed off against. */
 const RUNS = Number.parseInt(process.env.RUNS ?? '5', 10)
 
@@ -140,23 +159,33 @@ const TOOLS = [
 const MAX_TOKENS = 2000
 
 async function post(messages, extra = {}) {
-  const res = await fetch(`${BASE_URL}/chat/completions`, {
+  const endpoint = isResponsesApi ? `${BASE_URL}/responses` : `${BASE_URL}/chat/completions`
+  const headers = {
+    Authorization: `Bearer ${API_KEY}`,
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+    'User-Agent': USER_AGENT,
+  }
+
+  const payload = isResponsesApi
+    ? {
+        model: MODEL,
+        input: messages,
+        stream: false,
+        ...extra,
+      }
+    : {
+        model: MODEL,
+        messages,
+        max_completion_tokens: MAX_TOKENS,
+        stream: false,
+        ...extra,
+      }
+
+  const res = await fetch(endpoint, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${API_KEY}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      // Upstream gateway client whitelist; see worker/adapters/openai.ts.
-      'User-Agent': USER_AGENT,
-      'X-App': 'cli',
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      messages,
-      max_completion_tokens: MAX_TOKENS,
-      stream: false,
-      ...extra,
-    }),
+    headers,
+    body: JSON.stringify(payload),
   })
 
   const text = await res.text()
@@ -386,24 +415,32 @@ async function probeStreaming(testCase) {
   for (let run = 1; run <= RUNS; run++) {
     let res
     try {
-      res = await fetch(`${BASE_URL}/chat/completions`, {
+      const endpoint = isResponsesApi ? `${BASE_URL}/responses` : `${BASE_URL}/chat/completions`
+      const payload = isResponsesApi
+        ? {
+            model: MODEL,
+            input: testCase.messages,
+            stream: true,
+            tools: TOOLS,
+          }
+        : {
+            model: MODEL,
+            messages: testCase.messages,
+            max_completion_tokens: MAX_TOKENS,
+            stream: true,
+            stream_options: { include_usage: true },
+            tools: TOOLS,
+            tool_choice: 'auto',
+          }
+      res = await fetch(endpoint, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${API_KEY}`,
           'Content-Type': 'application/json',
           Accept: 'text/event-stream',
           'User-Agent': USER_AGENT,
-          'X-App': 'cli',
         },
-        body: JSON.stringify({
-          model: MODEL,
-          messages: testCase.messages,
-          max_completion_tokens: MAX_TOKENS,
-          stream: true,
-          stream_options: { include_usage: true },
-          tools: TOOLS,
-          tool_choice: 'auto',
-        }),
+        body: JSON.stringify(payload),
       })
     } catch (err) {
       console.log(`  run ${run}/${RUNS}  ERROR  ${err.message}`)

@@ -350,17 +350,60 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
   const tPostChatStart = performance.now()
   const authDur = ctx.authDur ?? 0
   const body = parseBody(await readJsonBody(ctx.request))
+  if (body.regenerate && !body.sessionId) {
+    throw badRequest('`regenerate` needs a `sessionId`.', 'missing_session')
+  }
 
-  // Pre-load attachment rows to verify readiness and determine file types
-  let attachmentRows: FileRow[] = []
+  // Resolve public AI model ONCE from static catalogue (zero D1)
+  const tRouteStart = performance.now()
+  const model = resolveModel(body.service || body.model)
+  const routingDur = performance.now() - tRouteStart
+
+  if (body.attachments.length > ctx.policy.maxAttachmentsPerMessage) {
+    throw badRequest(
+      `Up to ${ctx.policy.maxAttachmentsPerMessage} attachments per message.`,
+      'too_many_attachments',
+    )
+  }
+
+  // Run independent tasks concurrently with Promise.all:
+  // 1. Rate-limit consume
+  // 2. Attachment lookup (if attachments present)
+  // 3. Session lookup (or create if new)
+  // 4. Preloaded history read (if existing session without replacement/regenerate)
+  const canPreloadHistory = Boolean(body.sessionId && !body.regenerate && !body.replaceFromMessageId)
+
+  const tParallelStart = performance.now()
+  const [_, attachmentRows, resolvedSession, preloadedHistory] = await Promise.all([
+    limitChat(ctx),
+    body.attachments.length > 0
+      ? filesDb.getManyOwned(ctx.db, body.attachments, ctx.user.id)
+      : Promise.resolve([]),
+    body.sessionId
+      ? sessionsDb.getOwned(ctx.db, body.sessionId, ctx.user.id)
+      : sessionsDb.create(ctx.db, ctx.user.id, sessionsDb.makeTitle(body.content ?? ''), model.name),
+    canPreloadHistory
+      ? messagesDb.historyFor(ctx.db, body.sessionId!, ctx.policy.historyMaxTurns, LIMITS.maxTotalChars)
+      : Promise.resolve(null),
+  ])
+  const parallelDur = performance.now() - tParallelStart
+
+  if (body.sessionId) {
+    if (!resolvedSession) throw notFound('That conversation does not exist.', 'session_not_found')
+  } else {
+    ctx.exec.waitUntil(
+      activity.log(ctx.db, {
+        userId: ctx.user.id,
+        action: 'chat_started',
+        metadata: { sessionId: resolvedSession.id, model: model.name },
+        ipHash: ctx.ipHash,
+        userAgent: ctx.userAgent,
+      }),
+    )
+  }
+  const session = resolvedSession
+
   if (body.attachments.length > 0) {
-    if (body.attachments.length > ctx.policy.maxAttachmentsPerMessage) {
-      throw badRequest(
-        `Up to ${ctx.policy.maxAttachmentsPerMessage} attachments per message.`,
-        'too_many_attachments',
-      )
-    }
-    attachmentRows = await filesDb.getManyOwned(ctx.db, body.attachments, ctx.user.id)
     if (attachmentRows.length !== body.attachments.length) {
       throw notFound('One of those attachments is no longer available.', 'attachment_not_found')
     }
@@ -375,20 +418,10 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
 
   const hasImages = attachmentRows.some((f) => f.file_type === 'image')
 
-  // Resolve public AI model from static catalogue (zero D1)
-  const tRouteStart = performance.now()
-  const model = resolveModel(body.service || body.model)
-  const routingDur = performance.now() - tRouteStart
-
   // Verify vision capability if explicit turn carries images
   assertVisionOk(attachmentRows, model)
 
-  const tRateStart = performance.now()
-  await limitChat(ctx)
-  const rateLimitDur = performance.now() - tRateStart
-
-  const session = await resolveSession(ctx, body, model.name)
-  const turn = await prepareTurn(ctx, body, session.id, model, attachmentRows)
+  const turn = await prepareTurn(ctx, body, session.id, model, attachmentRows, preloadedHistory ?? undefined)
 
   // Offered only when image providers exist
   const toolsArmed = resolveImageProviders(ctx.env).length > 0
@@ -399,7 +432,7 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
 
   try {
     outcome = await routeChat({
-      serviceOrKey: model.key,
+      model,
       content: body.content,
       messages: upstream,
       hasImages,
@@ -436,7 +469,7 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
   const serverTiming = [
     `auth;dur=${authDur.toFixed(1)}`,
     `routing;dur=${routingDur.toFixed(1)}`,
-    `rate_limit;dur=${rateLimitDur.toFixed(1)}`,
+    `parallel_read;dur=${parallelDur.toFixed(1)}`,
     `history_read;dur=${turn.historyReadDur.toFixed(1)}`,
     `message_insert;dur=${turn.messageInsertDur.toFixed(1)}`,
     `upstream_ttfb;dur=${upstreamTtfb.toFixed(1)}`,
@@ -462,7 +495,7 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
     () => {
       const firstByteDur = performance.now() - tPostChatStart
       console.log(
-        `[timing] auth=${authDur.toFixed(1)}ms routing=${routingDur.toFixed(1)}ms rate_limit=${rateLimitDur.toFixed(1)}ms history_read=${turn.historyReadDur.toFixed(1)}ms message_insert=${turn.messageInsertDur.toFixed(1)}ms upstream_ttfb=${upstreamTtfb.toFixed(1)}ms first_byte=${firstByteDur.toFixed(1)}ms`,
+        `[timing] auth=${authDur.toFixed(1)}ms routing=${routingDur.toFixed(1)}ms parallel_read=${parallelDur.toFixed(1)}ms message_insert=${turn.messageInsertDur.toFixed(1)}ms upstream_ttfb=${upstreamTtfb.toFixed(1)}ms first_byte=${firstByteDur.toFixed(1)}ms`,
       )
     },
   )
@@ -523,40 +556,6 @@ async function limitChat(ctx: AuthedContext): Promise<void> {
   ratelimit.enforce(verdict, 'messages')
 }
 
-/** Finds the caller's session, or starts one titled from this first message. */
-async function resolveSession(
-  ctx: AuthedContext,
-  body: ChatBody,
-  modelId: string,
-): Promise<sessionsDb.SessionRow> {
-  if (body.sessionId) {
-    const existing = await sessionsDb.getOwned(ctx.db, body.sessionId, ctx.user.id)
-    // Ownership failure and "no such id" are the same 404 on purpose: a
-    // different answer for each would confirm that another user's id exists.
-    if (!existing) throw notFound('That conversation does not exist.', 'session_not_found')
-    return existing
-  }
-
-  if (body.regenerate) throw badRequest('`regenerate` needs a `sessionId`.', 'missing_session')
-
-  const created = await sessionsDb.create(
-    ctx.db,
-    ctx.user.id,
-    sessionsDb.makeTitle(body.content ?? ''),
-    modelId,
-  )
-  ctx.exec.waitUntil(
-    activity.log(ctx.db, {
-      userId: ctx.user.id,
-      action: 'chat_started',
-      metadata: { sessionId: created.id, model: modelId },
-      ipHash: ctx.ipHash,
-      userAgent: ctx.userAgent,
-    }),
-  )
-  return created
-}
-
 /** Everything the upstream call needs, assembled and already persisted. */
 interface Turn {
   history: { role: messagesDb.MessageRole; content: string }[]
@@ -587,6 +586,7 @@ async function prepareTurn(
   sessionId: string,
   model: PublicModel,
   preloadedFiles?: FileRow[],
+  preloadedHistory?: { role: messagesDb.MessageRole; content: string }[],
 ): Promise<Turn> {
   if (body.regenerate) return prepareRegenerate(ctx, sessionId, model)
 
@@ -598,14 +598,18 @@ async function prepareTurn(
   }
 
   // Read before the insert, so the history is everything *except* this turn.
-  const tHistStart = performance.now()
-  const history = await messagesDb.historyFor(
-    ctx.db,
-    sessionId,
-    ctx.policy.historyMaxTurns,
-    LIMITS.maxTotalChars,
-  )
-  const historyReadDur = performance.now() - tHistStart
+  let history = preloadedHistory
+  let historyReadDur = 0
+  if (!history || body.replaceFromMessageId) {
+    const tHistStart = performance.now()
+    history = await messagesDb.historyFor(
+      ctx.db,
+      sessionId,
+      ctx.policy.historyMaxTurns,
+      LIMITS.maxTotalChars,
+    )
+    historyReadDur = performance.now() - tHistStart
+  }
 
   const now = Date.now()
   const inserted = messagesDb.insertStmt({
