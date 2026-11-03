@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-/** Active OpenAI-compatible provider-adapter tests. No network or real keys. */
+/** Active two-provider upstream client tests. No network or real keys. */
 
-import { OpenAICompatibleAdapter } from '../worker/adapters/openai.ts'
+import { callUpstream } from '../worker/routing.ts'
+import { PROVIDERS } from '../worker/catalog.ts'
 import { ClassifiedUpstreamError } from '../worker/adapters/errors.ts'
 
 let checks = 0
@@ -10,40 +11,56 @@ let failures = 0
 function check(label, condition) {
   checks++
   if (condition) console.log(`  ok   ${label}`)
-  else { failures++; console.log(`  FAIL ${label}`) }
+  else {
+    failures++
+    console.log(`  FAIL ${label}`)
+  }
 }
 
-const provider = {
-  id: 'provider-1', key: 'agentrouter', label: 'Test gateway', adapter: 'openai',
-  base_url: 'https://provider.test/v1/', credentials: '{}',
-  headers: '{"X-Provider":"test"}', timeout_ms: 1000, enabled: 1, created_at: 0, updated_at: 0,
-}
-const request = {
-  upstreamModel: 'model-a', messages: [{ role: 'user', content: 'hello' }],
-  clientSignal: new AbortController().signal,
-  tools: [{ type: 'function', function: { name: 'lookup', description: 'lookup', parameters: { type: 'object' } } }],
-  configuration: { tokenParam: 'max_completion_tokens', maxOutputTokens: 42, reasoningEffort: 'low', sendReasoningEffort: true },
-}
-const adapter = new OpenAICompatibleAdapter()
 const originalFetch = globalThis.fetch
-function restore() { globalThis.fetch = originalFetch }
+function restore() {
+  globalThis.fetch = originalFetch
+}
 
 try {
-  console.log('\nActive provider adapter')
-  let captured
+  console.log('\nActive provider: AgentRouter (Responses API)')
+  let captured = null
   globalThis.fetch = async (url, init) => {
     captured = { url: String(url), init }
-    return new Response('data: [DONE]\n\n', { status: 200 })
+    return new Response('event: response.output_item.added\ndata: {}\n\n', { status: 200 })
   }
-  const response = await adapter.executeChat(provider, { apiKeys: [' key-one ', 'key-two', 'key-one'] }, request)
+
+  const target = { provider: 'agentrouter', upstreamModel: 'gpt-6.1-sol' }
+  const request = {
+    messages: [{ role: 'user', content: 'hello' }],
+    clientSignal: new AbortController().signal,
+    tools: [
+      {
+        type: 'function',
+        function: { name: 'lookup', description: 'lookup', parameters: { type: 'object' } },
+      },
+    ],
+  }
+
+  const res = await callUpstream(target, PROVIDERS.agentrouter, ['key-one', 'key-two'], request)
   const body = JSON.parse(captured.init.body)
-  check('uses the active provider route URL', captured.url === 'https://provider.test/v1/chat/completions')
-  check('sends the first configured key', captured.init.headers.Authorization === 'Bearer key-one')
-  check('preserves configured provider headers', captured.init.headers['X-Provider'] === 'test')
-  check('uses the route model and streaming', body.model === 'model-a' && body.stream === true)
-  check('uses route-specific token configuration', body.max_completion_tokens === 42 && body.reasoning_effort === 'low')
-  check('passes configured tools', body.tools?.[0]?.function?.name === 'lookup' && body.tool_choice === 'auto')
-  check('returns a streaming response', response.status === 200 && response.body !== null)
+
+  check('uses responses endpoint for agentrouter', captured.url === 'https://agentrouter.org/v1/responses')
+  check('sends bearer auth header', captured.init.headers.Authorization === 'Bearer key-one')
+  check('sends mandatory codex_cli_rs user-agent', captured.init.headers['User-Agent'] === 'codex_cli_rs/0.40.0')
+  check('formats input messages for responses API', Array.isArray(body.input) && body.input[0].content === 'hello')
+  check('passes upstream model and stream flag', body.model === 'gpt-6.1-sol' && body.stream === true)
+  check('returns ok response', res.res.status === 200)
+
+  console.log('\nActive provider: ApiNex (Chat Completions API)')
+  captured = null
+  const apinexTarget = { provider: 'apinex', upstreamModel: 'free/gpt-6-luna' }
+  await callUpstream(apinexTarget, PROVIDERS.apinex, ['key-apinex'], request)
+  const apinexBody = JSON.parse(captured.init.body)
+
+  check('uses chat/completions endpoint for apinex', captured.url === 'https://api.apinex.bond/v1/chat/completions')
+  check('formats messages for chat completions API', Array.isArray(apinexBody.messages) && apinexBody.messages[0].content === 'hello')
+  check('passes tools in chat completions', apinexBody.tools?.[0]?.function?.name === 'lookup')
 
   console.log('\nKey rotation and classification')
   let attempts = 0
@@ -53,17 +70,27 @@ try {
       ? new Response(JSON.stringify({ error: { message: 'rate limited', type: 'rate_limit' } }), { status: 429 })
       : new Response('data: [DONE]\n\n', { status: 200 })
   }
-  const rotated = await adapter.executeChat(provider, { apiKeys: ['one', 'two'] }, request)
-  check('rotates to the next key after a rate limit', attempts === 2 && rotated.status === 200)
 
-  globalThis.fetch = async () => new Response(JSON.stringify({ error: { message: 'bad request', type: 'invalid_request' } }), { status: 400 })
+  const rotated = await callUpstream(target, PROVIDERS.agentrouter, ['one', 'two'], request)
+  check('rotates to next key on 429', attempts === 2 && rotated.res.status === 200)
+
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ error: { message: 'bad request', type: 'invalid_request' } }), { status: 400 })
   let thrown
-  try { await adapter.executeChat(provider, { apiKey: 'one' }, request) } catch (error) { thrown = error }
-  check('classifies terminal upstream errors', thrown instanceof ClassifiedUpstreamError && thrown.classification.crossable === false)
+  try {
+    await callUpstream(target, PROVIDERS.agentrouter, ['one'], request)
+  } catch (error) {
+    thrown = error
+  }
+  check('classifies terminal 4xx upstream errors as non-crossable', thrown instanceof ClassifiedUpstreamError && thrown.classification.crossable === false)
 
   let noKey
-  try { await adapter.executeChat(provider, {}, request) } catch (error) { noKey = error }
-  check('rejects an unconfigured provider', noKey instanceof ClassifiedUpstreamError && noKey.classification.category === 'not_configured')
+  try {
+    await callUpstream(target, PROVIDERS.agentrouter, [], request)
+  } catch (error) {
+    noKey = error
+  }
+  check('rejects unconfigured provider without keys', noKey instanceof ClassifiedUpstreamError && noKey.classification.category === 'not_configured')
 } finally {
   restore()
 }

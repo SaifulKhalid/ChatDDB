@@ -83,8 +83,8 @@
   },
 
   // Secrets, never vars:
-  //   CODECRAFT_API_KEY    the CodeCraft API text provider key
   //   AGENTROUTER_API_KEY  the AgentRouter key (with optional secondary/tertiary keys)
+  //   APINEX_API_KEY       the ApiNex API text provider key (with optional secondary/tertiary keys)
   //   POLLINATIONS_API_KEY the backup image provider's key (optional)
   //   FILE_URL_SECRET      HMAC key for signed file-view URLs
   //   IP_HASH_SALT         salt for the truncated IP hash in the audit log

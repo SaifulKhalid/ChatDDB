@@ -13,9 +13,11 @@ AGENTROUTER_API_KEY=sk-replace-me
 # AGENTROUTER_API_KEY_2=sk-replace-me
 # AGENTROUTER_API_KEY_3=sk-replace-me
 
-# The CodeCraft API text provider key (serves ChatGPT 5.6, Gemini 3.7, Claude 5).
-# Deployed:  npx wrangler secret put CODECRAFT_API_KEY
-CODECRAFT_API_KEY=cc-replace-me
+# The ApiNex API text provider key (serves gpt-6.1-sol, free/gpt-6-luna).
+# Deployed:  npx wrangler secret put APINEX_API_KEY
+APINEX_API_KEY=sk-apx-replace-me
+# APINEX_API_KEY_2=sk-apx-replace-me
+# APINEX_API_KEY_3=sk-apx-replace-me
 
 # The backup image provider (optional). With this set, an exhausted Workers AI
 # allowance stops being visible: Pollinations draws the image instead.

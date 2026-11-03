@@ -85,7 +85,37 @@ export interface MeResponse {
   imageGeneration: boolean
 }
 
-/** Admin AI Service */
+export interface ProviderHealthInfo {
+  label: string
+  baseUrl: string
+  protocol: string
+  configured: boolean
+  keysCount: number
+}
+
+export interface CircuitBreakerInfo {
+  consecutiveFailures: number
+  openUntil: number
+  isOpen: boolean
+}
+
+export interface CatalogModelInfo {
+  publicKey: string
+  name: string
+  description?: string
+  targets: { provider: string; upstreamModel: string }[]
+}
+
+export interface ProviderHealthResponse {
+  providers: {
+    agentrouter: ProviderHealthInfo
+    apinex: ProviderHealthInfo
+  }
+  circuits: Record<string, CircuitBreakerInfo>
+  models: CatalogModelInfo[]
+}
+
+/** Admin AI Service (legacy) */
 export interface AdminAiService {
   id: string
   key: string

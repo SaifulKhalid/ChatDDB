@@ -25,20 +25,16 @@ export interface WorkerEnv {
   AI?: Ai
 
   // ---- Secrets (`wrangler secret put` / .dev.vars) ------------------------
-  /** AgentRouter API keys, tried in order by the active adapter. */
+  /** AgentRouter API keys, tried in order. */
   AGENTROUTER_API_KEY?: string
-  /** Legacy alias for secondary API key. */
   AGENTROUTER_API_KEY_2?: string
-  /** Legacy alias for tertiary API key. */
   AGENTROUTER_API_KEY_3?: string
-  /** CodeCraft API key — server-side secret for CodeCraft completions (ChatGPT 5.6, Gemini 3.7, Claude 5). */
-  CODECRAFT_API_KEY?: string
-  /** CodeCraft API base URL — defaults to https://codecraftapi.com/v1 */
-  CODECRAFT_BASE_URL?: string
-  /** CodeCraft model overrides */
-  CODECRAFT_MODEL_CHATGPT?: string
-  CODECRAFT_MODEL_GEMINI?: string
-  CODECRAFT_MODEL_CLAUDE?: string
+  /** ApiNex API keys, tried in order. */
+  APINEX_API_KEY?: string
+  APINEX_API_KEY_2?: string
+  APINEX_API_KEY_3?: string
+  /** Upstream TTFB timeout in milliseconds (default: 20000). */
+  UPSTREAM_TTFB_TIMEOUT_MS?: string
   /** Salt for `ip_hash`. Rotating it deliberately breaks old correlations. */
   IP_HASH_SALT?: string
   /** HMAC key for short-lived signed file-view URLs. */
@@ -118,7 +114,6 @@ export interface WorkerEnv {
   RATE_UPLOAD_PER_DAY?: string
   RATE_AUTH_PER_MIN?: string
   RATE_ADMIN_PER_MIN?: string
-  RATE_ADMIN_VERIFY_PER_MIN?: string
   ACTIVITY_RETENTION_DAYS?: string
 }
 
@@ -151,13 +146,6 @@ export interface Policy {
   rateUploadPerDay: number
   rateAuthPerMin: number
   rateAdminPerMin: number
-  /**
-   * A stricter second window for admin actions that make live upstream calls
-   * (`testAdminProvider`, `testAdminRoute`, `verifyAllRoutes`). Each one spends
-   * provider quota, and `verifyAllRoutes` walks the whole routing table
-   * sequentially, so this is deliberately a fraction of `rateAdminPerMin`.
-   */
-  rateAdminVerifyPerMin: number
   rateImagePerMin: number
   rateImagePerDay: number
   rateToolImagePerDay: number
@@ -182,7 +170,6 @@ export function resolvePolicy(env: WorkerEnv): Policy {
     rateUploadPerDay: intVar(env.RATE_UPLOAD_PER_DAY, 100),
     rateAuthPerMin: intVar(env.RATE_AUTH_PER_MIN, 30),
     rateAdminPerMin: intVar(env.RATE_ADMIN_PER_MIN, 120),
-    rateAdminVerifyPerMin: intVar(env.RATE_ADMIN_VERIFY_PER_MIN, 12),
     rateImagePerMin: intVar(env.RATE_IMAGE_PER_MIN, 3),
     rateImagePerDay: intVar(env.RATE_IMAGE_PER_DAY, 20),
     // Deliberately a quarter of the button's daily budget. The tool fires on the

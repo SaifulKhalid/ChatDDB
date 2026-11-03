@@ -2,8 +2,6 @@
  * Provider adapter interface and shared contracts.
  */
 
-import type { ApiProviderRow } from '../db/aiRouting.ts'
-
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool'
 
 export type ContentPart =
@@ -59,21 +57,3 @@ export interface TestResult {
   error?: string
 }
 
-export interface ProviderAdapter {
-  executeChat(
-    provider: ApiProviderRow,
-    creds: ProviderCredentials,
-    request: AdapterRequest,
-  ): Promise<Response>
-
-  testConnection(
-    provider: ApiProviderRow,
-    creds: ProviderCredentials,
-  ): Promise<TestResult>
-
-  testRoute(
-    provider: ApiProviderRow,
-    creds: ProviderCredentials,
-    upstreamModelId: string,
-  ): Promise<TestResult>
-}
