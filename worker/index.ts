@@ -23,7 +23,6 @@
  * here means the asset handler already passed on it.
  */
 
-import { NotConfiguredError, resolveConfig } from './provider.ts'
 import { imageFallbackReady, imageReady, resolvePollinations } from './images.ts'
 import { bucketReady, dbReady } from './db/client.ts'
 import { errorResponse, json, methodNotAllowed, preflight } from './lib/http.ts'
@@ -38,7 +37,6 @@ import type { WorkerEnv } from './env.ts'
 import * as auth from './routes/auth.ts'
 import * as chat from './routes/chat.ts'
 import * as services from './routes/services.ts'
-import * as adminAi from './routes/adminAi.ts'
 import * as sessions from './routes/sessions.ts'
 import * as files from './routes/files.ts'
 import * as images from './routes/images.ts'
@@ -109,26 +107,8 @@ const ROUTES: Route[] = [
   { method: 'GET', pattern: '/api/admin/files/:id/url', guard: 'admin', handler: admin.getAdminFileUrl },
   { method: 'GET', pattern: '/api/admin/files/:id/text', guard: 'admin', handler: admin.getAdminFileText },
 
-  // ---- Admin: AI Services & Routing ---------------------------------------
-  { method: 'GET', pattern: '/api/admin/ai-services', guard: 'admin', handler: adminAi.listAdminServices },
-  { method: 'POST', pattern: '/api/admin/ai-services', guard: 'admin', handler: adminAi.createAdminService },
-  { method: 'PATCH', pattern: '/api/admin/ai-services/:id', guard: 'admin', handler: adminAi.patchAdminService },
-  { method: 'DELETE', pattern: '/api/admin/ai-services/:id', guard: 'admin', handler: adminAi.deleteAdminService },
-
-  { method: 'POST', pattern: '/api/admin/api-providers/:id/test', guard: 'admin', handler: adminAi.testAdminProvider },
-  { method: 'GET', pattern: '/api/admin/api-providers', guard: 'admin', handler: adminAi.listAdminProviders },
-  { method: 'POST', pattern: '/api/admin/api-providers', guard: 'admin', handler: adminAi.createAdminProvider },
-  { method: 'PATCH', pattern: '/api/admin/api-providers/:id', guard: 'admin', handler: adminAi.patchAdminProvider },
-  { method: 'DELETE', pattern: '/api/admin/api-providers/:id', guard: 'admin', handler: adminAi.deleteAdminProvider },
-
-  { method: 'POST', pattern: '/api/admin/ai-routes/:id/test', guard: 'admin', handler: adminAi.testAdminRoute },
-  { method: 'GET', pattern: '/api/admin/ai-routes', guard: 'admin', handler: adminAi.listAdminRoutes },
-  { method: 'POST', pattern: '/api/admin/ai-routes', guard: 'admin', handler: adminAi.createAdminRoute },
-  { method: 'PATCH', pattern: '/api/admin/ai-routes/:id', guard: 'admin', handler: adminAi.patchAdminRoute },
-  { method: 'DELETE', pattern: '/api/admin/ai-routes/:id', guard: 'admin', handler: adminAi.deleteAdminRoute },
-
-  { method: 'POST', pattern: '/api/admin/verify-all', guard: 'admin', handler: adminAi.verifyAllRoutes },
-  { method: 'GET', pattern: '/api/admin/ai-health', guard: 'admin', handler: adminAi.getAdminAiHealth },
+  // ---- Admin: Provider Health ---------------------------------------------
+  { method: 'GET', pattern: '/api/admin/provider-health', guard: 'admin', handler: admin.getProviderHealth },
 ]
 
 export default {
@@ -225,18 +205,15 @@ function match(pattern: string, path: string): string | null {
  * otherwise pass against a deployment that cannot sign in.
  */
 async function health(ctx: RequestContext): Promise<Response> {
-  const rawKey = ctx.env.CODECRAFT_API_KEY?.trim()
-  const cleanKey = rawKey ? rawKey.replace(/^["']|["']$/g, '').replace(/^Bearer\s+/i, '').trim() : undefined
-  const codecraftConfigured = Boolean(cleanKey && cleanKey !== 'cc-replace-me')
-  let agentrouterConfigured = true
-  let detail: string | undefined
-  try {
-    resolveConfig(ctx.env)
-  } catch (err) {
-    agentrouterConfigured = false
-    detail = err instanceof NotConfiguredError || err instanceof Error ? err.message : String(err)
+  const hasConfiguredKey = (key: string | undefined, placeholder: string) => {
+    const value = key?.trim().replace(/^["']|["']$/g, '').replace(/^Bearer\s+/i, '').trim()
+    return Boolean(value && value !== placeholder)
   }
-  const configured = agentrouterConfigured || codecraftConfigured
+  const configured =
+    [ctx.env.AGENTROUTER_API_KEY, ctx.env.AGENTROUTER_API_KEY_2, ctx.env.AGENTROUTER_API_KEY_3]
+      .some((key) => hasConfiguredKey(key, 'sk-replace-me')) ||
+    [ctx.env.APINEX_API_KEY, ctx.env.APINEX_API_KEY_2, ctx.env.APINEX_API_KEY_3]
+      .some((key) => hasConfiguredKey(key, 'sk-replace-me'))
 
   const [db, r2] = await Promise.all([dbReady(ctx.env.DB), bucketReady(ctx.env.FILES)])
 
@@ -258,7 +235,6 @@ async function health(ctx: RequestContext): Promise<Response> {
       service: 'chat',
       platform: 'ChatDDB',
       configured,
-      ...(detail && !configured ? { detail } : {}),
       ready: {
         upstream: configured,
         db,

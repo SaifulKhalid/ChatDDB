@@ -19,7 +19,8 @@
  *
  * This file used to say there was no retry ladder because "there is no second
  * gateway to fall back to". There is one now. Pollinations sits behind Workers AI
- * exactly as backup providers sit behind the primary in `failover.ts`, and for the
+ * exactly as a backup route sits behind the primary in the chat route ladder
+ * (`resolveEligibleRoutes` / `orchestrateChat` in `orchestrator.ts`), and for the
  * same reason: the allowance in front is a hard daily wall shared by every user,
  * so the first person to spend it used to take image generation down for
  * everybody until 00:00 UTC.
@@ -83,8 +84,8 @@ export const DEFAULT_POLLINATIONS_BASE_URL = 'https://gen.pollinations.ai'
  */
 export const POLLINATIONS_SIZE = 1024
 /**
- * Shorter than a patient timeout on purpose, same reasoning as
- * `FALLBACK_TIMEOUT_MS` in `failover.ts`: by the time the backup is asked, the
+ * Shorter than a patient timeout on purpose, for the same reason the chat path
+ * gives its backup candidates a short leash: by the time the backup is asked, the
  * user has already waited out whatever the primary wasted before failing. There
  * is no client signal plumbed through this path — the `ai` binding takes none
  * either — so this is the only thing bounding a hung backup.
@@ -156,7 +157,8 @@ export function resolveImageProvider(env: WorkerEnv): ImageConfig | null {
 /**
  * The Pollinations config, or null when it is unset or switched off.
  *
- * Shaped like `resolveFallback` in `failover.ts`, including the kill switch that
+ * Shaped like the other provider resolvers in this file (`resolveImageProvider`),
+ * including the kill switch that
  * only the exact string `'false'` trips. The key is a secret and never a var:
  * Pollinations meters by account, so a key in `wrangler.jsonc` would be a
  * spendable credential in git history.
@@ -178,7 +180,7 @@ export function resolvePollinations(env: WorkerEnv): PollinationsConfig | null {
  * Builds the provider chain: Workers AI first, Pollinations second.
  *
  * Returns `[]` — not a Pollinations-only chain — when the primary is absent or
- * switched off, which is the same rule `resolveProviders` follows for chat: the
+ * switched off, which is the same rule the chat route ladder follows: the
  * backup does not substitute for a missing primary. Two reasons here. Pollinations
  * is metered, so a deployment running entirely on it would be spending money
  * nobody chose to spend; and `IMAGE_ENABLED` is the *feature's* kill switch, so
@@ -250,7 +252,7 @@ export type ImageCrossoverReporter = (
 /**
  * Generates one image on the first provider that will produce one.
  *
- * The shape is `completeWithFailover`'s, minus the streaming concerns it exists
+ * The shape is `orchestrateChat`'s, minus the streaming concerns it exists
  * to protect: an image is one indivisible result, so there is no "already
  * delivered bytes" invariant to preserve and the loop can live here rather than
  * being pushed above a stream opener.

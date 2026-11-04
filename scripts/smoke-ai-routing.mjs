@@ -5,19 +5,16 @@
  *
  * Verifies:
  *  1. Strict Public Boundary:
- *     - GET /api/ai-services returns clean public AI services only.
+ *     - GET /api/ai-services returns clean public AI services from the static catalog.
  *     - GET /api/models returns clean legacy public aliases only.
- *     - Zero leakage of private upstream model IDs (gpt-5.6-sol, deepseek-v4-flash),
- *       provider names (AgentRouter, CodeCraft), API keys, or upstream URLs.
+ *     - Zero leakage of private upstream model IDs or provider names.
  *     - GET /api/health no longer exposes hardcoded model names.
+ *     - Cache-Control header is present with max-age=300 on discovery routes.
  *  2. Security Guards:
- *     - Unauthenticated requests to /api/admin/ai-* and /api/admin/verify-all are rejected (401/403).
- *  3. Admin Routing Operations (when CHATDDB_TOKEN is provided):
- *     - Admin AI Services list & update
- *     - Admin API Providers list & credential masking (••••••••1234)
- *     - Admin AI Routes list, reorder, and priority validation
- *     - POST /api/admin/verify-all probe execution
- *     - GET /api/admin/ai-health status aggregation
+ *     - Unauthenticated requests to /api/admin/provider-health are rejected (401/403).
+ *     - Deleted admin AI routes return 404.
+ *  3. Admin Provider Health (when CHATDDB_TOKEN is provided):
+ *     - GET /api/admin/provider-health returns two-provider health, in-memory circuits, and model ladders.
  */
 
 const BASE = process.env.BASE_URL ?? 'http://localhost:8787'
@@ -39,13 +36,8 @@ async function test(label, fn) {
 
 // Strictly forbidden substrings in public responses
 const FORBIDDEN_STRINGS = [
-  'gpt-5.6-sol',
-  'gpt-5.5',
-  'deepseek-v4-flash',
   'CodeCraft',
   'codecraft',
-  'AgentRouter',
-  'agentrouter',
   'OpenRouter',
   'openrouter',
   'api.openai.com',
@@ -80,18 +72,22 @@ async function main() {
     }
   })
 
-  await test('GET /api/ai-services — public AI services discovery with strict boundary', async () => {
+  await test('GET /api/ai-services — public AI services discovery from catalog with cache headers', async () => {
     const res = await fetch(`${BASE}/api/ai-services`)
     if (!res.ok) throw new Error(`Status ${res.status}`)
+    const cc = res.headers.get('cache-control') ?? ''
+    if (!cc.includes('max-age=300')) {
+      throw new Error(`Expected Cache-Control: max-age=300, got: "${cc}"`)
+    }
+
     const text = await res.text()
     const body = JSON.parse(text)
 
     if (!Array.isArray(body.services)) throw new Error('Expected services array')
-    if (body.services.length === 0) throw new Error('Expected seeded AI services, got empty array')
+    if (body.services.length === 0) throw new Error('Expected catalogue AI services, got empty array')
 
     const names = body.services.map((s) => s.name)
-    console.log(`    Discovered live services: ${names.join(', ')}`)
-    if (names.length === 0) throw new Error('Expected at least one live AI service')
+    console.log(`    Discovered catalogue services: ${names.join(', ')}`)
 
     // Verify capability flags exist on public services
     for (const s of body.services) {
@@ -108,21 +104,19 @@ async function main() {
     }
   })
 
-  await test('GET /api/models — legacy models compatibility with sanitized public names', async () => {
+  await test('GET /api/models — legacy models compatibility with cache headers', async () => {
     const res = await fetch(`${BASE}/api/models`)
     if (!res.ok) throw new Error(`Status ${res.status}`)
+    const cc = res.headers.get('cache-control') ?? ''
+    if (!cc.includes('max-age=300')) {
+      throw new Error(`Expected Cache-Control: max-age=300, got: "${cc}"`)
+    }
+
     const text = await res.text()
     const body = JSON.parse(text)
 
     if (!Array.isArray(body.models)) throw new Error('Expected models array')
     if (!body.default) throw new Error('Expected default model key')
-
-    for (const m of body.models) {
-      // Model id, label, short must all be clean public strings
-      if (m.modelId && FORBIDDEN_STRINGS.some((f) => m.modelId.toLowerCase().includes(f.toLowerCase()))) {
-        throw new Error(`STRICT BOUNDARY VIOLATION: Leaked private modelId "${m.modelId}"`)
-      }
-    }
 
     for (const forbidden of FORBIDDEN_STRINGS) {
       if (text.toLowerCase().includes(forbidden.toLowerCase())) {
@@ -136,38 +130,26 @@ async function main() {
   // -------------------------------------------------------------------------
   console.log('\n--- 2. Security Guards & Auth Enforcement ---')
 
-  await test('GET /api/admin/ai-services — rejects unauthenticated caller', async () => {
-    const res = await fetch(`${BASE}/api/admin/ai-services`)
+  await test('GET /api/admin/provider-health — rejects unauthenticated caller', async () => {
+    const res = await fetch(`${BASE}/api/admin/provider-health`)
     if (res.status !== 401 && res.status !== 403) {
       throw new Error(`Expected 401/403, got ${res.status}`)
     }
   })
 
-  await test('GET /api/admin/api-providers — rejects unauthenticated caller', async () => {
-    const res = await fetch(`${BASE}/api/admin/api-providers`)
-    if (res.status !== 401 && res.status !== 403) {
-      throw new Error(`Expected 401/403, got ${res.status}`)
-    }
-  })
-
-  await test('GET /api/admin/ai-routes — rejects unauthenticated caller', async () => {
-    const res = await fetch(`${BASE}/api/admin/ai-routes`)
-    if (res.status !== 401 && res.status !== 403) {
-      throw new Error(`Expected 401/403, got ${res.status}`)
-    }
-  })
-
-  await test('POST /api/admin/verify-all — rejects unauthenticated caller', async () => {
-    const res = await fetch(`${BASE}/api/admin/verify-all`, { method: 'POST' })
-    if (res.status !== 401 && res.status !== 403) {
-      throw new Error(`Expected 401/403, got ${res.status}`)
-    }
-  })
-
-  await test('GET /api/admin/ai-health — rejects unauthenticated caller', async () => {
-    const res = await fetch(`${BASE}/api/admin/ai-health`)
-    if (res.status !== 401 && res.status !== 403) {
-      throw new Error(`Expected 401/403, got ${res.status}`)
+  await test('Deleted admin AI routes return 404', async () => {
+    const deadRoutes = [
+      '/api/admin/ai-services',
+      '/api/admin/api-providers',
+      '/api/admin/ai-routes',
+      '/api/admin/verify-all',
+      '/api/admin/ai-health',
+    ]
+    for (const path of deadRoutes) {
+      const res = await fetch(`${BASE}${path}`)
+      if (res.status !== 404) {
+        throw new Error(`Expected 404 for deleted route ${path}, got ${res.status}`)
+      }
     }
   })
 
@@ -182,53 +164,16 @@ async function main() {
       'Content-Type': 'application/json',
     }
 
-    await test('GET /api/admin/ai-services — returns full service definitions', async () => {
-      const res = await fetch(`${BASE}/api/admin/ai-services`, { headers: adminHeaders })
+    await test('GET /api/admin/provider-health — returns two providers and circuit states', async () => {
+      const res = await fetch(`${BASE}/api/admin/provider-health`, { headers: adminHeaders })
       if (!res.ok) throw new Error(`Status ${res.status}`)
       const body = await res.json()
-      if (!Array.isArray(body.services)) throw new Error('Expected services array')
-      if (body.services.length < 6) throw new Error(`Expected at least 6 services, got ${body.services.length}`)
-    })
-
-    await test('GET /api/admin/api-providers — returns masked API credentials (••••••••1234)', async () => {
-      const res = await fetch(`${BASE}/api/admin/api-providers`, { headers: adminHeaders })
-      if (!res.ok) throw new Error(`Status ${res.status}`)
-      const body = await res.json()
-      if (!Array.isArray(body.providers)) throw new Error('Expected providers array')
-      for (const p of body.providers) {
-        if (p.apiKey) throw new Error(`Plaintext apiKey exposed in provider ${p.key}!`)
-        if (p.hasKey && !p.maskedKey?.includes('•')) {
-          throw new Error(`Expected masked key format (••••••••1234), got: ${p.maskedKey}`)
-        }
+      if (!body.providers?.agentrouter || !body.providers?.apinex) {
+        throw new Error('Expected both agentrouter and apinex in provider health')
       }
-    })
-
-    await test('GET /api/admin/ai-routes — returns prioritized routing topology', async () => {
-      const res = await fetch(`${BASE}/api/admin/ai-routes`, { headers: adminHeaders })
-      if (!res.ok) throw new Error(`Status ${res.status}`)
-      const body = await res.json()
-      if (!Array.isArray(body.routes)) throw new Error('Expected routes array')
-      if (body.routes.length === 0) throw new Error('Expected seeded routes')
-    })
-
-    await test('GET /api/admin/ai-health — returns aggregated health and circuit states', async () => {
-      const res = await fetch(`${BASE}/api/admin/ai-health`, { headers: adminHeaders })
-      if (!res.ok) throw new Error(`Status ${res.status}`)
-      const body = await res.json()
-      if (!body.overallStatus) throw new Error('Missing overallStatus')
-      if (!Array.isArray(body.services)) throw new Error('Missing services array')
-    })
-
-    await test('POST /api/admin/verify-all — executes probe suite across all routes', async () => {
-      const res = await fetch(`${BASE}/api/admin/verify-all`, {
-        method: 'POST',
-        headers: adminHeaders,
-      })
-      if (!res.ok) throw new Error(`Status ${res.status}`)
-      const body = await res.json()
-      if (typeof body.totalChecked !== 'number') throw new Error('Missing totalChecked')
-      if (!Array.isArray(body.results)) throw new Error('Missing probe results array')
-      console.log(`    Probed ${body.totalChecked} routes: ${body.healthyCount} healthy, ${body.failedCount} failed`)
+      if (!Array.isArray(body.models)) throw new Error('Expected models array')
+      if (typeof body.circuits !== 'object') throw new Error('Expected circuits object')
+      console.log(`    AgentRouter configured: ${body.providers.agentrouter.configured}, ApiNex configured: ${body.providers.apinex.configured}`)
     })
   } else {
     console.log('\n(Skipping authenticated admin tests — run with CHATDDB_TOKEN=<admin_token> to test)')

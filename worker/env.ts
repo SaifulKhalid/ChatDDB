@@ -25,26 +25,16 @@ export interface WorkerEnv {
   AI?: Ai
 
   // ---- Secrets (`wrangler secret put` / .dev.vars) ------------------------
-  /** Primary upstream API key. */
-  PROVIDER_API_KEY?: string
-  /** Fallback API key 2. */
-  PROVIDER_API_KEY_2?: string
-  /** Fallback API key 3. */
-  PROVIDER_API_KEY_3?: string
-  /** Legacy alias for primary API key. */
+  /** AgentRouter API keys, tried in order. */
   AGENTROUTER_API_KEY?: string
-  /** Legacy alias for secondary API key. */
   AGENTROUTER_API_KEY_2?: string
-  /** Legacy alias for tertiary API key. */
   AGENTROUTER_API_KEY_3?: string
-  /** CodeCraft API key — server-side secret for CodeCraft completions (ChatGPT 5.6, Gemini 3.7, Claude 5). */
-  CODECRAFT_API_KEY?: string
-  /** CodeCraft API base URL — defaults to https://codecraftapi.com/v1 */
-  CODECRAFT_BASE_URL?: string
-  /** CodeCraft model overrides */
-  CODECRAFT_MODEL_CHATGPT?: string
-  CODECRAFT_MODEL_GEMINI?: string
-  CODECRAFT_MODEL_CLAUDE?: string
+  /** ApiNex API keys, tried in order. */
+  APINEX_API_KEY?: string
+  APINEX_API_KEY_2?: string
+  APINEX_API_KEY_3?: string
+  /** Upstream TTFB timeout in milliseconds (default: 20000). */
+  UPSTREAM_TTFB_TIMEOUT_MS?: string
   /** Salt for `ip_hash`. Rotating it deliberately breaks old correlations. */
   IP_HASH_SALT?: string
   /** HMAC key for short-lived signed file-view URLs. */
@@ -54,17 +44,7 @@ export interface WorkerEnv {
    */
   POLLINATIONS_API_KEY?: string
 
-  // ---- API Provider Configuration -----------------------------------------
-  API_PROVIDER_MODEL?: string
-  API_PROVIDER_BASE_URL?: string
-  API_PROVIDER_USER_AGENT?: string
-  /** Legacy aliases */
-  AGENTROUTER_MODEL?: string
-  AGENTROUTER_BASE_URL?: string
-  AGENTROUTER_USER_AGENT?: string
-  MAX_OUTPUT_TOKENS?: string
-  UPSTREAM_TIMEOUT_MS?: string
-  REASONING_EFFORT?: string
+  // ---- Shared upstream configuration --------------------------------------
   SYSTEM_PROMPT?: string
 
   // ---- Image generation ---------------------------------------------------

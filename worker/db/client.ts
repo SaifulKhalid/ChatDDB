@@ -2,7 +2,7 @@
  * D1 access helpers.
  *
  * Every function in `db/*` takes its `D1Database` as an argument rather than
- * reading a global env, which matches the existing `resolveConfig(env)` style
+ * reading a global env, which matches the request-scoped configuration style
  * and keeps the services testable with a stub.
  *
  * Two rules hold throughout `db/`:

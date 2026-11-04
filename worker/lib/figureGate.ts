@@ -13,7 +13,8 @@
  *
  * ## This is not a violation of the "never restart an open stream" rule
  *
- * `failover.ts` refuses to retry a stream that has delivered bytes, because a
+ * The route ladder in `orchestrator.ts` refuses to retry a stream that has
+ * delivered bytes, because a
  * second provider cannot continue a sentence the first one started. Nothing here
  * restarts anything. The stream stays open and in order; some of its bytes
  * arrive later than they otherwise would.

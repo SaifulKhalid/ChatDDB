@@ -40,7 +40,7 @@ import {
   signOutFirebase,
 } from './firebase'
 import type { User } from './firebase'
-import type { MeResponse, ModelSpec, PublicUser, Quota, SessionResponse, UsageSummary } from './apiTypes'
+import type { MeResponse, PublicAiService, PublicUser, Quota, SessionResponse, UsageSummary } from './apiTypes'
 
 /**
  * The live Firebase user, at module scope.
@@ -78,7 +78,8 @@ export interface AuthState {
   profile: PublicUser | null
   usage: UsageSummary | null
   quota: Quota | null
-  models: ModelSpec[]
+  /** The AI services this deployment offers, as `/api/me` reported them. */
+  services: PublicAiService[]
   /** Whether this deployment can generate images. Gates the composer toggle. */
   imageGeneration: boolean
   /** Sign-in or session-establishment failure, for the login screen. */
@@ -113,7 +114,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<PublicUser | null>(null)
   const [usage, setUsage] = useState<UsageSummary | null>(null)
   const [quota, setQuota] = useState<Quota | null>(null)
-  const [models, setModels] = useState<ModelSpec[]>([])
+  const [services, setServices] = useState<PublicAiService[]>([])
   // Defaults to false so the toggle never flashes in on a slow /api/me and then
   // disappears once the real answer arrives.
   const [imageGeneration, setImageGeneration] = useState(false)
@@ -129,7 +130,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setProfile(null)
     setUsage(null)
     setQuota(null)
-    setModels([])
+    setServices([])
     setImageGeneration(false)
   }, [])
 
@@ -139,7 +140,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setProfile(me.user)
     setUsage(me.usage)
     setQuota(me.quota)
-    setModels(me.models)
+    setServices(me.services)
     setImageGeneration(me.imageGeneration === true)
   }, [])
 
@@ -166,7 +167,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         establishedFor.current = user.uid
         setProfile(res.user)
         setError(null)
-        // Quota, usage and the model registry are a second call because
+        // Quota, usage and the service catalogue are a second call because
         // /api/auth/session deliberately returns only the user record.
         await loadMe()
       } catch (err) {
@@ -295,7 +296,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       profile,
       usage,
       quota,
-      models,
+      services,
       imageGeneration,
       error,
       unconfigured,
@@ -313,7 +314,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       profile,
       usage,
       quota,
-      models,
+      services,
       imageGeneration,
       error,
       unconfigured,

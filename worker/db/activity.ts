@@ -46,6 +46,13 @@ export const ACTIVITY_ACTIONS = [
   'admin_file_access',
   'admin_user_updated',
   'admin_login',
+  /**
+   * A verified login arrived with a uid we had not seen for an email we already
+   * held, and the existing row was adopted rather than duplicated. Recorded
+   * because the row that was adopted carries `role` — if this ever appears for
+   * an account nobody expected, that is the row to look at first.
+   */
+  'identity_reconciled',
 ] as const
 
 export type ActivityAction = (typeof ACTIVITY_ACTIONS)[number]

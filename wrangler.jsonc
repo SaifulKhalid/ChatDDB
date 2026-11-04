@@ -31,13 +31,6 @@
   },
 
   "vars": {
-    // Upstream API Provider model and endpoint configuration.
-    "API_PROVIDER_MODEL": "deepseek-v4-flash",
-    "API_PROVIDER_BASE_URL": "https://agentrouter.org/v1",
-    "API_PROVIDER_USER_AGENT": "claude-cli/2.1.158 (external, sdk-cli)",
-    "MAX_OUTPUT_TOKENS": "8192",
-    "UPSTREAM_TIMEOUT_MS": "180000",
-
     // Firebase project id. A public identifier, not a secret: ID tokens are
     // verified against Google's public JWKS, so there is no service-account key.
     // Set this to your own project's id (see DOCS.md, "Firebase setup").
@@ -82,12 +75,16 @@
     "RATE_UPLOAD_PER_DAY": "100",
     "RATE_AUTH_PER_MIN": "30",
     "RATE_ADMIN_PER_MIN": "120",
+    // Admin actions that make live upstream calls (provider/route test probes and
+    // the full routing-table verification sweep). Much stricter, because each one
+    // spends real provider quota.
+    "RATE_ADMIN_VERIFY_PER_MIN": "12",
     "ACTIVITY_RETENTION_DAYS": "90"
   },
 
   // Secrets, never vars:
-  //   CODECRAFT_API_KEY    the CodeCraft API text provider key
   //   AGENTROUTER_API_KEY  the AgentRouter key (with optional secondary/tertiary keys)
+  //   APINEX_API_KEY       the ApiNex API text provider key (with optional secondary/tertiary keys)
   //   POLLINATIONS_API_KEY the backup image provider's key (optional)
   //   FILE_URL_SECRET      HMAC key for signed file-view URLs
   //   IP_HASH_SALT         salt for the truncated IP hash in the audit log

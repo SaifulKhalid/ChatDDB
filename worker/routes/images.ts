@@ -34,7 +34,7 @@
  * role, so the image appears on reload with no change to the transcript path.
  *
  * The image is never fed back to the model. `gpt-5.6-sol` is `vision: false`
- * (see `models.ts`), so it could not see it — the assistant row's content is
+ * (see the dynamic service capability records), so it could not see it — the assistant row's content is
  * text, and the image is an attachment beside it.
  */
 

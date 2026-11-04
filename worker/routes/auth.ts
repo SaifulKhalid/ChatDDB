@@ -16,7 +16,7 @@ import { bearerToken, verifyIdToken } from '../auth/verify.ts'
 import type { AuthedContext, RequestContext } from '../auth/middleware.ts'
 import { listVar } from '../env.ts'
 import { imageReady } from '../images.ts'
-import { listLiveServices, type ServiceCapabilities } from '../db/aiRouting.ts'
+import { MODELS } from '../catalog.ts'
 
 /** UTC midnight for a timestamp -- the boundary all daily counters share. */
 export function dayStart(now = Date.now()): number {
@@ -67,7 +67,24 @@ export async function postSession(ctx: RequestContext): Promise<Response> {
   }
 
   const adminEmails = listVar(ctx.env.ADMIN_EMAILS)
-  const user = await users.upsertOnLogin(db, token, adminEmails)
+  const { user, reconciledFrom } = await users.upsertOnLogin(db, token, adminEmails)
+
+  if (reconciledFrom) {
+    // The row was adopted because a *verified* email arrived under a new uid.
+    // Written before anything else so the trail exists even if the response
+    // never reaches the client.
+    await activity.log(db, {
+      userId: user.id,
+      action: 'identity_reconciled',
+      severity: 'warn',
+      metadata: {
+        previousUidSuffix: reconciledFrom.previousUid.slice(-6),
+        roleCarried: user.role,
+      },
+      ipHash: ctx.ipHash,
+      userAgent: ctx.userAgent,
+    })
+  }
 
   if (user.status === 'suspended') {
     // Logged before the refusal is returned, so a suspended account's attempts
@@ -130,38 +147,16 @@ export async function getMe(ctx: AuthedContext): Promise<Response> {
    */
   const imageUsedToday = await ratelimit.peek(ctx.db, `user:${ctx.user.id}`, 'image', 'day')
 
-  const aiServicesList = await listLiveServices(ctx.db).catch(() => [])
-  const defaultService = aiServicesList.find((s) => s.default_service === 1) ?? aiServicesList[0]
-  const publicServices = aiServicesList.map((s) => {
-    let caps: ServiceCapabilities = {}
-    try {
-      caps = JSON.parse(s.capabilities) as ServiceCapabilities
-    } catch {
-      caps = {}
-    }
-    return {
-      id: s.key,
-      name: s.public_name,
-      description: s.description,
-      vision: Boolean(caps.vision),
-      documents: caps.documents !== false,
-      reasoning: Boolean(caps.reasoning),
-      tools: caps.tools !== false,
-      default: defaultService ? s.id === defaultService.id : false,
-    }
-  })
-
-  const legacyModels = publicServices.map((s) => ({
-    id: s.id,
-    name: s.name,
-    label: s.name,
-    short: s.name,
-    modelId: s.name,
-    vision: s.vision,
-    documents: s.documents,
-    reasoning: s.reasoning,
-    default: s.default,
-    description: s.description ?? undefined,
+  const defaultModel = MODELS.find((m) => m.default) ?? MODELS[0]
+  const publicServices = MODELS.map((m) => ({
+    id: m.key,
+    name: m.name,
+    description: m.description,
+    vision: m.capabilities.vision,
+    documents: m.capabilities.documents,
+    reasoning: m.capabilities.reasoning,
+    tools: m.capabilities.tools,
+    default: m.key === defaultModel.key,
   }))
 
   return json(
@@ -185,7 +180,6 @@ export async function getMe(ctx: AuthedContext): Promise<Response> {
             : null,
       },
       services: publicServices,
-      models: legacyModels,
       pdfExtractMode: ctx.policy.pdfExtractMode,
       /**
        * Whether `POST /api/images` can serve. The composer hides its image

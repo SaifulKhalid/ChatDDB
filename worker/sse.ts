@@ -55,7 +55,7 @@
  * back at them, feature flag or not.
  */
 
-import type { ToolCall } from './provider.ts'
+import type { ToolCall } from './adapters/types.ts'
 import { FigureGate } from './lib/figureGate.ts'
 
 const encoder = new TextEncoder()
@@ -221,6 +221,10 @@ function extractError(chunk: UpstreamChunk): string | null {
   if (chunk.error) {
     const message = chunk.error.message
     return typeof message === 'string' ? message : JSON.stringify(chunk.error)
+  }
+  const status = (chunk as unknown as { status?: unknown; error?: unknown }).status
+  if (status === 'failed') {
+    return 'Upstream response generation failed'
   }
   return null
 }
@@ -415,15 +419,28 @@ async function pumpJsonBody(
  * must be handed to `ctx.waitUntil` by the tap itself — which is exactly what
  * `routes/chat.ts` does with its D1 writes.
  */
-export function toClientStream(res: Response, onComplete?: StreamTap): ReadableStream<Uint8Array> {
+export function toClientStream(
+  res: Response,
+  onComplete?: StreamTap,
+  onFirstByte?: () => void,
+): ReadableStream<Uint8Array> {
   const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>()
   const writer = writable.getWriter()
   const isEventStream = (res.headers.get('content-type') ?? '').includes('text/event-stream')
   const sink = newSink()
 
   void (async () => {
+    let firstByteFired = false
+    const fireFirstByte = () => {
+      if (!firstByteFired) {
+        firstByteFired = true
+        onFirstByte?.()
+      }
+    }
+
     try {
       await writer.write(commentFrame('chatddb stream open'))
+      fireFirstByte()
       if (isEventStream && res.body) {
         await pumpEventStream(res.body, writer, sink)
       } else {
@@ -500,8 +517,10 @@ export type PeekResult = PeekedToolCalls | PeekedText
  *
  * `routes/chat.ts` must know whether the model wants a tool *before*
  * `toClientStream` writes its first frame, because once a byte reaches the
- * client the turn is committed — that is the invariant `failover.ts` is built
- * around. But the only way to know is to read the body, and reading the body is
+ * client the turn is committed — that is the invariant the route ladder in
+ * `orchestrator.ts` is built around (a candidate is only failed over before its
+ * first byte lands). But the only way to know is to read the body, and reading
+ * the body is
  * exactly what would consume it. So this reads, decides, and then hands back
  * either the assembled calls or a response that replays what it read.
  *
@@ -595,6 +614,8 @@ export async function peekToolCalls(res: Response): Promise<PeekResult> {
   let sawText = false
   /** Frames inspected since that content frame, against `LOOKAHEAD_FRAMES`. */
   let looked = 0
+  let totalBytes = 0
+  let firstByteTime: number | null = null
 
   try {
     // Labelled because the budget and the terminal frame are both decided while
@@ -604,6 +625,20 @@ export async function peekToolCalls(res: Response): Promise<PeekResult> {
       const next = await reader.read()
       if (next.done) break
       head.push(next.value)
+      totalBytes += next.value.byteLength
+      if (firstByteTime === null) {
+        firstByteTime = performance.now()
+      }
+
+      // Hard budget for peek (~8 KB or ~1.5s after first byte). On expiry, release the stream.
+      // Must never read to EOF for text.
+      if (!sawTool) {
+        const elapsed = performance.now() - firstByteTime
+        if (totalBytes >= MAX_PEEK_BYTES || elapsed >= MAX_PEEK_TIME_MS) {
+          break scan
+        }
+      }
+
       pending += decoder.decode(next.value, { stream: true })
 
       const lines = pending.split('\n')
@@ -613,19 +648,21 @@ export async function peekToolCalls(res: Response): Promise<PeekResult> {
         const verdict = inspectLine(line, partials)
 
         if (verdict === 'tool') {
-          // Committed. Keep reading to the end of the stream: the name arrived on
-          // this frame but `function.arguments` is still ~150 frames away.
+          // Committed. Keep reading to assemble tool arguments.
           sawTool = true
           continue
         }
-        if (sawTool) continue
+        if (sawTool) {
+          if (isTerminalFrame(line)) break scan
+          continue
+        }
 
         if (!sawText) {
           // Anything before the first content frame — a role frame, an empty
           // delta — tells us nothing and does not start the clock.
           if (verdict !== 'text') continue
           sawText = true
-        } else if (++looked > LOOKAHEAD_FRAMES) {
+        } else if (++looked >= LOOKAHEAD_FRAMES) {
           break scan
         }
 
@@ -651,15 +688,12 @@ export async function peekToolCalls(res: Response): Promise<PeekResult> {
 
 /**
  * How far past the first content frame to keep looking for a tool call.
- *
- * Only ever reached on a gateway that streams prose token by token, and it is
- * the whole latency cost of the lookahead on one: at most this many frames
- * before the user's first byte. Many gateways buffer prose and then send
- * `finish_reason`, so `isTerminalFrame` ends the scan long before the count
- * matters — 16 is chosen to be ample for the one case that binds (a short
- * introducing sentence ahead of a call) while staying too small to be felt.
  */
 const LOOKAHEAD_FRAMES = 16
+/** Maximum bytes buffered before releasing stream to client. */
+const MAX_PEEK_BYTES = 8192
+/** Maximum milliseconds after first byte before releasing stream to client. */
+const MAX_PEEK_TIME_MS = 1500
 
 /**
  * Does this line end the completion?
@@ -694,19 +728,24 @@ function inspectLine(line: string, partials: Map<number, PartialToolCall>): 'too
   if (!payload || payload === '[DONE]') return null
 
   const chunk = parseChunk(payload)
-  if (!chunk) return null
+  if (!chunk) {
+    // Non-empty payload that cannot be parsed as JSON counts as text (fail-open)
+    return 'text'
+  }
   const choice = chunk.choices?.[0]
-  if (!choice) return null
+  if (choice) {
+    const raw = choice.delta?.tool_calls ?? choice.message?.tool_calls
+    if (Array.isArray(raw) && raw.length > 0) {
+      for (const call of raw) mergeToolCall(partials, call)
+      return 'tool'
+    }
 
-  const raw = choice.delta?.tool_calls ?? choice.message?.tool_calls
-  if (Array.isArray(raw) && raw.length > 0) {
-    for (const call of raw) mergeToolCall(partials, call)
-    return 'tool'
+    const content = choice.delta?.content ?? choice.message?.content
+    if (typeof content === 'string' && content.length > 0) return 'text'
   }
 
-  const content = choice.delta?.content ?? choice.message?.content
-  if (typeof content === 'string' && content.length > 0) return 'text'
-  return null
+  // Any non-empty payload that cannot be classified as a tool call counts as text (fail-open)
+  return 'text'
 }
 
 /** Folds one fragment into its slot. `arguments` concatenates; the rest wins once. */
@@ -783,15 +822,6 @@ function rebuild(res: Response, body: BodyInit): Response {
 }
 
 /** A stream that only carries one error, for failures found before streaming. */
-export function errorStream(message: string, type: string): ReadableStream<Uint8Array> {
-  return new ReadableStream({
-    start(controller) {
-      controller.enqueue(errorFrame(message, type))
-      controller.enqueue(doneFrame())
-      controller.close()
-    },
-  })
-}
 
 function isAbort(err: unknown): boolean {
   return err instanceof Error && (err.name === 'AbortError' || /abort/i.test(err.message))

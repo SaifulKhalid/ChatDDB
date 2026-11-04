@@ -47,16 +47,97 @@ export interface PublicMessage {
   tokens?: { prompt: number | null; completion: number | null; total: number | null; source: TokenSource | null }
 }
 
+/**
+ * Public service names, exactly as migration 0007 seeds `ai_services.public_name`.
+ *
+ * A row already carrying one of these is passed through untouched, which is the
+ * ordinary case: `persistAssistant` in `routes/chat.ts` stores
+ * `service.public_name`, never the upstream id.
+ */
+const PUBLIC_SERVICE_NAMES: readonly string[] = [
+  'ChatGPT',
+  'Gemini',
+  'Claude',
+  'DeepSeek',
+  'GLM',
+  'Grok',
+]
+
+/**
+ * Upstream model-id families mapped to the public service that fronts them,
+ * matched as a **prefix** rather than anywhere in the string.
+ *
+ * Every prefix here is the leading segment of an id migration 0007 actually
+ * seeds into `ai_routes.upstream_model_id` (`gpt-5.6-sol`, `gemini-3.7-flash`,
+ * `claude-opus-5`, `deepseek-v4-flash`, `glm-5.3`), plus `grok-` for the sixth
+ * seeded service. It exists for rows written before the catalogue did, and for
+ * anything that stores an upstream id by mistake.
+ */
+const UPSTREAM_FAMILIES: readonly (readonly [prefix: string, service: string])[] = [
+  ['gpt-', 'ChatGPT'],
+  ['gemini-', 'Gemini'],
+  ['claude-', 'Claude'],
+  ['deepseek-', 'DeepSeek'],
+  ['glm-', 'GLM'],
+  ['grok-', 'Grok'],
+]
+
+/**
+ * Image-generation model ids, which are namespaced by their provider: Workers AI
+ * keeps its `@cf/...` id and Pollinations is prefixed `pollinations/` (see
+ * `GeneratedImage.model` in `images.ts`). Both name the upstream vendor outright,
+ * so neither may reach a client.
+ */
+const IMAGE_MODEL_PREFIXES: readonly string[] = ['@cf/', 'pollinations/']
+
+/** What an image row shows instead of the vendor's model id. */
+const IMAGE_LABEL = 'Image'
+
+/**
+ * Maps a stored `model_used` to the name a client is allowed to see.
+ *
+ * ## Why this is not substring matching
+ *
+ * The previous implementation asked `lower.includes(...)` against a list of
+ * vendor fragments, one of which was `'sol'` -- three letters that appear in
+ * `solar-10.7b`, `console-preview`, and any number of ids that have nothing to
+ * do with ChatGPT. Classification depended on accidents of spelling, so adding a
+ * model could silently relabel an unrelated one. Matching is now anchored: an
+ * exact public name, or a family prefix at position zero.
+ *
+ * ## Why an unrecognised id returns null rather than itself
+ *
+ * The old fallback returned the raw value, and that was a live leak, not a latent
+ * one. `routes/images.ts` stores `image.model` on the assistant row, so every
+ * generated image already had `@cf/black-forest-labs/flux-1-schnell` (or
+ * `pollinations/<model>`) sitting in `model_used`, and `MessageItem.tsx` renders
+ * `message.model` verbatim in a badge. Reloading a conversation showed users the
+ * vendor and model that drew their picture. Anything unrecognised is now
+ * withheld: the badge simply does not render, which is the correct answer to
+ * "which of our services answered this?" when we cannot say.
+ *
+ * This is the single choke point for the question, so it also sanitises rows
+ * already in the database. The image write path is left alone deliberately --
+ * `files.gen_model` is the documented home for image provenance and the admin
+ * inspector reads it there, so rewriting `model_used` would discard operator
+ * detail without making anything safer.
+ */
 export function toPublicModelKey(modelUsed: string | null | undefined): string | null | undefined {
   if (!modelUsed) return modelUsed
-  const lower = modelUsed.toLowerCase()
-  if (lower.includes('gpt') || lower.includes('sol') || lower.includes('chatgpt') || lower.includes('openai')) return 'ChatGPT'
-  if (lower.includes('gemini') || lower.includes('google')) return 'Gemini'
-  if (lower.includes('claude') || lower.includes('opus') || lower.includes('anthropic')) return 'Claude'
-  if (lower.includes('glm') || lower.includes('zhipu')) return 'GLM'
-  if (lower.includes('deepseek')) return 'DeepSeek'
-  if (lower.includes('grok') || lower.includes('xai')) return 'Grok'
-  return modelUsed
+
+  const trimmed = modelUsed.trim()
+  const lower = trimmed.toLowerCase()
+
+  const known = PUBLIC_SERVICE_NAMES.find((name) => name.toLowerCase() === lower)
+  if (known) return known
+
+  for (const [prefix, service] of UPSTREAM_FAMILIES) {
+    if (lower.startsWith(prefix)) return service
+  }
+
+  if (IMAGE_MODEL_PREFIXES.some((prefix) => lower.startsWith(prefix))) return IMAGE_LABEL
+
+  return null
 }
 
 export function toPublicMessage(row: MessageRow): PublicMessage {

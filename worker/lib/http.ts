@@ -7,17 +7,18 @@
  *
  * ## Status codes are load-bearing
  *
- * `src/lib/api.ts` treats **404, 502 and 503** as "no backend yet" and quietly
- * streams a local mock reply. That is a feature for an unconfigured deployment
- * and a disaster for an auth failure: a 401 returned as 503 would look like a
- * working demo. So `ApiError` refuses those three codes for anything except the
- * genuine not-configured case, and `authError()` can only produce 401/403.
+ * Every status here reaches the client as a real error. `src/lib/api.ts` used to
+ * treat 404, 502 and 503 as "no backend yet" and quietly stream a local mock
+ * reply, which turned an auth failure returned as 503 into something that looked
+ * like a working demo. That fallback is gone (login is required, so a faked
+ * answer was worse than an honest error), and with it the constraint that made
+ * only three codes safe to return. The vocabulary below is now chosen for what
+ * it tells the *client*: 401/403 for identity, 404 for a missing resource, 429
+ * with `Retry-After` for limits, 502/503 for an upstream that failed or was
+ * never configured.
  */
 
 import { listVar, type WorkerEnv } from '../env.ts'
-
-/** Codes the frontend reads as "the backend is not wired up". */
-const MOCK_TRIGGERING = new Set([404, 502, 503])
 
 export class ApiError extends Error {
   readonly status: number
@@ -44,8 +45,9 @@ export const forbidden = (message = 'You do not have access to this resource.', 
   new ApiError(403, type, message)
 
 /**
- * 404 for a *resource*. Note this collides with the mock-reply rule, so it is
- * only ever used on JSON routes the chat client never reads as a stream.
+ * 404 for a *resource*. Used on JSON routes where the client asked for
+ * something by id and it is not there; it is never how the chat stream reports
+ * its own failure to start.
  */
 export const notFound = (message = 'Not found.', type = 'not_found') =>
   new ApiError(404, type, message)
@@ -61,7 +63,7 @@ export const rateLimited = (message: string, retryAfterSeconds: number) =>
 export const serverError = (message = 'Something went wrong on our side.', type = 'internal_error') =>
   new ApiError(500, type, message)
 
-/** The service cannot run at all (no key, no binding). Triggers mock mode. */
+/** The service cannot run at all (no key, no binding). */
 export const notConfigured = (message: string) => new ApiError(503, 'not_configured', message)
 
 // ---------------------------------------------------------------------------
@@ -99,9 +101,10 @@ export function corsHeaders(request: Request, env: WorkerEnv): Record<string, st
     'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     // The chat stream reports the ids it created in headers rather than in a
-    // frame, so a cross-origin dev client has to be allowed to read them. The
-    // upstream pair rides along: the frontend reads it to show the "unavailable
-    // right now — answered by X instead" notice on a crossover.
+    // frame, so a cross-origin dev client has to be allowed to read them. Every
+    // header listed here is one `routes/chat.ts` actually sets — the expose list
+    // and the sender have to stay in step, or the browser silently drops the
+    // value the client is waiting for.
     'Access-Control-Expose-Headers':
       'X-ChatDDB-Model, X-ChatDDB-Session-Id, X-ChatDDB-Message-Id, X-ChatDDB-Generated-File, X-ChatDDB-Generated-File-JSON, Retry-After',
     'Access-Control-Max-Age': '86400',
@@ -183,9 +186,4 @@ export function methodNotAllowed(request: Request, env: WorkerEnv, allow: string
 
 export function isAbort(err: unknown): boolean {
   return err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')
-}
-
-/** True when `status` would make the chat client fall back to a mock reply. */
-export function triggersMockMode(status: number): boolean {
-  return MOCK_TRIGGERING.has(status)
 }

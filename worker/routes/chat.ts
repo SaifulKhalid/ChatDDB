@@ -29,12 +29,7 @@
  *   - regenerate  `regenerate: true` (drops the last answer, re-sends the turn)
  */
 
-import {
-  type ChatMessage,
-  type ContentPart,
-  type ToolCall,
-  type ToolDefinition,
-} from '../provider.ts'
+import type { ChatMessage, ContentPart, ToolCall, ToolDefinition } from '../adapters/types.ts'
 import { peekToolCalls, toClientStream, type StreamResult } from '../sse.ts'
 import { ApiError, badRequest, corsHeaders, notFound } from '../lib/http.ts'
 import { MAX_PROMPT_CHARS, resolveImageProviders } from '../images.ts'
@@ -53,16 +48,14 @@ import * as filesDb from '../db/files.ts'
 import * as ratelimit from '../lib/ratelimit.ts'
 import * as suspicious from '../lib/suspicious.ts'
 import { buildDocumentContext, imageDataUrl } from '../lib/files/context.ts'
-import { NO_VISION_MESSAGE } from '../models.ts'
 import {
-  orchestrateChat,
-  resolveService,
-  getAdapter,
-  resolveProviderCredentials,
-  type OrchestratedResult,
-} from '../orchestrator.ts'
+  routeChat,
+  callUpstream,
+  resolveApiKeys,
+  type RoutedResult,
+} from '../routing.ts'
+import { resolveModel, type PublicModel } from '../catalog.ts'
 import { ClassifiedUpstreamError } from '../adapters/errors.ts'
-import type { AiServiceRow, ServiceCapabilities } from '../db/aiRouting.ts'
 import { sha256Hex } from '../lib/hash.ts'
 import type { AuthedContext } from '../auth/middleware.ts'
 import type { FileRow } from '../db/files.ts'
@@ -74,6 +67,9 @@ const DEFAULT_SYSTEM_PROMPT = [
   'Use Markdown — fenced code blocks with a language tag, tables where they help.',
   'If you are unsure or lack the information, say so rather than guessing.',
 ].join(' ')
+
+const NO_VISION_MESSAGE =
+  'This model does not support image analysis. Please select a vision-capable model.'
 
 // ---------------------------------------------------------------------------
 // The generate_image tool
@@ -351,18 +347,65 @@ function parseBody(raw: Record<string, unknown>): ChatBody {
 }
 
 export async function postChat(ctx: AuthedContext): Promise<Response> {
+  const tPostChatStart = performance.now()
+  const authDur = ctx.authDur ?? 0
   const body = parseBody(await readJsonBody(ctx.request))
+  if (body.regenerate && !body.sessionId) {
+    throw badRequest('`regenerate` needs a `sessionId`.', 'missing_session')
+  }
 
-  // Pre-load attachment rows to verify readiness and determine file types
-  let attachmentRows: FileRow[] = []
+  // Resolve public AI model ONCE from static catalogue (zero D1)
+  const tRouteStart = performance.now()
+  const model = resolveModel(body.service || body.model)
+  const routingDur = performance.now() - tRouteStart
+
+  if (body.attachments.length > ctx.policy.maxAttachmentsPerMessage) {
+    throw badRequest(
+      `Up to ${ctx.policy.maxAttachmentsPerMessage} attachments per message.`,
+      'too_many_attachments',
+    )
+  }
+
+  // Run independent tasks concurrently with Promise.all:
+  // 1. Rate-limit consume
+  // 2. Attachment lookup (if attachments present)
+  // 3. Session lookup (or create if new)
+  // 4. Preloaded history read (if existing session without replacement/regenerate)
+  const canPreloadHistory = Boolean(body.sessionId && !body.regenerate && !body.replaceFromMessageId)
+
+  const tParallelStart = performance.now()
+  const [_, attachmentRows, resolvedSession, preloadedHistory] = await Promise.all([
+    limitChat(ctx),
+    body.attachments.length > 0
+      ? filesDb.getManyOwned(ctx.db, body.attachments, ctx.user.id)
+      : Promise.resolve([]),
+    body.sessionId
+      ? sessionsDb.getOwned(ctx.db, body.sessionId, ctx.user.id)
+      : sessionsDb.create(ctx.db, ctx.user.id, sessionsDb.makeTitle(body.content ?? ''), model.name),
+    canPreloadHistory
+      ? messagesDb.historyFor(ctx.db, body.sessionId!, ctx.policy.historyMaxTurns, LIMITS.maxTotalChars)
+      : Promise.resolve(null),
+  ])
+  const parallelDur = performance.now() - tParallelStart
+
+  if (!resolvedSession) {
+    throw notFound('That conversation does not exist.', 'session_not_found')
+  }
+  const session = resolvedSession
+
+  if (!body.sessionId) {
+    ctx.exec.waitUntil(
+      activity.log(ctx.db, {
+        userId: ctx.user.id,
+        action: 'chat_started',
+        metadata: { sessionId: session.id, model: model.name },
+        ipHash: ctx.ipHash,
+        userAgent: ctx.userAgent,
+      }),
+    )
+  }
+
   if (body.attachments.length > 0) {
-    if (body.attachments.length > ctx.policy.maxAttachmentsPerMessage) {
-      throw badRequest(
-        `Up to ${ctx.policy.maxAttachmentsPerMessage} attachments per message.`,
-        'too_many_attachments',
-      )
-    }
-    attachmentRows = await filesDb.getManyOwned(ctx.db, body.attachments, ctx.user.id)
     if (attachmentRows.length !== body.attachments.length) {
       throw notFound('One of those attachments is no longer available.', 'attachment_not_found')
     }
@@ -376,38 +419,28 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
   }
 
   const hasImages = attachmentRows.some((f) => f.file_type === 'image')
-  const hasDocuments = attachmentRows.some((f) => f.file_type === 'pdf')
-
-  // Resolve public AI service dynamically from D1
-  const service = await resolveService(ctx.db, ctx.env, body.service || body.model, {
-    content: body.content,
-    hasImages,
-  })
 
   // Verify vision capability if explicit turn carries images
-  assertVisionOk(attachmentRows, service)
+  assertVisionOk(attachmentRows, model)
 
-  await limitChat(ctx)
-
-  const session = await resolveSession(ctx, body, service.public_name)
-  const turn = await prepareTurn(ctx, body, session.id, service, attachmentRows)
+  const turn = await prepareTurn(ctx, body, session.id, model, attachmentRows, preloadedHistory ?? undefined)
 
   // Offered only when image providers exist
   const toolsArmed = resolveImageProviders(ctx.env).length > 0
   const upstream = buildUpstreamMessages(ctx, turn, toolsArmed)
 
-  let outcome: OrchestratedResult
+  let outcome: RoutedResult
   let generated: filesDb.PublicFile | null = null
 
   try {
-    outcome = await orchestrateChat(ctx.db, ctx.env, {
-      serviceOrKey: service.key,
+    outcome = await routeChat({
+      model,
       content: body.content,
       messages: upstream,
       hasImages,
-      hasDocuments,
       tools: toolsArmed ? [IMAGE_TOOL] : undefined,
       clientSignal: ctx.request.signal,
+      env: ctx.env,
     })
 
     if (toolsArmed) {
@@ -418,11 +451,11 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
   } catch (err) {
     if (err instanceof ClassifiedUpstreamError) {
       ctx.exec.waitUntil(
-        persistFailure(ctx, session.id, service.public_name, err.classification.publicMessage),
+        persistFailure(ctx, session.id, model.name, err.classification.publicMessage),
       )
       console.error(
         '[chatddb] upstream error for service=%s: %s',
-        service.public_name,
+        model.name,
         err.classification.internalDiagnostic,
       )
       throw new ApiError(
@@ -434,21 +467,40 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
     throw err
   }
 
+  const upstreamTtfb = outcome.latencyMs
+  const serverTiming = [
+    `auth;dur=${authDur.toFixed(1)}`,
+    `routing;dur=${routingDur.toFixed(1)}`,
+    `parallel_read;dur=${parallelDur.toFixed(1)}`,
+    `history_read;dur=${turn.historyReadDur.toFixed(1)}`,
+    `message_insert;dur=${turn.messageInsertDur.toFixed(1)}`,
+    `upstream_ttfb;dur=${upstreamTtfb.toFixed(1)}`,
+  ].join(', ')
+
   const attached = generated
-  const stream = toClientStream(outcome.res, (result) => {
-    ctx.exec.waitUntil(
-      persistAssistant(
-        ctx,
-        session,
-        service.public_name,
-        outcome.upstreamModelId,
-        outcome.provider.key,
-        turn,
-        result,
-        attached,
-      ),
-    )
-  })
+  const stream = toClientStream(
+    outcome.res,
+    (result) => {
+      ctx.exec.waitUntil(
+        persistAssistant(
+          ctx,
+          session,
+          model.name,
+          outcome.upstreamModelId,
+          outcome.provider.key,
+          turn,
+          result,
+          attached,
+        ),
+      )
+    },
+    () => {
+      const firstByteDur = performance.now() - tPostChatStart
+      console.log(
+        `[timing] auth=${authDur.toFixed(1)}ms routing=${routingDur.toFixed(1)}ms parallel_read=${parallelDur.toFixed(1)}ms message_insert=${turn.messageInsertDur.toFixed(1)}ms upstream_ttfb=${upstreamTtfb.toFixed(1)}ms first_byte=${firstByteDur.toFixed(1)}ms`,
+      )
+    },
+  )
 
   return new Response(stream, {
     headers: {
@@ -456,8 +508,9 @@ export async function postChat(ctx: AuthedContext): Promise<Response> {
       'Cache-Control': 'no-cache, no-transform',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
+      'Server-Timing': serverTiming,
       // Public AI service name only: NEVER leaks upstream model IDs
-      'X-ChatDDB-Model': service.public_name,
+      'X-ChatDDB-Model': model.name,
       'X-ChatDDB-Session-Id': session.id,
       ...(turn.userMessageId ? { 'X-ChatDDB-Message-Id': turn.userMessageId } : {}),
       ...(attached
@@ -505,40 +558,6 @@ async function limitChat(ctx: AuthedContext): Promise<void> {
   ratelimit.enforce(verdict, 'messages')
 }
 
-/** Finds the caller's session, or starts one titled from this first message. */
-async function resolveSession(
-  ctx: AuthedContext,
-  body: ChatBody,
-  modelId: string,
-): Promise<sessionsDb.SessionRow> {
-  if (body.sessionId) {
-    const existing = await sessionsDb.getOwned(ctx.db, body.sessionId, ctx.user.id)
-    // Ownership failure and "no such id" are the same 404 on purpose: a
-    // different answer for each would confirm that another user's id exists.
-    if (!existing) throw notFound('That conversation does not exist.', 'session_not_found')
-    return existing
-  }
-
-  if (body.regenerate) throw badRequest('`regenerate` needs a `sessionId`.', 'missing_session')
-
-  const created = await sessionsDb.create(
-    ctx.db,
-    ctx.user.id,
-    sessionsDb.makeTitle(body.content ?? ''),
-    modelId,
-  )
-  ctx.exec.waitUntil(
-    activity.log(ctx.db, {
-      userId: ctx.user.id,
-      action: 'chat_started',
-      metadata: { sessionId: created.id, model: modelId },
-      ipHash: ctx.ipHash,
-      userAgent: ctx.userAgent,
-    }),
-  )
-  return created
-}
-
 /** Everything the upstream call needs, assembled and already persisted. */
 interface Turn {
   history: { role: messagesDb.MessageRole; content: string }[]
@@ -559,31 +578,40 @@ interface Turn {
   promptChars: number
   promptHash: string
   attachmentCount: number
+  historyReadDur: number
+  messageInsertDur: number
 }
 
 async function prepareTurn(
   ctx: AuthedContext,
   body: ChatBody,
   sessionId: string,
-  service: AiServiceRow,
+  model: PublicModel,
   preloadedFiles?: FileRow[],
+  preloadedHistory?: { role: messagesDb.MessageRole; content: string }[],
 ): Promise<Turn> {
-  if (body.regenerate) return prepareRegenerate(ctx, sessionId, service)
+  if (body.regenerate) return prepareRegenerate(ctx, sessionId, model)
 
   const content = body.content as string
-  const files = preloadedFiles ?? (await loadAttachments(ctx, body.attachments, service))
+  const files = preloadedFiles ?? (await loadAttachments(ctx, body.attachments, model))
 
   if (body.replaceFromMessageId) {
     await truncateFrom(ctx, sessionId, body.replaceFromMessageId)
   }
 
   // Read before the insert, so the history is everything *except* this turn.
-  const history = await messagesDb.historyFor(
-    ctx.db,
-    sessionId,
-    ctx.policy.historyMaxTurns,
-    LIMITS.maxTotalChars,
-  )
+  let history = preloadedHistory
+  let historyReadDur = 0
+  if (!history || body.replaceFromMessageId) {
+    const tHistStart = performance.now()
+    history = await messagesDb.historyFor(
+      ctx.db,
+      sessionId,
+      ctx.policy.historyMaxTurns,
+      LIMITS.maxTotalChars,
+    )
+    historyReadDur = performance.now() - tHistStart
+  }
 
   const now = Date.now()
   const inserted = messagesDb.insertStmt({
@@ -591,7 +619,7 @@ async function prepareTurn(
     userId: ctx.user.id,
     role: 'user',
     content,
-    model: service.public_name,
+    model: model.name,
     modelProvider: null,
     attachmentCount: files.length,
     createdAt: now,
@@ -600,13 +628,13 @@ async function prepareTurn(
   const promptHash = (await sha256Hex(content)).slice(0, 16)
   const statements = [
     inserted.stmt,
-    sessionsDb.touchStmt(sessionId, 1, service.public_name, now),
+    sessionsDb.touchStmt(sessionId, 1, model.name, now),
     activity.logStmt({
       userId: ctx.user.id,
       action: 'message_sent',
       metadata: {
         sessionId,
-        model: service.public_name,
+        model: model.name,
         chars: content.length,
         attachments: files.length,
         promptHash,
@@ -622,7 +650,9 @@ async function prepareTurn(
   }
   // One transaction: the message, the counters, the audit row, and the file
   // links all land together or not at all.
+  const tInsertStart = performance.now()
   await batch(ctx.db, statements)
+  const messageInsertDur = performance.now() - tInsertStart
 
   ctx.exec.waitUntil(
     suspicious.afterMessage(
@@ -641,6 +671,8 @@ async function prepareTurn(
     promptChars: history.reduce((n, m) => n + m.content.length, 0) + text.length,
     promptHash,
     attachmentCount: files.length,
+    historyReadDur,
+    messageInsertDur,
   }
 }
 
@@ -650,7 +682,7 @@ async function prepareTurn(
 async function prepareRegenerate(
   ctx: AuthedContext,
   sessionId: string,
-  service: AiServiceRow,
+  model: PublicModel,
 ): Promise<Turn> {
   const last = await messagesDb.lastForSession(ctx.db, sessionId)
   if (!last) throw badRequest('This conversation has no messages to regenerate.', 'nothing_to_regenerate')
@@ -665,16 +697,18 @@ async function prepareRegenerate(
   const userTurn = await messagesDb.lastUserForSession(ctx.db, sessionId)
   if (!userTurn) throw badRequest('This conversation has no user message to answer.', 'nothing_to_regenerate')
 
+  const tHistStart = performance.now()
   const full = await messagesDb.historyFor(
     ctx.db,
     sessionId,
     ctx.policy.historyMaxTurns,
     LIMITS.maxTotalChars,
   )
+  const historyReadDur = performance.now() - tHistStart
   if (full.length > 0 && full[full.length - 1]?.role === 'user') full.pop()
 
   const files = await filesDb.listForMessage(ctx.db, userTurn.id)
-  assertVisionOk(files, service)
+  assertVisionOk(files, model)
 
   const text = await withDocuments(ctx, files, userTurn.message_content)
   return {
@@ -686,6 +720,8 @@ async function prepareRegenerate(
     promptChars: full.reduce((n, m) => n + m.content.length, 0) + text.length,
     promptHash: (await sha256Hex(userTurn.message_content)).slice(0, 16),
     attachmentCount: files.length,
+    historyReadDur,
+    messageInsertDur: 0,
   }
 }
 
@@ -707,7 +743,7 @@ async function truncateFrom(ctx: AuthedContext, sessionId: string, messageId: st
 async function loadAttachments(
   ctx: AuthedContext,
   ids: string[],
-  service: AiServiceRow,
+  model: PublicModel,
 ): Promise<FileRow[]> {
   if (ids.length === 0) return []
   if (ids.length > ctx.policy.maxAttachmentsPerMessage) {
@@ -729,18 +765,15 @@ async function loadAttachments(
     )
   }
 
-  assertVisionOk(rows, service)
+  assertVisionOk(rows, model)
   return rows
 }
 
-function assertVisionOk(files: FileRow[], service: AiServiceRow): void {
-  let caps: ServiceCapabilities = {}
-  try {
-    caps = JSON.parse(service.capabilities) as ServiceCapabilities
-  } catch {
-    caps = {}
-  }
-  if (files.some((f) => f.file_type === 'image') && !caps.vision) {
+/**
+ * Refuses an image turn on a model that has no vision.
+ */
+function assertVisionOk(files: FileRow[], model: PublicModel): void {
+  if (files.some((f) => f.file_type === 'image') && !model.capabilities.vision) {
     throw badRequest(NO_VISION_MESSAGE, 'model_no_vision')
   }
 }
@@ -841,30 +874,13 @@ interface ToolOutcome {
 
 async function runToolLoop(
   ctx: AuthedContext,
-  outcome: OrchestratedResult,
+  outcome: RoutedResult,
   messages: ChatMessage[],
   sessionId: string,
 ): Promise<ToolOutcome> {
   let currentRes = outcome.res
   let file: filesDb.PublicFile | null = null
-
-  const adapter = getAdapter(outcome.provider.adapter)
-  const creds = resolveProviderCredentials(outcome.provider, ctx.env)
-
-  let routeConfig: {
-    tokenParam?: 'max_tokens' | 'max_completion_tokens'
-    maxOutputTokens?: number
-    reasoningEffort?: string
-    sendReasoningEffort?: boolean
-  } = {}
-
-  if (outcome.route.configuration) {
-    try {
-      routeConfig = JSON.parse(outcome.route.configuration) as typeof routeConfig
-    } catch {
-      routeConfig = {}
-    }
-  }
+  const keys = resolveApiKeys(ctx.env, outcome.target.provider)
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const peek = await peekToolCalls(currentRes)
@@ -878,13 +894,11 @@ async function runToolLoop(
       messages.push({ role: 'tool', tool_call_id: call.id, content: payload })
     }
 
-    currentRes = await adapter.executeChat(outcome.provider, creds, {
-      upstreamModel: outcome.route.upstream_model_id,
+    const followUp = await callUpstream(outcome.target, outcome.provider, keys, {
       messages,
       clientSignal: ctx.request.signal,
-      configuration: routeConfig,
-      timeoutMs: outcome.provider.timeout_ms,
     })
+    currentRes = followUp.res
   }
 
   console.warn('[chatddb] tool loop hit %d rounds for session %s', MAX_TOOL_ROUNDS, sessionId)

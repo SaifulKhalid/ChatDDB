@@ -517,3 +517,29 @@ export async function getAdminFileText(ctx: AuthedContext, id: string): Promise<
     ctx.env,
   )
 }
+
+export async function getProviderHealth(ctx: AuthedContext): Promise<Response> {
+  await limitAdmin(ctx)
+  const { getCircuitBreakerStatus, resolveApiKeys } = await import('../routing.ts')
+  const { PROVIDERS, MODELS } = await import('../catalog.ts')
+
+  const circuits = getCircuitBreakerStatus()
+  const providers = {
+    agentrouter: {
+      label: PROVIDERS.agentrouter.label,
+      baseUrl: PROVIDERS.agentrouter.baseUrl,
+      protocol: PROVIDERS.agentrouter.protocol,
+      configured: resolveApiKeys(ctx.env, 'agentrouter').length > 0,
+      keysCount: resolveApiKeys(ctx.env, 'agentrouter').length,
+    },
+    apinex: {
+      label: PROVIDERS.apinex.label,
+      baseUrl: PROVIDERS.apinex.baseUrl,
+      protocol: PROVIDERS.apinex.protocol,
+      configured: resolveApiKeys(ctx.env, 'apinex').length > 0,
+      keysCount: resolveApiKeys(ctx.env, 'apinex').length,
+    },
+  }
+
+  return json({ providers, circuits, models: MODELS }, 200, ctx.request, ctx.env)
+}

@@ -1,22 +1,42 @@
+/**
+ * The composer's AI-service selector.
+ *
+ * Renders the public catalogue from `/api/me` — service key, public name, and
+ * the seeded one-line description. Nothing here knows which provider or upstream
+ * model answers a given service, and the wire shape it consumes (`PublicAiService`)
+ * cannot carry that: the Worker projects it through `toPublicCapabilities`, which
+ * emits capability booleans only.
+ *
+ * `null` is Auto, and it is always the first option: it is the only choice that
+ * lets the orchestrator pick a service *and* keep its priority failover, so it
+ * stays the default rather than being buried under the named entries.
+ */
+
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { ChevronDown, Sparkles } from 'lucide-react'
-import type { ModelSpec } from '../lib/apiTypes'
+import type { PublicAiService } from '../lib/apiTypes'
 
-interface ModelPickerProps {
-  models: ModelSpec[]
+interface ServicePickerProps {
+  services: PublicAiService[]
   value: string | null
-  onChange: (modelId: string | null) => void
+  onChange: (serviceId: string | null) => void
   disabled?: boolean
   disabledReason?: string
 }
 
 interface Option {
   id: string | null
-  short: string
+  name: string
   title: string
 }
 
-export function ModelPicker({ models, value, onChange, disabled, disabledReason }: ModelPickerProps) {
+export function ServicePicker({
+  services,
+  value,
+  onChange,
+  disabled,
+  disabledReason,
+}: ServicePickerProps) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
@@ -24,13 +44,15 @@ export function ModelPicker({ models, value, onChange, disabled, disabledReason 
   const options: Option[] = [
     {
       id: null,
-      short: 'Auto',
+      name: 'Auto',
       title: 'Picks the best AI for your message.',
     },
-    ...models.map((m) => ({
-      id: m.id,
-      short: m.short,
-      title: `Always ${m.label}.`,
+    ...services.map((s) => ({
+      id: s.id,
+      name: s.name,
+      // The seeded description is written for this spot. `Always {name}.` is the
+      // fallback for a service an admin added without one.
+      title: s.description ?? `Always ${s.name}.`,
     })),
   ]
 
@@ -97,7 +119,7 @@ export function ModelPicker({ models, value, onChange, disabled, disabledReason 
     }
   }
 
-  if (models.length === 0) return null
+  if (services.length === 0) return null
 
   return (
     <div ref={rootRef} className="relative flex items-center">
@@ -116,7 +138,7 @@ export function ModelPicker({ models, value, onChange, disabled, disabledReason 
         }`}
       >
         {isAuto && <Sparkles size={11} className="shrink-0" />}
-        <span className="max-w-[90px] truncate sm:max-w-none">{selected.short}</span>
+        <span className="max-w-[90px] truncate sm:max-w-none">{selected.name}</span>
         <ChevronDown
           size={11}
           className={`shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
@@ -158,7 +180,7 @@ export function ModelPicker({ models, value, onChange, disabled, disabledReason 
                 />
                 <span className="min-w-0 flex-1">
                   <span className={`block text-xs font-semibold ${on ? 'text-accent' : 'text-ink'}`}>
-                    {opt.short}
+                    {opt.name}
                   </span>
                   <span className="block text-[11px] leading-snug text-ink-2">
                     {opt.title}

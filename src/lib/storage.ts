@@ -15,14 +15,6 @@ export function loadConversations(): Conversation[] {
   }
 }
 
-export function saveConversations(conversations: Conversation[]): void {
-  try {
-    localStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(conversations))
-  } catch {
-    // Storage full or unavailable — keep the app usable in memory
-  }
-}
-
 /**
  * Marks the pre-Phase-2 local history as imported.
  *
@@ -69,12 +61,15 @@ export function saveTheme(theme: Theme): void {
 }
 
 /**
- * The composer's model choice. `null` is Auto — let the server pick.
+ * The composer's service choice. `null` is Auto — let the server pick.
  *
- * Stored as a model id rather than an index so that reordering the registry
+ * Stored as a service key rather than an index so that reordering the catalogue
  * cannot silently switch someone's choice, and read back through the live
- * `models` list: an id that has since left the registry falls back to Auto
+ * `services` list: a key that has since left the catalogue falls back to Auto
  * instead of sending something the backend would answer with a 400.
+ *
+ * The storage key keeps its `chatddb.model` name: it is already in browsers, and
+ * renaming it would silently reset every existing user's pick.
  */
 const MODEL_KEY = 'chatddb.model'
 

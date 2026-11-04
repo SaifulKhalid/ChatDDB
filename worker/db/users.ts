@@ -8,6 +8,7 @@
  */
 
 import { all, first, run, scalar } from './client.ts'
+import { forbidden } from '../lib/http.ts'
 import { newId } from '../lib/hash.ts'
 import { escapeLike } from '../lib/validate.ts'
 import type { VerifiedToken } from '../auth/verify.ts'
@@ -66,11 +67,49 @@ export function findByEmail(db: D1Database, email: string): Promise<UserRow | nu
 }
 
 /**
+ * What `upsertOnLogin` did, beyond the row itself.
+ *
+ * `reconciledFrom` is set when an existing row was adopted because the same
+ * *verified* email arrived with a new uid. The route logs that as an identity
+ * event, which is the difference between reconciliation and a silent account
+ * transfer.
+ */
+export interface LoginResult {
+  user: UserRow
+  reconciledFrom?: { userId: string; previousUid: string }
+}
+
+/**
  * Creates or refreshes the user row for a verified token.
  *
  * The match key is `firebase_uid`, not email: emails can change on the Firebase
  * side, and matching on a mutable field would let a changed email silently
  * create a second account (or, worse, collide with someone else's).
+ *
+ * ## The email-clash path requires a verified email
+ *
+ * `idx_users_email` is UNIQUE, so a uid we have never seen arriving with an
+ * email that already exists is a real possibility, and the two ways it can
+ * happen need opposite answers.
+ *
+ * Legitimately, it is the same person: Google signed them in and handed back the
+ * uid of a *different* Firebase identity for an address we already know (the
+ * identity was re-created, the account was migrated, or the row predates the uid
+ * we now store). Nothing is being taken over — they proved control of the
+ * address — so the row is adopted and `reconciledFrom` reports it for the audit
+ * trail.
+ *
+ * Illegitimately, it is an attack, and the shape of it is specific: **the row
+ * carries `role`, and the row is what grants access.** Once Email/Password is
+ * enabled, anyone can register `victim@example.com` with a password they choose
+ * and receive a brand-new uid with `email_verified: false`. Merging on that uid
+ * would hand the attacker the victim's account — sessions, messages, files, and
+ * an admin role if the victim had one. So an unverified identity never merges:
+ * it is refused outright, and the database is left untouched.
+ *
+ * Today this refuses nothing that works. The only provider enabled is Google,
+ * which always supplies a verified email, so the guard is inert until Email/
+ * Password is turned on — which is exactly when it needs to already be here.
  *
  * `adminEmails` promotes listed addresses on every login rather than only at
  * creation, so adding an address to the var and re-logging-in is enough to grant
@@ -82,7 +121,7 @@ export async function upsertOnLogin(
   db: D1Database,
   token: VerifiedToken,
   adminEmails: string[],
-): Promise<UserRow> {
+): Promise<LoginResult> {
   const now = Date.now()
   const shouldBeAdmin = adminEmails.some((e) => e.toLowerCase() === token.email)
   const existing = await findByFirebaseUid(db, token.uid)
@@ -103,22 +142,31 @@ export async function upsertOnLogin(
       existing.id,
     )
     return {
-      ...existing,
-      email: token.email,
-      name: token.name ?? existing.name,
-      profile_picture: token.picture ?? existing.profile_picture,
-      role,
-      last_login: now,
-      login_count: existing.login_count + 1,
+      user: {
+        ...existing,
+        email: token.email,
+        name: token.name ?? existing.name,
+        profile_picture: token.picture ?? existing.profile_picture,
+        role,
+        last_login: now,
+        login_count: existing.login_count + 1,
+      },
     }
   }
 
-  // First sight of this uid. `idx_users_email` is UNIQUE, so a pre-existing row
-  // with the same email but a different uid would collide here -- that means the
-  // same person signed in through a different provider, which we surface rather
-  // than silently merging two identities.
+  // First sight of this uid, with an email we already hold on another row.
   const clash = await findByEmail(db, token.email)
   if (clash) {
+    if (!token.emailVerified) {
+      // Refused before any write. The message names no account and no role, so
+      // it cannot be used to probe which addresses exist beyond what the
+      // registration flow already reveals.
+      throw forbidden(
+        'An account already exists for this email address. Sign in with the provider you used originally, then link this one from your account settings.',
+        'email_already_registered',
+      )
+    }
+
     await run(
       db,
       `UPDATE users SET firebase_uid = ?, name = ?, profile_picture = ?,
@@ -131,12 +179,15 @@ export async function upsertOnLogin(
       clash.id,
     )
     return {
-      ...clash,
-      firebase_uid: token.uid,
-      name: token.name ?? clash.name,
-      profile_picture: token.picture ?? clash.profile_picture,
-      last_login: now,
-      login_count: clash.login_count + 1,
+      user: {
+        ...clash,
+        firebase_uid: token.uid,
+        name: token.name ?? clash.name,
+        profile_picture: token.picture ?? clash.profile_picture,
+        last_login: now,
+        login_count: clash.login_count + 1,
+      },
+      reconciledFrom: { userId: clash.id, previousUid: clash.firebase_uid },
     }
   }
 
@@ -168,7 +219,7 @@ export async function upsertOnLogin(
     row.last_login,
     row.login_count,
   )
-  return row
+  return { user: row }
 }
 
 // ---------------------------------------------------------------------------

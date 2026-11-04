@@ -1,0 +1,58 @@
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":"1"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":"."},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":" Weekend"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":" Compiler"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":"\n"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":"2"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":"."},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":" Tiny"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":" Ship"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":"\n"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":"3"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":"."},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":" Saturday"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":" Stack"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":"\n"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":"4"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":"."},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":" Side"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":"quest"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":" Studio"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":"\n"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":"5"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":"."},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":" Sunday"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":" Deploy"},"finish_reason":null}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}]}
+
+data: {"id":"resp_09a9485521aaf3f8016aeb738aa10c87d08e855c51c93a19d2","object":"chat.completion.chunk","created":1793815435,"model":"gpt-6.1-sol","choices":[],"usage":{"prompt_tokens":4690,"completion_tokens":29,"total_tokens":4719,"cost_tokens":1416,"completion_tokens_details":{"reasoning_tokens":28,"audio_tokens":0,"accepted_prediction_tokens":0,"rejected_prediction_tokens":0}}}
+
+data: [DONE]
+
