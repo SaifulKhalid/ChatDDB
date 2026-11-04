@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Moon, PanelLeft, Sun } from 'lucide-react'
+import { Moon, PanelLeft, Sun, X } from 'lucide-react'
 import type { Conversation, Message } from './types'
 import { newId } from './types'
 import type { Theme } from './lib/theme'
@@ -18,7 +18,7 @@ import { UserMenu } from './components/UserMenu'
 import { navigate } from './lib/router'
 
 export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => void }) {
-  const { quota, services, isAdmin, imageGeneration } = useAuth()
+  const { quota, services, isAdmin, imageGeneration, isGuest, linkGoogleAccount, busy } = useAuth()
 
   // `null` is Auto: no `model` field on the request, so the Worker resolves its
   // configured default *and* keeps its backup gateway. Naming a model instead
@@ -52,6 +52,9 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
   const [importPrompt, setImportPrompt] = useState<Conversation[] | null>(null)
   const [pending, setPending] = useState<PendingAttachment[]>([])
   const [imageMode, setImageMode] = useState(false)
+  const [guestBannerDismissed, setGuestBannerDismissed] = useState(
+    () => sessionStorage.getItem('chatddb_guest_banner_dismissed') === 'true',
+  )
 
   const abortRef = useRef<AbortController | null>(null)
   const loadedRef = useRef<Set<string>>(new Set())
@@ -660,6 +663,34 @@ export function ChatApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme:
             <UserMenu onOpenAdmin={isAdmin ? () => navigate('/admin') : undefined} />
           </div>
         </header>
+
+        {isGuest && !guestBannerDismissed && (
+          <div className="mx-3 mt-2 flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-accent/25 bg-accent/[0.08] px-4 py-2 text-xs text-ink sm:text-sm">
+            <span className="flex-1 min-w-[200px]">
+              Guest chats stay in this browser. Sign in with Google to keep them.
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => void linkGoogleAccount()}
+                disabled={busy}
+                className="rounded-full bg-accent px-3 py-1 text-xs font-medium text-white transition hover:bg-accent/90 disabled:opacity-50"
+              >
+                Sign in to save
+              </button>
+              <button
+                onClick={() => {
+                  setGuestBannerDismissed(true)
+                  sessionStorage.setItem('chatddb_guest_banner_dismissed', 'true')
+                }}
+                className="rounded-lg p-1 text-ink-2 hover:bg-surface-3 hover:text-ink"
+                aria-label="Dismiss banner"
+                title="Dismiss"
+              >
+                <X size={15} />
+              </button>
+            </div>
+          </div>
+        )}
 
         {notice && (
           <div className="mx-3 mt-2 rounded-lg border border-accent/30 bg-accent/10 px-3 py-2 text-sm text-accent">

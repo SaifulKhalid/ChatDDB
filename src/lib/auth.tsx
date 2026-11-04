@@ -37,6 +37,8 @@ import {
   isFirebaseConfigured,
   missingFirebaseVars,
   signInWithGoogle,
+  signInAnonymouslyFirebase,
+  linkGuestWithGoogle,
   signOutFirebase,
 } from './firebase'
 import type { User } from './firebase'
@@ -88,7 +90,10 @@ export interface AuthState {
   unconfigured: boolean
   missingVars: string[]
   isAdmin: boolean
+  isGuest: boolean
   signIn: () => Promise<void>
+  continueAsGuest: () => Promise<void>
+  linkGoogleAccount: () => Promise<void>
   signOut: () => Promise<void>
   /** Re-reads `GET /api/me`; call after anything that changes quota or usage. */
   refresh: () => Promise<void>
@@ -258,6 +263,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const continueAsGuest = useCallback(async () => {
+    setError(null)
+    setBusy(true)
+    try {
+      await signInAnonymouslyFirebase()
+    } catch (err) {
+      if (alive.current) setError(describeAuthError(err))
+    } finally {
+      if (alive.current) setBusy(false)
+    }
+  }, [])
+
+  const linkGoogleAccount = useCallback(async () => {
+    if (!currentUser) return
+    setError(null)
+    setBusy(true)
+    try {
+      const res = await linkGuestWithGoogle(currentUser)
+      if (res.merged && res.guestToken) {
+        await apiFetch('/api/auth/merge-guest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ guestIdToken: res.guestToken }),
+        })
+      }
+      if (currentUser) {
+        establishedFor.current = null
+        await establish(currentUser)
+      }
+    } catch (err) {
+      if (alive.current) setError(describeAuthError(err))
+    } finally {
+      if (alive.current) setBusy(false)
+    }
+  }, [establish])
+
   const signOut = useCallback(async () => {
     setBusy(true)
     try {
@@ -302,7 +343,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       unconfigured,
       missingVars: unconfigured ? missingFirebaseVars() : [],
       isAdmin: profile?.role === 'admin',
+      isGuest: profile?.isGuest === true,
       signIn,
+      continueAsGuest,
+      linkGoogleAccount,
       signOut,
       refresh,
       clearError,
@@ -319,6 +363,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       error,
       unconfigured,
       signIn,
+      continueAsGuest,
+      linkGoogleAccount,
       signOut,
       refresh,
       clearError,

@@ -147,6 +147,42 @@ export async function signInWithGoogle(): Promise<void> {
   }
 }
 
+export async function signInAnonymouslyFirebase(): Promise<void> {
+  const auth = await getFirebaseAuth()
+  const { signInAnonymously } = await import('firebase/auth')
+  await signInAnonymously(auth)
+}
+
+export async function linkGuestWithGoogle(
+  user: User,
+): Promise<{ merged: boolean; guestToken?: string }> {
+  const auth = await getFirebaseAuth()
+  const { GoogleAuthProvider, linkWithPopup, signInWithPopup } = await import('firebase/auth')
+
+  const provider = new GoogleAuthProvider()
+  provider.setCustomParameters({ prompt: 'select_account' })
+
+  try {
+    await linkWithPopup(user, provider)
+    return { merged: false }
+  } catch (err) {
+    const code = errorCode(err)
+    if (code === 'auth/credential-already-in-use') {
+      // The Google account is already registered.
+      // Obtain the guest ID token before signing in as the existing user so
+      // POST /api/auth/merge-guest can reassign guest sessions to the existing account.
+      const guestToken = await user.getIdToken()
+      await signInWithPopup(auth, provider)
+      return { merged: true, guestToken }
+    }
+    // Cancelled / closed popup is not an error
+    if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+      return { merged: false }
+    }
+    throw err
+  }
+}
+
 export async function signOutFirebase(): Promise<void> {
   const auth = await getFirebaseAuth()
   const { signOut } = await import('firebase/auth')

@@ -12,7 +12,7 @@
  * means the data is stored.
  */
 
-import { AlertCircle, Loader2, Moon, ShieldCheck, Sun } from 'lucide-react'
+import { AlertCircle, Loader2, Moon, ShieldCheck, Sun, User } from 'lucide-react'
 import { useAuth } from '../lib/auth'
 import type { Theme } from '../lib/theme'
 
@@ -23,7 +23,7 @@ export function LoginScreen({
   theme: Theme
   onToggleTheme: () => void
 }) {
-  const { signIn, busy, error, unconfigured, missingVars } = useAuth()
+  const { signIn, continueAsGuest, busy, error, unconfigured, missingVars } = useAuth()
 
   return (
     <div className="flex h-full flex-col overflow-y-auto bg-surface">
@@ -58,18 +58,29 @@ export function LoginScreen({
             <>
               <PrivacyNotice />
 
-              <button
-                onClick={() => void signIn()}
-                disabled={busy}
-                className="mt-5 flex w-full items-center justify-center gap-3 rounded-full border border-line bg-surface px-4 py-3 text-sm font-medium text-ink transition hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {busy ? (
-                  <Loader2 size={18} className="animate-spin" aria-hidden="true" />
-                ) : (
-                  <GoogleMark />
-                )}
-                {busy ? 'Signing in…' : 'Continue with Google'}
-              </button>
+              <div className="mt-5 space-y-2.5">
+                <button
+                  onClick={() => void signIn()}
+                  disabled={busy}
+                  className="flex w-full items-center justify-center gap-3 rounded-full border border-line bg-surface px-4 py-3 text-sm font-medium text-ink transition hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {busy ? (
+                    <Loader2 size={18} className="animate-spin" aria-hidden="true" />
+                  ) : (
+                    <GoogleMark />
+                  )}
+                  {busy ? 'Signing in…' : 'Continue with Google'}
+                </button>
+
+                <button
+                  onClick={() => void continueAsGuest()}
+                  disabled={busy}
+                  className="flex w-full items-center justify-center gap-2 rounded-full border border-line/70 bg-surface-2/60 px-4 py-2.5 text-sm font-medium text-ink-2 transition hover:bg-surface-3 hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <User size={16} aria-hidden="true" />
+                  Continue as guest
+                </button>
+              </div>
             </>
           )}
 
