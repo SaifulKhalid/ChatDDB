@@ -110,14 +110,24 @@ export interface WorkerEnv {
   HISTORY_MAX_TURNS?: string
   RATE_CHAT_PER_MIN?: string
   RATE_CHAT_PER_DAY?: string
+  RATE_GUEST_CHAT_PER_DAY?: string
   RATE_UPLOAD_PER_MIN?: string
   RATE_UPLOAD_PER_DAY?: string
+  RATE_GUEST_UPLOAD_PER_DAY?: string
   RATE_AUTH_PER_MIN?: string
   RATE_GUEST_CREATE_PER_MIN?: string
   RATE_GUEST_CREATE_PER_DAY?: string
   RATE_ADMIN_PER_MIN?: string
+  RATE_GUEST_IMAGE_PER_DAY?: string
+  RATE_GUEST_TOOL_IMAGE_PER_DAY?: string
+  MAX_GUEST_IMAGE_BYTES?: string
+  MAX_GUEST_PDF_BYTES?: string
+  GUEST_RETENTION_DAYS?: string
   ACTIVITY_RETENTION_DAYS?: string
 }
+
+/** User tier determining effective quota and policy limits. */
+export type UserTier = 'guest' | 'user' | 'admin'
 
 /** Parses an integer var, falling back when unset, unparseable, or negative. */
 export function intVar(raw: string | undefined, fallback: number): number {
@@ -135,6 +145,7 @@ export function listVar(raw: string | undefined): string[] {
 
 /** Effective policy numbers, resolved once per request from `env`. */
 export interface Policy {
+  tier: UserTier
   maxImageBytes: number
   maxPdfBytes: number
   maxAttachmentsPerMessage: number
@@ -155,12 +166,19 @@ export interface Policy {
   rateToolImagePerDay: number
   imageSteps: number
   activityRetentionDays: number
+  guestRetentionDays: number
 }
 
-export function resolvePolicy(env: WorkerEnv): Policy {
+export function resolvePolicy(env: WorkerEnv, tier: UserTier = 'user'): Policy {
+  const isGuest = tier === 'guest'
   return {
-    maxImageBytes: intVar(env.MAX_IMAGE_BYTES, 10 * 1024 * 1024),
-    maxPdfBytes: intVar(env.MAX_PDF_BYTES, 25 * 1024 * 1024),
+    tier,
+    maxImageBytes: isGuest
+      ? intVar(env.MAX_GUEST_IMAGE_BYTES, 10 * 1024 * 1024)
+      : intVar(env.MAX_IMAGE_BYTES, 10 * 1024 * 1024),
+    maxPdfBytes: isGuest
+      ? intVar(env.MAX_GUEST_PDF_BYTES, 15 * 1024 * 1024)
+      : intVar(env.MAX_PDF_BYTES, 25 * 1024 * 1024),
     maxAttachmentsPerMessage: intVar(env.MAX_ATTACHMENTS_PER_MESSAGE, 4),
     // Anything but an explicit `worker` means client-side extraction: the Free
     // plan's 10 ms CPU ceiling cannot parse a PDF, so this fails safe.
@@ -169,23 +187,29 @@ export function resolvePolicy(env: WorkerEnv): Policy {
     pdfContextChars: intVar(env.PDF_CONTEXT_CHARS, 24_000),
     historyMaxTurns: intVar(env.HISTORY_MAX_TURNS, 30),
     rateChatPerMin: intVar(env.RATE_CHAT_PER_MIN, 20),
-    rateChatPerDay: intVar(env.RATE_CHAT_PER_DAY, 300),
+    rateChatPerDay: isGuest
+      ? intVar(env.RATE_GUEST_CHAT_PER_DAY, 50)
+      : intVar(env.RATE_CHAT_PER_DAY, 300),
     rateUploadPerMin: intVar(env.RATE_UPLOAD_PER_MIN, 10),
-    rateUploadPerDay: intVar(env.RATE_UPLOAD_PER_DAY, 100),
+    rateUploadPerDay: isGuest
+      ? intVar(env.RATE_GUEST_UPLOAD_PER_DAY, 20)
+      : intVar(env.RATE_UPLOAD_PER_DAY, 100),
     rateAuthPerMin: intVar(env.RATE_AUTH_PER_MIN, 30),
     rateGuestCreatePerMin: intVar(env.RATE_GUEST_CREATE_PER_MIN, 5),
     rateGuestCreatePerDay: intVar(env.RATE_GUEST_CREATE_PER_DAY, 15),
     rateAdminPerMin: intVar(env.RATE_ADMIN_PER_MIN, 120),
     rateImagePerMin: intVar(env.RATE_IMAGE_PER_MIN, 3),
-    rateImagePerDay: intVar(env.RATE_IMAGE_PER_DAY, 20),
-    // Deliberately a quarter of the button's daily budget. The tool fires on the
-    // model's judgement, and a model that decides to illustrate more often than
-    // intended should run out of its own allowance long before it can drain the
-    // one a human is queuing behind.
-    rateToolImagePerDay: intVar(env.RATE_TOOL_IMAGE_PER_DAY, 5),
+    rateImagePerDay: isGuest
+      ? intVar(env.RATE_GUEST_IMAGE_PER_DAY, 5)
+      : intVar(env.RATE_IMAGE_PER_DAY, 20),
+    // For regular users, tool images is 5/day. For guests, 2/day.
+    rateToolImagePerDay: isGuest
+      ? intVar(env.RATE_GUEST_TOOL_IMAGE_PER_DAY, 2)
+      : intVar(env.RATE_TOOL_IMAGE_PER_DAY, 5),
     // Clamped, not just defaulted: flux-1-schnell rejects anything outside 1-8,
     // and a misconfigured var should cost a worse image, not every request.
     imageSteps: Math.min(8, Math.max(1, intVar(env.IMAGE_STEPS, 4))),
     activityRetentionDays: intVar(env.ACTIVITY_RETENTION_DAYS, 90),
+    guestRetentionDays: intVar(env.GUEST_RETENTION_DAYS, 30),
   }
 }

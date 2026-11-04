@@ -555,7 +555,7 @@ async function limitChat(ctx: AuthedContext): Promise<void> {
       'chat',
     ),
   )
-  ratelimit.enforce(verdict, 'messages')
+  ratelimit.enforce(verdict, 'messages', ctx.user.is_guest === 1)
 }
 
 /** Everything the upstream call needs, assembled and already persisted. */
@@ -1044,7 +1044,7 @@ async function limitToolImage(ctx: AuthedContext): Promise<void> {
     429,
     'tool_image_rate_limited',
     `You have reached today's limit of ${ctx.policy.rateToolImagePerDay} generated images. ` +
-      'It resets at midnight UTC.',
+      `It resets at midnight UTC.${ctx.user.is_guest === 1 ? ' Sign in with Google for higher limits.' : ''}`,
   )
 }
 

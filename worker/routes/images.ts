@@ -382,7 +382,7 @@ export async function limitImage(ctx: AuthedContext): Promise<void> {
       'image',
     ),
   )
-  ratelimit.enforce(verdict, 'images')
+  ratelimit.enforce(verdict, 'images', ctx.user.is_guest === 1)
 }
 
 /** Finds the caller's session, or starts one named from the prompt. */

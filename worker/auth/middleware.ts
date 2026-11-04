@@ -16,7 +16,7 @@ import { requireDb } from '../db/client.ts'
 import * as activity from '../db/activity.ts'
 import { findByFirebaseUid, type UserRow } from '../db/users.ts'
 import { bearerToken, verifyIdToken, type VerifiedToken } from './verify.ts'
-import { resolvePolicy, type Policy, type WorkerEnv } from '../env.ts'
+import { resolvePolicy, type Policy, type UserTier, type WorkerEnv } from '../env.ts'
 import { ipHash } from '../lib/hash.ts'
 
 export interface RequestContext {
@@ -88,7 +88,15 @@ export async function requireAuth(ctx: RequestContext): Promise<AuthedContext> {
   }
 
   const authDur = performance.now() - tAuthStart
-  return { ...ctx, db, user, token, authDur }
+  const tier = userTier(user)
+  const policy = resolvePolicy(ctx.env, tier)
+  return { ...ctx, db, user, token, authDur, policy }
+}
+
+export function userTier(user: UserRow): UserTier {
+  if (user.is_guest === 1) return 'guest'
+  if (user.role === 'admin') return 'admin'
+  return 'user'
 }
 
 /**

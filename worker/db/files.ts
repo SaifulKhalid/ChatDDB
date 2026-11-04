@@ -303,6 +303,7 @@ export async function deleteById(db: D1Database, id: string): Promise<void> {
 export interface AdminFileRow extends FileRow {
   email: string | null
   name: string | null
+  is_guest?: number | null
 }
 
 export async function adminList(
@@ -340,7 +341,7 @@ export async function adminList(
 
   const rows = await all<AdminFileRow>(
     db,
-    `SELECT f.*, u.email, u.name
+    `SELECT f.*, u.email, u.name, u.is_guest
        FROM files f
        LEFT JOIN users u ON u.id = f.user_id
        ${clause}

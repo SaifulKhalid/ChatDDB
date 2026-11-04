@@ -64,21 +64,30 @@
     "RATE_TOOL_IMAGE_PER_DAY": "5",
 
     "MAX_IMAGE_BYTES": "10485760",
+    "MAX_GUEST_IMAGE_BYTES": "10485760",
     "MAX_PDF_BYTES": "26214400",
+    "MAX_GUEST_PDF_BYTES": "15728640",
     "MAX_ATTACHMENTS_PER_MESSAGE": "4",
     "HISTORY_MAX_TURNS": "30",
 
     // Rate limits. `0` disables a window; see worker/lib/ratelimit.ts.
     "RATE_CHAT_PER_MIN": "20",
     "RATE_CHAT_PER_DAY": "300",
+    "RATE_GUEST_CHAT_PER_DAY": "50",
     "RATE_UPLOAD_PER_MIN": "10",
     "RATE_UPLOAD_PER_DAY": "100",
+    "RATE_GUEST_UPLOAD_PER_DAY": "20",
     "RATE_AUTH_PER_MIN": "30",
+    "RATE_GUEST_CREATE_PER_MIN": "5",
+    "RATE_GUEST_CREATE_PER_DAY": "15",
+    "RATE_GUEST_IMAGE_PER_DAY": "5",
+    "RATE_GUEST_TOOL_IMAGE_PER_DAY": "2",
     "RATE_ADMIN_PER_MIN": "120",
     // Admin actions that make live upstream calls (provider/route test probes and
     // the full routing-table verification sweep). Much stricter, because each one
     // spends real provider quota.
     "RATE_ADMIN_VERIFY_PER_MIN": "12",
+    "GUEST_RETENTION_DAYS": "30",
     "ACTIVITY_RETENTION_DAYS": "90"
   },
 
