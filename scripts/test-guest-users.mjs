@@ -11,6 +11,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { upsertOnLogin, findByFirebaseUid, findById } from '../worker/db/users.ts'
+import { cleanupExpiredGuests } from '../worker/cron/cleanup.ts'
 
 let passed = 0
 let failed = 0
@@ -214,6 +215,107 @@ async function main() {
     assert(linkedRes.user.email === 'bob@example.com', 'email updated to real email')
     assert(linkedRes.user.name === 'Bob', 'name updated to Bob')
     assert(linkedRes.user.role === 'admin', 'promoted to admin if listed in ADMIN_EMAILS')
+  })
+
+  await test('cleanupExpiredGuests deletes R2 objects and expired guest rows, preserving active guests and registered users', async () => {
+    const db = createMockD1()
+    const now = Date.now()
+    const dayMs = 86_400_000
+
+    // Setup chat_sessions and files tables so cascade and FKs work
+    await db.prepare(`CREATE TABLE IF NOT EXISTS chat_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`).run()
+
+    await db.prepare(`CREATE TABLE IF NOT EXISTS files (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+      filename TEXT NOT NULL,
+      original_filename TEXT NOT NULL,
+      file_type TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      file_size INTEGER NOT NULL,
+      r2_key TEXT NOT NULL UNIQUE,
+      extracted_text_key TEXT,
+      upload_status TEXT NOT NULL DEFAULT 'stored',
+      created_at INTEGER NOT NULL
+    )`).run()
+
+    // 1. Expired guest (40 days old)
+    const expiredGuest = await upsertOnLogin(db, {
+      uid: 'expired-guest',
+      email: '',
+      emailVerified: false,
+      isAnonymous: true,
+    }, [])
+    await db.prepare('UPDATE users SET last_login = ? WHERE id = ?')
+      .bind(now - 40 * dayMs, expiredGuest.user.id).run()
+
+    // Add a file for expired guest
+    await db.prepare(`INSERT INTO files (id, user_id, filename, original_filename, file_type, mime_type, file_size, r2_key, extracted_text_key, upload_status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind('f-1', expiredGuest.user.id, 'pic.png', 'pic.png', 'image', 'image/png', 100, 'r2-key-1', 'r2-text-1', 'stored', now - 40 * dayMs)
+      .run()
+
+    // Add activity log for expired guest
+    await db.prepare(`INSERT INTO activity_logs (id, user_id, action, timestamp) VALUES (?, ?, ?, ?)`)
+      .bind('act-1', expiredGuest.user.id, 'guest_login', now - 40 * dayMs).run()
+
+    // 2. Active guest (5 days old)
+    const activeGuest = await upsertOnLogin(db, {
+      uid: 'active-guest',
+      email: '',
+      emailVerified: false,
+      isAnonymous: true,
+    }, [])
+    await db.prepare('UPDATE users SET last_login = ? WHERE id = ?')
+      .bind(now - 5 * dayMs, activeGuest.user.id).run()
+
+    // 3. Registered user (40 days old)
+    const regUser = await upsertOnLogin(db, {
+      uid: 'reg-user',
+      email: 'carol@example.com',
+      emailVerified: true,
+      isAnonymous: false,
+    }, [])
+    await db.prepare('UPDATE users SET last_login = ? WHERE id = ?')
+      .bind(now - 40 * dayMs, regUser.user.id).run()
+
+    // Mock R2 bucket
+    const deletedR2 = []
+    const mockBucket = {
+      async delete(key) {
+        deletedR2.push(key)
+      },
+    }
+
+    const res = await cleanupExpiredGuests(db, mockBucket, 30, now)
+    assert(res.expiredGuests === 1, 'cleaned up exactly 1 expired guest')
+    assert(res.deletedFiles === 1, 'tracked 1 deleted file')
+
+    // Verify R2 deletion
+    assert(deletedR2.includes('r2-key-1'), 'r2_key was deleted from R2')
+    assert(deletedR2.includes('r2-text-1'), 'extracted_text_key was deleted from R2')
+
+    // Verify DB states
+    const expiredInDb = await findById(db, expiredGuest.user.id)
+    assert(expiredInDb === null, 'expired guest row is deleted')
+
+    const fileInDb = await db.prepare('SELECT * FROM files WHERE id = ?').bind('f-1').first()
+    assert(fileInDb === null, 'file row deleted via cascade')
+
+    const actInDb = await db.prepare('SELECT user_id FROM activity_logs WHERE id = ?').bind('act-1').first()
+    assert(actInDb.user_id === null, 'activity log preserved with user_id NULL via SET NULL')
+
+    const activeInDb = await findById(db, activeGuest.user.id)
+    assert(activeInDb !== null, 'active guest is preserved')
+
+    const regInDb = await findById(db, regUser.user.id)
+    assert(regInDb !== null, 'registered user is preserved even if older than retention')
   })
 
   console.log(`\nResults: ${passed} passed, ${failed} failed\n`)

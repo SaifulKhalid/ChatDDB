@@ -17,6 +17,11 @@
     "enabled": true
   },
 
+  // Daily cleanup cron trigger for stale guest accounts (> GUEST_RETENTION_DAYS)
+  "triggers": {
+    "crons": ["0 3 * * *"]
+  },
+
   // Workers AI, used only by POST /api/images. A binding rather than an HTTP
   // gateway, so it needs no key and no secret -- which is also why image
   // generation is the one upstream that cannot be disabled by unsetting a
