@@ -66,6 +66,27 @@ export async function postSession(ctx: RequestContext): Promise<Response> {
     throw err
   }
 
+  // Abuse limits on guest creation: per-minute and per-day caps per IP
+  if (token.isAnonymous) {
+    const existingGuest = await users.findByFirebaseUid(db, token.uid)
+    if (!existingGuest) {
+      const createVerdict = await ratelimit.consume(db, subject, 'guest_create', [
+        { kind: 'minute', max: ctx.policy.rateGuestCreatePerMin },
+        { kind: 'day', max: ctx.policy.rateGuestCreatePerDay },
+      ])
+      if (!createVerdict.allowed) {
+        await activity.log(db, {
+          action: 'rate_limited',
+          severity: 'warn',
+          metadata: { action: 'guest_create', limit: createVerdict.limit, count: createVerdict.count },
+          ipHash: ctx.ipHash,
+          userAgent: ctx.userAgent,
+        })
+        ratelimit.enforce(createVerdict, 'guest account creations')
+      }
+    }
+  }
+
   const adminEmails = listVar(ctx.env.ADMIN_EMAILS)
   const { user, reconciledFrom } = await users.upsertOnLogin(db, token, adminEmails)
 
@@ -102,10 +123,22 @@ export async function postSession(ctx: RequestContext): Promise<Response> {
     )
   }
 
+  const action =
+    user.is_guest === 1
+      ? user.login_count === 1
+        ? 'guest_created'
+        : 'guest_login'
+      : user.role === 'admin'
+        ? 'admin_login'
+        : 'login'
+
   await activity.log(db, {
     userId: user.id,
-    action: user.role === 'admin' ? 'admin_login' : 'login',
-    metadata: { loginCount: user.login_count, emailVerified: token.emailVerified },
+    action,
+    metadata: {
+      loginCount: user.login_count,
+      ...(user.is_guest === 1 ? { isGuest: true } : { emailVerified: token.emailVerified }),
+    },
     ipHash: ctx.ipHash,
     userAgent: ctx.userAgent,
   })

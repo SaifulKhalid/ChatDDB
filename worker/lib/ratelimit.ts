@@ -30,7 +30,7 @@ import { rateLimited } from './http.ts'
  * cannot drain each other: a tool-triggered generation consumes *both* budgets,
  * while the button consumes only the human one.
  */
-export type RateAction = 'chat' | 'upload' | 'auth' | 'admin' | 'image' | 'tool_image'
+export type RateAction = 'chat' | 'upload' | 'auth' | 'admin' | 'image' | 'tool_image' | 'guest_create'
 export type WindowKind = 'minute' | 'day'
 
 const PERIOD_MS: Record<WindowKind, number> = {

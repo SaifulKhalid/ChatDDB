@@ -53,6 +53,9 @@ export const ACTIVITY_ACTIONS = [
    * an account nobody expected, that is the row to look at first.
    */
   'identity_reconciled',
+  'guest_created',
+  'guest_login',
+  'guest_merged',
 ] as const
 
 export type ActivityAction = (typeof ACTIVITY_ACTIONS)[number]

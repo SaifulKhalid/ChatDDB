@@ -113,6 +113,8 @@ export interface WorkerEnv {
   RATE_UPLOAD_PER_MIN?: string
   RATE_UPLOAD_PER_DAY?: string
   RATE_AUTH_PER_MIN?: string
+  RATE_GUEST_CREATE_PER_MIN?: string
+  RATE_GUEST_CREATE_PER_DAY?: string
   RATE_ADMIN_PER_MIN?: string
   ACTIVITY_RETENTION_DAYS?: string
 }
@@ -145,6 +147,8 @@ export interface Policy {
   rateUploadPerMin: number
   rateUploadPerDay: number
   rateAuthPerMin: number
+  rateGuestCreatePerMin: number
+  rateGuestCreatePerDay: number
   rateAdminPerMin: number
   rateImagePerMin: number
   rateImagePerDay: number
@@ -169,6 +173,8 @@ export function resolvePolicy(env: WorkerEnv): Policy {
     rateUploadPerMin: intVar(env.RATE_UPLOAD_PER_MIN, 10),
     rateUploadPerDay: intVar(env.RATE_UPLOAD_PER_DAY, 100),
     rateAuthPerMin: intVar(env.RATE_AUTH_PER_MIN, 30),
+    rateGuestCreatePerMin: intVar(env.RATE_GUEST_CREATE_PER_MIN, 5),
+    rateGuestCreatePerDay: intVar(env.RATE_GUEST_CREATE_PER_DAY, 15),
     rateAdminPerMin: intVar(env.RATE_ADMIN_PER_MIN, 120),
     rateImagePerMin: intVar(env.RATE_IMAGE_PER_MIN, 3),
     rateImagePerDay: intVar(env.RATE_IMAGE_PER_DAY, 20),
