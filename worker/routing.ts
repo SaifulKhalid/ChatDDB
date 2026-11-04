@@ -115,6 +115,204 @@ export function resolveApiKeys(env: WorkerEnv, providerKey: ProviderKey): string
   return keys
 }
 
+// ---------------------------------------------------------------------------
+// Wire Format & Responses-API Normalization
+// ---------------------------------------------------------------------------
+
+export function toResponsesApiContent(content: unknown): unknown {
+  if (typeof content === 'string' || content === null || content === undefined) return content
+  if (!Array.isArray(content)) return content
+  return content.map((part) => {
+    if (typeof part === 'object' && part !== null) {
+      const p = part as Record<string, unknown>
+      if (p.type === 'text') {
+        return { type: 'input_text', text: p.text }
+      }
+      if (p.type === 'image_url') {
+        const url = typeof p.image_url === 'string' ? p.image_url : (p.image_url as { url?: string })?.url
+        return { type: 'input_image', image_url: url }
+      }
+    }
+    return part
+  })
+}
+
+export function toChatCompletionsContent(content: unknown): unknown {
+  if (typeof content === 'string' || content === null || content === undefined) return content
+  if (!Array.isArray(content)) return content
+  return content.map((part) => {
+    if (typeof part === 'object' && part !== null) {
+      const p = part as Record<string, unknown>
+      if (p.type === 'input_text') {
+        return { type: 'text', text: p.text }
+      }
+      if (p.type === 'input_image') {
+        const url = typeof p.image_url === 'string' ? p.image_url : (p.image_url as { url?: string })?.url
+        return { type: 'image_url', image_url: { url } }
+      }
+    }
+    return part
+  })
+}
+
+/**
+ * Translates a single SSE line from OpenAI Responses API to OpenAI Chat-Completions chunk.
+ * Ignores *.done text, reasoning items, and non-content frames to prevent duplicate text.
+ */
+export function translateResponsesLine(line: string): string | null {
+  if (!line.startsWith('data:')) return null
+  const payload = line.slice(5).trim()
+  if (!payload) return null
+  if (payload === '[DONE]') return 'data: [DONE]\n\n'
+
+  let chunk: Record<string, unknown>
+  try {
+    chunk = JSON.parse(payload)
+  } catch {
+    return null
+  }
+
+  const type = String(chunk.type ?? '')
+
+  // 1. Text delta: response.output_text.delta
+  if (type === 'response.output_text.delta') {
+    const delta = typeof chunk.delta === 'string' ? chunk.delta : ''
+    if (delta.length === 0) return null
+    return `data: ${JSON.stringify({
+      choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
+    })}\n\n`
+  }
+
+  // 2. Tool call added: response.output_item.added (type: function_call)
+  if (type === 'response.output_item.added') {
+    const item = chunk.item as { id?: string; type?: string; name?: string; call_id?: string; arguments?: string } | undefined
+    if (item && item.type === 'function_call') {
+      return `data: ${JSON.stringify({
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: item.call_id ?? item.id ?? 'call_0',
+                  type: 'function',
+                  function: {
+                    name: item.name ?? '',
+                    arguments: item.arguments ?? '',
+                  },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      })}\n\n`
+    }
+    return null
+  }
+
+  // 3. Tool call argument fragment: response.function_call_arguments.delta
+  if (type === 'response.function_call_arguments.delta') {
+    const delta = typeof chunk.delta === 'string' ? chunk.delta : ''
+    return `data: ${JSON.stringify({
+      choices: [
+        {
+          index: 0,
+          delta: {
+            tool_calls: [
+              {
+                index: 0,
+                function: {
+                  arguments: delta,
+                },
+              },
+            ],
+          },
+          finish_reason: null,
+        },
+      ],
+    })}\n\n`
+  }
+
+  // 4. Completed: response.completed
+  if (type === 'response.completed') {
+    const resp = chunk.response as {
+      usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number }
+    } | undefined
+    const usage = resp?.usage
+      ? {
+          prompt_tokens: resp.usage.input_tokens ?? 0,
+          completion_tokens: resp.usage.output_tokens ?? 0,
+          total_tokens: resp.usage.total_tokens ?? 0,
+        }
+      : undefined
+
+    const completionFrame = JSON.stringify({
+      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      ...(usage ? { usage } : {}),
+    })
+    return `data: ${completionFrame}\n\ndata: [DONE]\n\n`
+  }
+
+  // 5. Error
+  if (type === 'error' || chunk.error) {
+    return `data: ${JSON.stringify({ error: chunk.error ?? { message: 'Upstream generation failed' } })}\n\n`
+  }
+
+  // All other events are intentionally dropped:
+  // - response.output_text.done (ignores done text to prevent duplicates!)
+  // - response.content_part.done
+  // - response.output_item.done
+  // - reasoning items
+  // - response.created / in_progress
+  return null
+}
+
+export function normalizeResponsesApiStream(
+  upstreamStream: ReadableStream<Uint8Array>,
+): ReadableStream<Uint8Array> {
+  const reader = upstreamStream.getReader()
+  const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
+  let buffer = ''
+
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) {
+          if (buffer.trim()) {
+            const translated = translateResponsesLine(buffer.trim())
+            if (translated) controller.enqueue(encoder.encode(translated))
+          }
+          controller.close()
+          return
+        }
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+
+        let emitted = false
+        for (const raw of lines) {
+          const line = raw.trim()
+          if (!line) continue
+          const translated = translateResponsesLine(line)
+          if (translated) {
+            controller.enqueue(encoder.encode(translated))
+            emitted = true
+          }
+        }
+        if (emitted) return
+      }
+    },
+    async cancel(reason) {
+      await reader.cancel(reason)
+    },
+  })
+}
+
 export async function callUpstream(
   target: ModelTarget,
   provider: ProviderConfig,
@@ -157,7 +355,10 @@ export async function callUpstream(
           systemParts.push(msg.content)
         }
       } else {
-        inputItems.push(msg)
+        inputItems.push({
+          ...msg,
+          content: toResponsesApiContent(msg.content) as any,
+        })
       }
     }
 
@@ -175,7 +376,10 @@ export async function callUpstream(
       }))
     }
   } else {
-    bodyObj.messages = request.messages
+    bodyObj.messages = request.messages.map((m) => ({
+      ...m,
+      content: toChatCompletionsContent(m.content) as any,
+    }))
     if (request.tools && request.tools.length > 0) {
       bodyObj.tools = request.tools
       bodyObj.tool_choice = 'auto'
@@ -231,7 +435,17 @@ export async function callUpstream(
       if (res.ok && res.body) {
         clearTimeout(totalTimer)
         lastGoodKeyMap.set(provider.key, keyIdx)
-        return { res, latencyMs }
+        const finalRes = isResponsesApi
+          ? new Response(normalizeResponsesApiStream(res.body), {
+              status: res.status,
+              statusText: res.statusText,
+              headers: {
+                ...Object.fromEntries(res.headers.entries()),
+                'content-type': 'text/event-stream; charset=utf-8',
+              },
+            })
+          : res
+        return { res: finalRes, latencyMs }
       }
 
       clearTimeout(totalTimer)
@@ -250,6 +464,12 @@ export async function callUpstream(
         target.upstreamModel,
         res.headers.get('retry-after'),
       )
+
+      if (res.status === 400) {
+        console.error(
+          `[routing] REQUEST-SHAPE 400 on ${provider.label} ${target.upstreamModel}: ${classified.internalDiagnostic}`,
+        )
+      }
 
       lastError = new ClassifiedUpstreamError(classified)
 
@@ -300,10 +520,15 @@ export async function routeChat(input: RouteInput): Promise<RoutedResult> {
   const model = input.model ?? resolveModel(input.serviceOrKey ?? 'chatgpt')
 
   // Find all candidate targets where provider has keys configured
-  const candidateTargets = model.targets.filter((t) => {
+  let candidateTargets = model.targets.filter((t) => {
     const keys = resolveApiKeys(input.env, t.provider)
     return keys.length > 0
   })
+
+  // If request contains images, only consider targets with vision capability
+  if (input.hasImages) {
+    candidateTargets = candidateTargets.filter((t) => t.vision)
+  }
 
   if (candidateTargets.length === 0) {
     throw new ClassifiedUpstreamError({
@@ -365,6 +590,18 @@ export async function routeChat(input: RouteInput): Promise<RoutedResult> {
 
       lastError = classified
       recordFailure(target)
+
+      // Request-shape 400 errors indicate request schema/wire malformation.
+      // Log loudly and halt immediately rather than silently failing over.
+      if (
+        classified.classification.category === 'bad_request' ||
+        classified.classification.category === 'validation_error'
+      ) {
+        console.error(
+          `[routing] Halting on request-shape 400 from ${provider.label} ${target.upstreamModel}: ${classified.classification.internalDiagnostic}`,
+        )
+        throw classified
+      }
 
       // Silent failover if more targets exist in the priority ladder
       if (idx < orderedTargets.length - 1) {

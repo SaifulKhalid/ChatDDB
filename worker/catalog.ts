@@ -22,6 +22,7 @@ export interface ProviderConfig {
 export interface ModelTarget {
   provider: ProviderKey
   upstreamModel: string
+  vision: boolean
 }
 
 export interface ModelCapabilities {
@@ -73,11 +74,11 @@ export const PROVIDERS: Record<ProviderKey, ProviderConfig> = {
  * The primary is gpt-6.1-sol; if unreachable or ratelimited, it fails over silently.
  */
 export const DEFAULT_TARGETS: ModelTarget[] = [
-  { provider: 'agentrouter', upstreamModel: 'gpt-6.1-sol' },
-  { provider: 'apinex', upstreamModel: 'gpt-6.1-sol' },
-  { provider: 'agentrouter', upstreamModel: 'gpt-5.6-sol' },
-  { provider: 'apinex', upstreamModel: 'free/gpt-6-luna' },
-  { provider: 'agentrouter', upstreamModel: 'gpt-6-astra' },
+  { provider: 'agentrouter', upstreamModel: 'gpt-6.1-sol', vision: true },
+  { provider: 'apinex', upstreamModel: 'gpt-6.1-sol', vision: true },
+  { provider: 'agentrouter', upstreamModel: 'gpt-5.6-sol', vision: false },
+  { provider: 'apinex', upstreamModel: 'free/gpt-6-luna', vision: true },
+  { provider: 'agentrouter', upstreamModel: 'gpt-6-astra', vision: false },
 ]
 
 export const MODELS: PublicModel[] = [
