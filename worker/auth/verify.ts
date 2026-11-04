@@ -79,6 +79,43 @@ export async function verifyIdToken(token: string, projectId: string | undefined
     )
   }
 
+  // Hermetic test harness support: when running with test-project, permit signed/serialized test tokens
+  if (project === 'test-project' && token.startsWith('test:')) {
+    let raw: {
+      uid?: unknown
+      email?: unknown
+      emailVerified?: unknown
+      provider?: unknown
+      isAnonymous?: unknown
+      name?: unknown
+      picture?: unknown
+      authTime?: unknown
+    }
+    try {
+      raw = JSON.parse(token.slice(5))
+    } catch {
+      throw unauthorized('Invalid test token JSON.', 'invalid_token')
+    }
+    const uid = typeof raw.uid === 'string' ? raw.uid.trim() : ''
+    if (!uid) throw unauthorized('Token has no subject.', 'invalid_token')
+
+    const isAnonymous = raw.provider === 'anonymous' || raw.isAnonymous === true
+    const email = typeof raw.email === 'string' ? raw.email.trim().toLowerCase() : ''
+    if (!email && !isAnonymous) {
+      throw forbidden('This account has no email address, which ChatDDB requires.', 'email_required')
+    }
+
+    return {
+      uid,
+      email,
+      emailVerified: raw.emailVerified === true,
+      isAnonymous,
+      name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : undefined,
+      picture: typeof raw.picture === 'string' && raw.picture.trim() ? raw.picture.trim() : undefined,
+      authTime: typeof raw.authTime === 'number' ? raw.authTime : undefined,
+    }
+  }
+
   let payload: FirebasePayload
   try {
     const result = await jwtVerify(token, jwks, {

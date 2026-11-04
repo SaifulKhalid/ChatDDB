@@ -33,6 +33,15 @@ npm run deploy
 
 The deployed Worker, D1 database, and R2 bucket use the `chatddb-f5` name.
 
+## Guest Mode
+
+ChatDDB includes a complete "Continue as guest" experience powered by Firebase Anonymous Auth:
+- **Full Access**: Guests can use all features (chat turns, models, file uploads, image generation, session history) without signing in with Google.
+- **Identity & Quotas**: Guest users are registered in D1 with `is_guest = 1`, a synthetic email (`guest-<id>@guest.invalid`), and tier-adjusted daily quotas.
+- **Admin Visibility**: Guests appear in the admin user list with a Guest badge, full session transcripts, files, and activity logs. Suspending or reactivating guest accounts works identically to regular users.
+- **Account Upgrade & Merge**: Guests can upgrade anytime via "Sign in to save" (`linkWithPopup`). If the Google account is already registered, `/api/auth/merge-guest` atomically reassigns all guest sessions, messages, and files to the existing user in one D1 batch.
+- **Scheduled Retention**: A Cloudflare cron trigger (`0 3 * * *`) cleans up inactive guests older than `GUEST_RETENTION_DAYS` (default 30 days), deleting their R2 assets and cascading DB records while preserving activity logs.
+
 ## Validation
 
 ```bash
@@ -40,6 +49,7 @@ npm run build
 npm run lint
 npm run test:provider
 npm run test:orchestration
+npm run smoke:guest
 npm run smoke:failover
 npm run smoke:svg-sanitizer
 npm run smoke:figure-gate
