@@ -36,6 +36,7 @@ export interface VerifiedToken {
   uid: string
   email: string
   emailVerified: boolean
+  isAnonymous: boolean
   name?: string
   picture?: string
   /** Seconds since epoch when the user actually authenticated. */
@@ -108,10 +109,16 @@ export async function verifyIdToken(token: string, projectId: string | undefined
     throw unauthorized('Token authentication time is in the future.', 'invalid_token')
   }
 
+  const provider =
+    typeof payload.firebase?.sign_in_provider === 'string'
+      ? payload.firebase.sign_in_provider
+      : undefined
+  const isAnonymous = provider === 'anonymous'
+
   const email = typeof payload.email === 'string' ? payload.email.trim().toLowerCase() : ''
-  if (!email) {
-    // Every provider we enable (Google only, for now) supplies an email, and
-    // the users table requires one.
+  if (!email && !isAnonymous) {
+    // Only anonymous guest tokens are allowed to have no email address.
+    // Every other provider (Google, etc.) supplies an email, and the users table requires one.
     throw forbidden('This account has no email address, which ChatDDB requires.', 'email_required')
   }
 
@@ -119,6 +126,7 @@ export async function verifyIdToken(token: string, projectId: string | undefined
     uid,
     email,
     emailVerified: payload.email_verified === true,
+    isAnonymous,
     name: typeof payload.name === 'string' && payload.name.trim() ? payload.name.trim() : undefined,
     picture: typeof payload.picture === 'string' && payload.picture.trim() ? payload.picture.trim() : undefined,
     authTime,
