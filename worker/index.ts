@@ -79,6 +79,7 @@ const ROUTES: Route[] = [
 
   // ---- Signed in ----------------------------------------------------------
   { method: 'POST', pattern: '/api/auth/logout', guard: 'user', handler: auth.postLogout },
+  { method: 'POST', pattern: '/api/auth/merge-guest', guard: 'user', handler: auth.postMergeGuest },
   { method: 'GET', pattern: '/api/me', guard: 'user', handler: auth.getMe },
   { method: 'POST', pattern: '/api/chat', guard: 'user', handler: chat.postChat },
   { method: 'POST', pattern: '/api/images', guard: 'user', handler: images.postImage },

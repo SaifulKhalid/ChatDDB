@@ -21,7 +21,7 @@ export default function App() {
       : <NotAllowed onExit={() => navigate('/')} />
   }
 
-  return <ChatApp theme={theme} onToggleTheme={toggleTheme} />
+  return <ChatApp key={profile.id} theme={theme} onToggleTheme={toggleTheme} />
 }
 
 function Splash() {

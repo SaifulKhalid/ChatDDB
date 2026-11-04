@@ -281,16 +281,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setBusy(true)
     try {
       const res = await linkGuestWithGoogle(currentUser)
+      const auth = await getFirebaseAuth()
       if (res.merged && res.guestToken) {
+        if (auth.currentUser) {
+          await establish(auth.currentUser)
+        }
         await apiFetch('/api/auth/merge-guest', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ guestIdToken: res.guestToken }),
         })
       }
-      if (currentUser) {
+      if (auth.currentUser) {
         establishedFor.current = null
-        await establish(currentUser)
+        await establish(auth.currentUser)
       }
     } catch (err) {
       if (alive.current) setError(describeAuthError(err))

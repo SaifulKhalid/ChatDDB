@@ -7,7 +7,7 @@
  */
 
 import { badRequest, forbidden, json } from '../lib/http.ts'
-import { requireDb } from '../db/client.ts'
+import { batch, requireDb, stmt } from '../db/client.ts'
 import * as activity from '../db/activity.ts'
 import * as users from '../db/users.ts'
 import * as ratelimit from '../lib/ratelimit.ts'
@@ -162,6 +162,82 @@ export async function postLogout(ctx: AuthedContext): Promise<Response> {
     userAgent: ctx.userAgent,
   })
   return json({ ok: true }, 200, ctx.request, ctx.env)
+}
+
+/**
+ * Merges a guest account into an existing registered user account.
+ *
+ * Called when `linkWithPopup` fails with `auth/credential-already-in-use` because
+ * the Google account already exists in ChatDDB. The client signs into the existing
+ * Google account and calls this route with `{ guestIdToken: string }`.
+ *
+ * Reassigns the guest's sessions, messages, and files (including generated images)
+ * to the authenticated user in ONE D1 batch, and deletes the guest user row.
+ */
+export async function postMergeGuest(ctx: AuthedContext): Promise<Response> {
+  const db = requireDb(ctx.env.DB)
+
+  if (ctx.user.is_guest === 1) {
+    throw badRequest('Target account cannot be a guest account.', 'target_is_guest')
+  }
+
+  let body: { guestIdToken?: unknown }
+  try {
+    body = (await ctx.request.json()) as { guestIdToken?: unknown }
+  } catch {
+    throw badRequest('Invalid JSON body.', 'invalid_json')
+  }
+
+  if (!body || typeof body.guestIdToken !== 'string' || !body.guestIdToken.trim()) {
+    throw badRequest('Missing or invalid `guestIdToken`.', 'missing_guest_token')
+  }
+
+  let guestToken
+  try {
+    guestToken = await verifyIdToken(body.guestIdToken, ctx.env.FIREBASE_PROJECT_ID)
+  } catch {
+    throw badRequest('Invalid guest token.', 'invalid_guest_token')
+  }
+
+  if (!guestToken.isAnonymous) {
+    throw badRequest('Guest token must be anonymous.', 'not_anonymous_token')
+  }
+
+  const guest = await users.findByFirebaseUid(db, guestToken.uid)
+  if (!guest) {
+    throw badRequest('Guest account not found.', 'guest_not_found')
+  }
+
+  if (guest.is_guest !== 1) {
+    throw badRequest('Specified account is not a guest account.', 'not_a_guest')
+  }
+
+  if (guest.id === ctx.user.id) {
+    throw badRequest('Cannot merge an account into itself.', 'self_merge')
+  }
+
+  // Reassign all sessions, messages, files and images (stored in files) in ONE D1 batch,
+  // delete the guest user row (activity_logs user_id set to NULL via ON DELETE SET NULL),
+  // and record the guest_merged audit log.
+  await batch(db, [
+    stmt('UPDATE chat_sessions SET user_id = ? WHERE user_id = ?', ctx.user.id, guest.id),
+    stmt('UPDATE chat_messages SET user_id = ? WHERE user_id = ?', ctx.user.id, guest.id),
+    stmt('UPDATE files SET user_id = ? WHERE user_id = ?', ctx.user.id, guest.id),
+    stmt('DELETE FROM users WHERE id = ?', guest.id),
+    activity.logStmt({
+      userId: ctx.user.id,
+      action: 'guest_merged',
+      severity: 'info',
+      metadata: {
+        guestUserId: guest.id,
+        guestFirebaseUid: guest.firebase_uid,
+      },
+      ipHash: ctx.ipHash,
+      userAgent: ctx.userAgent,
+    }),
+  ])
+
+  return json({ ok: true, merged: true }, 200, ctx.request, ctx.env)
 }
 
 /** The signed-in user's profile, usage totals, and remaining daily quota. */

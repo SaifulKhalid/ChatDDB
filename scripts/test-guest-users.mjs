@@ -40,9 +40,18 @@ function createMockD1() {
   const sqlite = new DatabaseSync(':memory:')
   sqlite.exec('PRAGMA foreign_keys = ON;')
 
-  // Apply migrations 0001 and 0009
+  // Apply migrations 0001, 0002, 0003, 0006, 0009
   const m1 = readFileSync(resolve('migrations/0001_users_and_activity.sql'), 'utf-8')
   sqlite.exec(m1)
+
+  const m2 = readFileSync(resolve('migrations/0002_chat_sessions_and_messages.sql'), 'utf-8')
+  sqlite.exec(m2)
+
+  const m3 = readFileSync(resolve('migrations/0003_files.sql'), 'utf-8')
+  sqlite.exec(m3)
+
+  const m6 = readFileSync(resolve('migrations/0006_generated_images.sql'), 'utf-8')
+  sqlite.exec(m6)
 
   const m9 = readFileSync(resolve('migrations/0009_guest_mode.sql'), 'utf-8')
   sqlite.exec(m9)
@@ -363,6 +372,100 @@ async function main() {
     assert(log.user_id === guest.user.id, 'log user_id matches guest')
     const meta = JSON.parse(log.metadata)
     assert(meta.reason === 'admin_route_denied', 'reason is admin_route_denied')
+  })
+
+  await test('Merge guest reassigns sessions, messages, files and images in one batch, deletes guest, and logs guest_merged', async () => {
+    const db = createMockD1()
+
+    // 1. Create a guest user
+    const guest = await upsertOnLogin(db, {
+      uid: 'guest-merge-src',
+      email: '',
+      emailVerified: false,
+      isAnonymous: true,
+    }, [])
+
+    // 2. Create an existing registered user
+    const registered = await upsertOnLogin(db, {
+      uid: 'reg-merge-dst',
+      email: 'existing@example.com',
+      emailVerified: true,
+      isAnonymous: false,
+    }, [])
+
+    const now = Date.now()
+
+    // 3. Guest has a chat session and message
+    await db.prepare(`INSERT INTO chat_sessions (id, user_id, title, message_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .bind('sess-guest-1', guest.user.id, 'Guest Session', 1, now, now).run()
+    await db.prepare(`INSERT INTO chat_messages (id, session_id, user_id, role, message_content, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .bind('msg-guest-1', 'sess-guest-1', guest.user.id, 'user', 'Hello from guest', now).run()
+
+    // 4. Guest has an uploaded file and a generated image
+    await db.prepare(`INSERT INTO files (id, user_id, filename, original_filename, file_type, mime_type, file_size, r2_key, upload_status, origin, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind('file-upload-1', guest.user.id, 'doc.pdf', 'doc.pdf', 'pdf', 'application/pdf', 1024, 'r2/doc.pdf', 'stored', 'upload', now).run()
+    await db.prepare(`INSERT INTO files (id, user_id, filename, original_filename, file_type, mime_type, file_size, r2_key, upload_status, origin, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind('file-img-1', guest.user.id, 'gen.png', 'gen.png', 'image', 'image/png', 2048, 'r2/gen.png', 'stored', 'generated', now).run()
+
+    // 5. Guest has prior activity log
+    await db.prepare(`INSERT INTO activity_logs (id, user_id, action, timestamp) VALUES (?, ?, ?, ?)`)
+      .bind('act-guest-login', guest.user.id, 'guest_login', now).run()
+
+    // Execute the merge batch as in postMergeGuest
+    const statements = [
+      { sql: 'UPDATE chat_sessions SET user_id = ? WHERE user_id = ?', params: [registered.user.id, guest.user.id] },
+      { sql: 'UPDATE chat_messages SET user_id = ? WHERE user_id = ?', params: [registered.user.id, guest.user.id] },
+      { sql: 'UPDATE files SET user_id = ? WHERE user_id = ?', params: [registered.user.id, guest.user.id] },
+      { sql: 'DELETE FROM users WHERE id = ?', params: [guest.user.id] },
+      activity.logStmt({
+        userId: registered.user.id,
+        action: 'guest_merged',
+        severity: 'info',
+        metadata: {
+          guestUserId: guest.user.id,
+          guestFirebaseUid: guest.user.firebase_uid,
+        },
+        ipHash: 'test-ip-hash',
+        userAgent: 'test-agent',
+      }),
+    ]
+
+    await db.batch(statements.map(s => db.prepare(s.sql).bind(...s.params)))
+
+    // Verify guest row is deleted
+    const guestAfter = await findById(db, guest.user.id)
+    assert(guestAfter === null, 'guest row deleted')
+
+    // Verify session reassigned
+    const sess = await db.prepare('SELECT * FROM chat_sessions WHERE id = ?').bind('sess-guest-1').first()
+    assert(sess.user_id === registered.user.id, 'chat session owner reassigned to registered user')
+
+    // Verify message reassigned
+    const msg = await db.prepare('SELECT * FROM chat_messages WHERE id = ?').bind('msg-guest-1').first()
+    assert(msg.user_id === registered.user.id, 'chat message owner reassigned to registered user')
+
+    // Verify file upload reassigned
+    const file = await db.prepare('SELECT * FROM files WHERE id = ?').bind('file-upload-1').first()
+    assert(file.user_id === registered.user.id, 'uploaded file owner reassigned to registered user')
+    assert(file.r2_key === 'r2/doc.pdf', 'r2_key unchanged')
+
+    // Verify generated image reassigned
+    const img = await db.prepare('SELECT * FROM files WHERE id = ?').bind('file-img-1').first()
+    assert(img.user_id === registered.user.id, 'generated image owner reassigned to registered user')
+    assert(img.r2_key === 'r2/gen.png', 'image r2_key unchanged')
+
+    // Verify guest prior activity log has user_id set to NULL
+    const priorAct = await db.prepare('SELECT * FROM activity_logs WHERE id = ?').bind('act-guest-login').first()
+    assert(priorAct.user_id === null, 'prior guest activity log has user_id set to NULL')
+
+    // Verify guest_merged log was recorded for target user
+    const mergeLogs = await db.prepare("SELECT * FROM activity_logs WHERE action = 'guest_merged' AND user_id = ?")
+      .bind(registered.user.id).all()
+    assert(mergeLogs.results.length === 1, 'guest_merged log exists for registered user')
+    const mergeMeta = JSON.parse(mergeLogs.results[0].metadata)
+    assert(mergeMeta.guestUserId === guest.user.id, 'metadata contains guestUserId')
   })
 
   console.log(`\nResults: ${passed} passed, ${failed} failed\n`)
