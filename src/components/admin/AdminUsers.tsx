@@ -25,6 +25,7 @@ export function AdminUsers({ onOpenSession }: { onOpenSession?: (sessionId: stri
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [roleFilter, setRoleFilter] = useState('')
+  const [guestFilter, setGuestFilter] = useState('')
   const [offset, setOffset] = useState(0)
 
   const [rows, setRows] = useState<AdminUserRow[]>([])
@@ -49,6 +50,7 @@ export function AdminUsers({ onOpenSession }: { onOpenSession?: (sessionId: stri
       search: debouncedSearch || undefined,
       status: statusFilter || undefined,
       role: roleFilter || undefined,
+      guest: (guestFilter || undefined) as 'guest' | 'registered' | undefined,
       limit: LIMIT,
       offset,
     })
@@ -67,7 +69,7 @@ export function AdminUsers({ onOpenSession }: { onOpenSession?: (sessionId: stri
     return () => {
       cancelled = true
     }
-  }, [debouncedSearch, statusFilter, roleFilter, offset])
+  }, [debouncedSearch, statusFilter, roleFilter, guestFilter, offset])
 
   async function selectUser(id: string) {
     if (selectedId === id) {
@@ -143,6 +145,19 @@ export function AdminUsers({ onOpenSession }: { onOpenSession?: (sessionId: stri
 
           <div className="flex items-center gap-2">
             <select
+              value={guestFilter}
+              onChange={(e) => {
+                setGuestFilter(e.target.value)
+                setOffset(0)
+              }}
+              aria-label="Filter by account type"
+              className="rounded-xl border border-line bg-surface px-3 py-2 text-xs font-medium text-ink outline-none shadow-sm"
+            >
+              <option value="">All Types</option>
+              <option value="registered">Registered</option>
+              <option value="guest">Guests</option>
+            </select>
+            <select
               value={statusFilter}
               onChange={(e) => {
                 setStatusFilter(e.target.value)
@@ -214,12 +229,27 @@ export function AdminUsers({ onOpenSession }: { onOpenSession?: (sessionId: stri
                   >
                     <td className="px-4 py-2.5">
                       <div className="flex items-center gap-2.5">
-                        <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-[11px] font-bold text-white shadow-sm">
-                          {(row.name ?? row.email).charAt(0).toUpperCase()}
+                        <span
+                          className={`flex size-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white shadow-sm ${
+                            row.isGuest ? 'bg-amber-600' : 'bg-accent'
+                          }`}
+                        >
+                          {row.isGuest ? 'G' : (row.name ?? row.email).charAt(0).toUpperCase()}
                         </span>
                         <div className="min-w-0">
-                          <p className="truncate font-medium text-ink">{row.name ?? 'Anonymous'}</p>
-                          <p className="truncate text-[11px] text-ink-2 font-mono">{row.email}</p>
+                          <div className="flex items-center gap-1.5">
+                            <p className="truncate font-medium text-ink">
+                              {row.name ?? (row.isGuest ? 'Guest' : 'Anonymous')}
+                            </p>
+                            {row.isGuest && (
+                              <span className="inline-flex items-center rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-amber-600 dark:text-amber-400">
+                                Guest
+                              </span>
+                            )}
+                          </div>
+                          <p className="truncate text-[11px] text-ink-2 font-mono">
+                            {row.isGuest ? `Guest (${row.id.slice(0, 8)})` : row.email}
+                          </p>
                         </div>
                       </div>
                     </td>
@@ -279,22 +309,24 @@ export function AdminUsers({ onOpenSession }: { onOpenSession?: (sessionId: stri
                               Reactivate
                             </button>
                           )}
-                          {row.role === 'user' ? (
-                            <button
-                              onClick={() => void patchUser(row.id, { role: 'admin' })}
-                              className="rounded-md border border-line bg-surface px-2 py-1 text-[11px] font-medium text-ink-2 hover:border-purple-500/40 hover:bg-purple-500/10 hover:text-purple-500"
-                              title="Grant admin privileges"
-                            >
-                              Promote
-                            </button>
-                          ) : (
-                            <button
-                              onClick={() => void patchUser(row.id, { role: 'user' })}
-                              className="rounded-md border border-line bg-surface px-2 py-1 text-[11px] font-medium text-ink-2 hover:border-red-500/40 hover:bg-red-500/10 hover:text-red-500"
-                              title="Demote to standard user"
-                            >
-                              Demote
-                            </button>
+                          {!row.isGuest && (
+                            row.role === 'user' ? (
+                              <button
+                                onClick={() => void patchUser(row.id, { role: 'admin' })}
+                                className="rounded-md border border-line bg-surface px-2 py-1 text-[11px] font-medium text-ink-2 hover:border-purple-500/40 hover:bg-purple-500/10 hover:text-purple-500"
+                                title="Grant admin privileges"
+                              >
+                                Promote
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => void patchUser(row.id, { role: 'user' })}
+                                className="rounded-md border border-line bg-surface px-2 py-1 text-[11px] font-medium text-ink-2 hover:border-red-500/40 hover:bg-red-500/10 hover:text-red-500"
+                                title="Demote to standard user"
+                              >
+                                Demote
+                              </button>
+                            )
                           )}
                         </div>
                       )}
@@ -364,13 +396,26 @@ export function AdminUsers({ onOpenSession }: { onOpenSession?: (sessionId: stri
             <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
               {/* Header card */}
               <div className="rounded-2xl border border-line bg-surface p-4 text-center">
-                <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-accent text-base font-bold text-white shadow-sm">
-                  {(detail.user.name ?? detail.user.email).charAt(0).toUpperCase()}
+                <div
+                  className={`mx-auto flex size-12 items-center justify-center rounded-full text-base font-bold text-white shadow-sm ${
+                    detail.user.isGuest ? 'bg-amber-600' : 'bg-accent'
+                  }`}
+                >
+                  {detail.user.isGuest ? 'G' : (detail.user.name ?? detail.user.email).charAt(0).toUpperCase()}
                 </div>
-                <h4 className="mt-2 font-semibold text-ink text-sm">
-                  {detail.user.name ?? 'Anonymous User'}
-                </h4>
-                <p className="font-mono text-[11px] text-ink-2">{detail.user.email}</p>
+                <div className="mt-2 flex items-center justify-center gap-1.5">
+                  <h4 className="font-semibold text-ink text-sm">
+                    {detail.user.name ?? (detail.user.isGuest ? 'Guest User' : 'Anonymous User')}
+                  </h4>
+                  {detail.user.isGuest && (
+                    <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+                      Guest
+                    </span>
+                  )}
+                </div>
+                <p className="font-mono text-[11px] text-ink-2">
+                  {detail.user.isGuest ? `Guest Account (${detail.user.id.slice(0, 8)})` : detail.user.email}
+                </p>
 
                 <div className="mt-3 flex items-center justify-center gap-2">
                   <span

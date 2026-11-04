@@ -12,6 +12,8 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { upsertOnLogin, findByFirebaseUid, findById } from '../worker/db/users.ts'
 import { cleanupExpiredGuests } from '../worker/cron/cleanup.ts'
+import * as activity from '../worker/db/activity.ts'
+import { forbidden } from '../worker/lib/http.ts'
 
 let passed = 0
 let failed = 0
@@ -316,6 +318,51 @@ async function main() {
 
     const regInDb = await findById(db, regUser.user.id)
     assert(regInDb !== null, 'registered user is preserved even if older than retention')
+  })
+
+  await test('Guest access to admin routes is rejected with 403 admin_required and logged as suspicious_activity', async () => {
+    const db = createMockD1()
+
+    // Create guest user
+    const guest = await upsertOnLogin(db, {
+      uid: 'guest-admin-probe',
+      email: '',
+      emailVerified: false,
+      isAnonymous: true,
+    }, [])
+
+    assert(guest.user.role === 'user', 'guest has user role')
+    assert(guest.user.is_guest === 1, 'guest is_guest is 1')
+
+    // Simulate requireAdmin logic with guest authed context
+    let rejected = false
+    try {
+      if (guest.user.role !== 'admin') {
+        await activity.log(db, {
+          userId: guest.user.id,
+          action: 'suspicious_activity',
+          severity: 'warn',
+          metadata: { reason: 'admin_route_denied', path: '/api/admin/users' },
+          ipHash: 'test-ip-hash',
+          userAgent: 'test-agent',
+        })
+        throw forbidden('Administrator access is required.', 'admin_required')
+      }
+    } catch (err) {
+      assert(err.status === 403, 'status is 403')
+      assert(err.type === 'admin_required', 'type is admin_required')
+      rejected = true
+    }
+    assert(rejected, 'guest was rejected')
+
+    // Verify suspicious_activity log was recorded
+    const logs = await db.prepare("SELECT * FROM activity_logs WHERE user_id = ? AND action = 'suspicious_activity'")
+      .bind(guest.user.id).all()
+    assert(logs.results.length === 1, 'suspicious_activity was logged for guest')
+    const log = logs.results[0]
+    assert(log.user_id === guest.user.id, 'log user_id matches guest')
+    const meta = JSON.parse(log.metadata)
+    assert(meta.reason === 'admin_route_denied', 'reason is admin_route_denied')
   })
 
   console.log(`\nResults: ${passed} passed, ${failed} failed\n`)

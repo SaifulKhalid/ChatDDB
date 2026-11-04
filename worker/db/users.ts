@@ -314,6 +314,7 @@ export interface UserListQuery {
   search?: string
   role?: Role
   status?: Status
+  guest?: 'guest' | 'registered' | 'all'
   sort: UserSort
   direction: 'asc' | 'desc'
   limit: number
@@ -366,6 +367,11 @@ export async function list(db: D1Database, q: UserListQuery): Promise<UserListPa
     where.push('u.status = ?')
     params.push(q.status)
   }
+  if (q.guest === 'guest') {
+    where.push('u.is_guest = 1')
+  } else if (q.guest === 'registered') {
+    where.push('u.is_guest = 0')
+  }
   const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
 
   const rows = await all<UserListRow>(
@@ -389,6 +395,8 @@ export async function list(db: D1Database, q: UserListQuery): Promise<UserListPa
 
 export interface PlatformStats {
   totalUsers: number
+  guestUsers: number
+  registeredUsers: number
   activeUsers: number
   suspendedUsers: number
   adminUsers: number
@@ -414,6 +422,8 @@ export async function platformStats(db: D1Database, dayStartMs: number, days: nu
 
   const [
     totalUsers,
+    guestUsers,
+    registeredUsers,
     activeUsers,
     suspendedUsers,
     adminUsers,
@@ -424,6 +434,8 @@ export async function platformStats(db: D1Database, dayStartMs: number, days: nu
     totalFiles,
   ] = await Promise.all([
     scalar(db, `SELECT COUNT(*) AS n FROM users`),
+    scalar(db, `SELECT COUNT(*) AS n FROM users WHERE is_guest = 1`),
+    scalar(db, `SELECT COUNT(*) AS n FROM users WHERE is_guest = 0`),
     scalar(db, `SELECT COUNT(*) AS n FROM users WHERE status = 'active'`),
     scalar(db, `SELECT COUNT(*) AS n FROM users WHERE status = 'suspended'`),
     scalar(db, `SELECT COUNT(*) AS n FROM users WHERE role = 'admin'`),
@@ -454,6 +466,8 @@ export async function platformStats(db: D1Database, dayStartMs: number, days: nu
 
   return {
     totalUsers,
+    guestUsers,
+    registeredUsers,
     activeUsers,
     suspendedUsers,
     adminUsers,

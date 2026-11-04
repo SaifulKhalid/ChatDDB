@@ -396,7 +396,14 @@ function ActivityView({
                     <td className="px-3 py-3 font-medium text-ink">
                       {row.user?.email ? (
                         <div>
-                          <p className="truncate max-w-[160px]">{row.user.email}</p>
+                          <p className="truncate max-w-[160px] flex items-center gap-1">
+                            <span>{row.user.isGuest ? 'Guest User' : row.user.email}</span>
+                            {row.user.isGuest && (
+                              <span className="rounded bg-amber-500/10 px-1 py-0.2 text-[9px] text-amber-600 dark:text-amber-400">
+                                Guest
+                              </span>
+                            )}
+                          </p>
                           <p className="font-mono text-[10px] text-ink-2 truncate max-w-[160px]">
                             {row.user.id}
                           </p>
@@ -545,7 +552,14 @@ function SessionsView({
                     <p className="font-mono text-[10px] text-ink-2">{s.id}</p>
                   </td>
                   <td className="px-3 py-3 text-ink-2">
-                    <p className="font-medium text-ink truncate max-w-[160px]">{s.user.email}</p>
+                    <p className="font-medium text-ink truncate max-w-[160px] flex items-center gap-1">
+                      <span>{s.user.isGuest ? 'Guest User' : s.user.email}</span>
+                      {s.user.isGuest && (
+                        <span className="rounded bg-amber-500/10 px-1 py-0.2 text-[9px] text-amber-600 dark:text-amber-400">
+                          Guest
+                        </span>
+                      )}
+                    </p>
                     <p className="font-mono text-[10px] text-ink-2 truncate max-w-[160px]">
                       {s.user.id}
                     </p>
@@ -688,7 +702,14 @@ function FilesView({
                     </div>
                   </td>
                   <td className="px-3 py-3 text-ink-2 truncate max-w-[160px]">
-                    <p className="font-medium text-ink truncate">{f.user.email}</p>
+                    <p className="font-medium text-ink truncate flex items-center gap-1">
+                      <span>{f.user.isGuest ? 'Guest User' : f.user.email}</span>
+                      {f.user.isGuest && (
+                        <span className="rounded bg-amber-500/10 px-1 py-0.2 text-[9px] text-amber-600 dark:text-amber-400">
+                          Guest
+                        </span>
+                      )}
+                    </p>
                     <p className="font-mono text-[10px] text-ink-2 truncate">{f.user.id}</p>
                   </td>
                   <td className="px-3 py-3 font-mono uppercase text-[10px] text-ink-2">
@@ -800,9 +821,9 @@ function TranscriptView({
         <p className="mt-1 text-xs text-ink-2">
           User:{' '}
           <strong className="text-ink">
-            {data.user?.name ?? data.user?.email ?? 'Deleted User'}
+            {data.user?.isGuest ? 'Guest User' : (data.user?.name ?? data.user?.email ?? 'Deleted User')}
           </strong>{' '}
-          ({data.user?.email ?? 'no email'}) · {data.messages.length} messages
+          ({data.user?.isGuest ? 'Guest account' : (data.user?.email ?? 'no email')}) · {data.messages.length} messages
           {data.session.deletedAt && (
             <span className="ml-2 rounded bg-red-500/10 px-1.5 py-0.5 text-red-500">
               Soft Deleted

@@ -248,7 +248,7 @@ function Overview({ stats, failed }: { stats: AdminStats | null; failed: boolean
           icon={<Users size={16} className="text-blue-500" />}
           label="Total Users"
           value={String(platform.totalUsers)}
-          subtitle={`${platform.activeUsers} active`}
+          subtitle={`${platform.registeredUsers ?? (platform.totalUsers - (platform.guestUsers ?? 0))} reg · ${platform.guestUsers ?? 0} guest`}
         />
         <StatCard
           icon={<UserCheck size={16} className="text-emerald-500" />}

@@ -98,6 +98,7 @@ export async function listUsers(ctx: AuthedContext): Promise<Response> {
     search: params.get('search')?.trim() || undefined,
     role: optionalEnum(params.get('role') ?? undefined, 'role', ['user', 'admin'] as const),
     status: optionalEnum(params.get('status') ?? undefined, 'status', ['active', 'suspended'] as const),
+    guest: optionalEnum(params.get('guest') ?? undefined, 'guest', ['guest', 'registered', 'all'] as const),
     sort: optionalEnum(params.get('sort') ?? undefined, 'sort', USER_SORTS) ?? 'created_at',
     direction: params.get('direction') === 'asc' ? 'asc' : 'desc',
     limit,
