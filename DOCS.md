@@ -53,9 +53,34 @@ Other Worker variables control Firebase identity, PDF limits, attachment limits,
 image generation, SVG prompting, CORS, and rate limits. `POLLINATIONS_ENABLED`
 and `SVG_DIAGRAMS` are disabled only by the literal value `false`.
 
+### Guest mode policy and retention variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `RATE_GUEST_CREATE_PER_DAY` | `15` | Max guest accounts created per IP per day. |
+| `RATE_GUEST_CREATE_PER_MIN` | `5` | Max guest accounts created per IP per minute. |
+| `RATE_GUEST_CHAT_PER_DAY` | `50` | Daily chat turn budget for guest tier. |
+| `RATE_GUEST_UPLOAD_PER_DAY` | `20` | Daily upload budget for guest tier. |
+| `RATE_GUEST_IMAGE_PER_DAY` | `5` | Daily button image generation budget for guest tier. |
+| `RATE_GUEST_TOOL_IMAGE_PER_DAY` | `2` | Daily tool image generation budget for guest tier. |
+| `MAX_GUEST_IMAGE_BYTES` | `10485760` (10 MB) | Max file size for guest image uploads. |
+| `MAX_GUEST_PDF_BYTES` | `15728640` (15 MB) | Max file size for guest PDF uploads. |
+| `GUEST_RETENTION_DAYS` | `30` | Inactivity threshold before scheduled cleanup purges guest assets and accounts. |
+
+### Scheduled retention cron
+
+Cloudflare Workers cron trigger (`triggers.crons: ["0 3 * * *"]`) runs daily at 03:00 UTC:
+- Invokes `cleanupExpiredGuests` (`worker/cron/cleanup.ts`).
+- Finds guest accounts (`is_guest = 1`) whose last login or creation date is older than `GUEST_RETENTION_DAYS`.
+- Deletes their R2 stored objects (`r2_key` and `extracted_text_key`).
+- Deletes the guest user row in D1, cascading to remove sessions, messages, and files.
+- Preserves audit logs (`activity_logs.user_id` set to `NULL` via `ON DELETE SET NULL`).
+
 ## Security and data paths
 
 - Authentication and administrator authorization are enforced in the Worker.
+- Guest mode uses Firebase Anonymous Auth (`is_guest = 1`, synthetic `guest-<id>@guest.invalid`). Guests are immune to `ADMIN_EMAILS` matching, never reconcile registered email accounts, and receive 403 `admin_required` (logged as `suspicious_activity`) on `/api/admin/*`.
+- Guests upgrade in-place via `linkWithPopup`. If the Google account is already registered, `POST /api/auth/merge-guest` atomically reassigns all sessions, messages, and files in one D1 batch and deletes the guest row.
 - Chat history is rebuilt server-side; clients cannot submit an assistant
   transcript.
 - Uploads are checked for ownership and file type before use.
@@ -78,6 +103,7 @@ and `SVG_DIAGRAMS` are disabled only by the literal value `false`.
 | `npm run db:migrate:local` | Apply local D1 migrations. |
 | `npm run test:provider` | No-network tests for the active provider adapter. |
 | `npm run test:orchestration` | Routing, health, credential masking, and error-boundary tests. |
+| `npm run smoke:guest` | End-to-end guest mode verification (auth, chat, refresh, caps, IP limits, admin view, upgrade, merge). |
 | `npm run smoke:svg-sanitizer` | Worker SVG sanitizer tests. |
 | `npm run smoke:figure-gate` | Streaming SVG gate tests. |
 | `npm run smoke:sse-null` | SSE null-frame regression test. |

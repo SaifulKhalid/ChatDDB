@@ -34,6 +34,7 @@
     "stub:pollinations": "node scripts/stub-pollinations.mjs",
     "db:prune": "node scripts/prune.mjs",
     "cf-typegen": "wrangler types",
+    "smoke:guest": "node --experimental-strip-types scripts/smoke-guest.mjs",
     "smoke:svg-sanitizer": "node scripts/smoke-svg-sanitizer.mjs",
     "smoke:figure-gate": "node scripts/smoke-figure-gate.mjs",
     "smoke:tool-peek": "node --experimental-strip-types scripts/smoke-tool-peek.mjs",

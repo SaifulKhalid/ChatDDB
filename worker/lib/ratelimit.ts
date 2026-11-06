@@ -30,7 +30,7 @@ import { rateLimited } from './http.ts'
  * cannot drain each other: a tool-triggered generation consumes *both* budgets,
  * while the button consumes only the human one.
  */
-export type RateAction = 'chat' | 'upload' | 'auth' | 'admin' | 'image' | 'tool_image'
+export type RateAction = 'chat' | 'upload' | 'auth' | 'admin' | 'image' | 'tool_image' | 'guest_create'
 export type WindowKind = 'minute' | 'day'
 
 const PERIOD_MS: Record<WindowKind, number> = {
@@ -122,17 +122,18 @@ export async function consume(
 }
 
 /** Human wording for a 429 body, distinguishing a burst from a daily quota. */
-export function limitMessage(verdict: RateVerdict, noun: string): string {
+export function limitMessage(verdict: RateVerdict, noun: string, isGuest = false): string {
   if (verdict.kind === 'day') {
-    return `You have reached today's limit of ${verdict.limit} ${noun}. It resets at midnight UTC.`
+    const guestHint = isGuest ? ' Sign in with Google to get higher limits.' : ''
+    return `You have reached today's limit of ${verdict.limit} ${noun}. It resets at midnight UTC.${guestHint}`
   }
   const seconds = verdict.retryAfter
   return `Too many ${noun} in a short time. Try again in ${seconds} second${seconds === 1 ? '' : 's'}.`
 }
 
 /** Throws the 429 for a tripped verdict. */
-export function enforce(verdict: RateVerdict, noun: string): void {
-  if (!verdict.allowed) throw rateLimited(limitMessage(verdict, noun), verdict.retryAfter)
+export function enforce(verdict: RateVerdict, noun: string, isGuest = false): void {
+  if (!verdict.allowed) throw rateLimited(limitMessage(verdict, noun, isGuest), verdict.retryAfter)
 }
 
 /** Reads a counter without incrementing it -- for `/api/me` quota display. */

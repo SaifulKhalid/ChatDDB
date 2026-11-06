@@ -19,6 +19,7 @@ export interface PublicUser {
   picture: string | null
   role: 'user' | 'admin'
   status: 'active' | 'suspended'
+  isGuest: boolean
   createdAt: number
   lastLogin: number | null
 }

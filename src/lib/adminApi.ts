@@ -25,6 +25,8 @@ import type {
 /** `worker/db/users.ts` → `PlatformStats`. */
 export interface AdminPlatformStats {
   totalUsers: number
+  guestUsers: number
+  registeredUsers: number
   activeUsers: number
   suspendedUsers: number
   adminUsers: number
@@ -101,7 +103,7 @@ export interface AdminActivityRow {
   metadata: unknown
   ipHash: string | null
   userAgent: string | null
-  user?: { id: string; email: string; name: string | null } | null
+  user?: { id: string; email: string; name: string | null; isGuest?: boolean } | null
 }
 
 /** `GET /api/admin/activity` */
@@ -121,7 +123,7 @@ export interface AdminSessionSummary extends SessionSummary {
 
 /** `GET /api/admin/sessions` row. */
 export interface AdminSessionRow extends AdminSessionSummary {
-  user: { id: string; email: string; name: string | null }
+  user: { id: string; email: string; name: string | null; isGuest?: boolean }
 }
 
 /** `GET /api/admin/sessions` */
@@ -160,7 +162,7 @@ export interface AdminFileRow extends PublicFile {
   sessionId: string | null
   messageId: string | null
   sha256: string
-  user: { id: string; email: string; name: string | null }
+  user: { id: string; email: string; name: string | null; isGuest?: boolean }
 }
 
 /** `GET /api/admin/files` */
@@ -195,8 +197,16 @@ function clean<T extends Record<string, string | number | boolean | undefined | 
 export const adminApi = {
   stats: () => apiJson<AdminStats>('/api/admin/stats'),
 
-  users: (q: { search?: string; status?: string; role?: string; limit?: number; offset?: number } = {}) =>
-    apiJson<AdminUserList>(`/api/admin/users?${new URLSearchParams(clean(q))}`),
+  users: (
+    q: {
+      search?: string
+      status?: string
+      role?: string
+      guest?: 'guest' | 'registered' | 'all'
+      limit?: number
+      offset?: number
+    } = {},
+  ) => apiJson<AdminUserList>(`/api/admin/users?${new URLSearchParams(clean(q))}`),
 
   user: (id: string) => apiJson<AdminUserDetail>(`/api/admin/users/${id}`),
 

@@ -242,7 +242,7 @@ async function limitUpload(ctx: AuthedContext): Promise<void> {
       'upload',
     ),
   )
-  ratelimit.enforce(verdict, 'uploads')
+  ratelimit.enforce(verdict, 'uploads', ctx.user.is_guest === 1)
 }
 
 // ---------------------------------------------------------------------------

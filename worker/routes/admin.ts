@@ -98,6 +98,7 @@ export async function listUsers(ctx: AuthedContext): Promise<Response> {
     search: params.get('search')?.trim() || undefined,
     role: optionalEnum(params.get('role') ?? undefined, 'role', ['user', 'admin'] as const),
     status: optionalEnum(params.get('status') ?? undefined, 'status', ['active', 'suspended'] as const),
+    guest: optionalEnum(params.get('guest') ?? undefined, 'guest', ['guest', 'registered', 'all'] as const),
     sort: optionalEnum(params.get('sort') ?? undefined, 'sort', USER_SORTS) ?? 'created_at',
     direction: params.get('direction') === 'asc' ? 'asc' : 'desc',
     limit,
@@ -255,7 +256,9 @@ export async function getActivity(ctx: AuthedContext): Promise<Response> {
     {
       activity: rows.map((row) => ({
         ...toPublicActivity(row),
-        user: row.user_id ? { id: row.user_id, email: row.email, name: row.name } : null,
+        user: row.user_id
+          ? { id: row.user_id, email: row.email, name: row.name, isGuest: row.is_guest === 1 }
+          : null,
       })),
       total,
       limit,
@@ -336,7 +339,7 @@ export async function listAdminSessions(ctx: AuthedContext): Promise<Response> {
       sessions: rows.map((row) => ({
         ...sessionsDb.toPublicSession(row),
         deletedAt: row.deleted_at,
-        user: { id: row.user_id, email: row.email, name: row.name },
+        user: { id: row.user_id, email: row.email, name: row.name, isGuest: row.is_guest === 1 },
       })),
       total,
       limit,
@@ -444,7 +447,7 @@ export async function listAdminFiles(ctx: AuthedContext): Promise<Response> {
         sessionId: row.session_id,
         messageId: row.message_id,
         sha256: row.sha256,
-        user: { id: row.user_id, email: row.email, name: row.name },
+        user: { id: row.user_id, email: row.email, name: row.name, isGuest: row.is_guest === 1 },
       })),
       total,
       limit,

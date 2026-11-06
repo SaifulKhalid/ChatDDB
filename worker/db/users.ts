@@ -24,6 +24,7 @@ export interface UserRow {
   profile_picture: string | null
   role: Role
   status: Status
+  is_guest: number
   created_at: number
   last_login: number | null
   login_count: number
@@ -37,6 +38,7 @@ export interface PublicUser {
   picture: string | null
   role: Role
   status: Status
+  isGuest: boolean
   createdAt: number
   lastLogin: number | null
 }
@@ -49,6 +51,7 @@ export function toPublicUser(row: UserRow): PublicUser {
     picture: row.profile_picture,
     role: row.role,
     status: row.status,
+    isGuest: row.is_guest === 1,
     createdAt: row.created_at,
     lastLogin: row.last_login,
   }
@@ -123,20 +126,82 @@ export async function upsertOnLogin(
   adminEmails: string[],
 ): Promise<LoginResult> {
   const now = Date.now()
+
+  // Anonymous guest flow: upsert by firebase_uid only.
+  // Guests must NEVER be matched against ADMIN_EMAILS and NEVER take part in email adoption/reconciliation.
+  if (token.isAnonymous) {
+    const existing = await findByFirebaseUid(db, token.uid)
+    if (existing) {
+      await run(
+        db,
+        `UPDATE users
+            SET role = 'user', is_guest = 1,
+                last_login = ?, login_count = login_count + 1
+          WHERE id = ?`,
+        now,
+        existing.id,
+      )
+      return {
+        user: {
+          ...existing,
+          role: 'user',
+          is_guest: 1,
+          last_login: now,
+          login_count: existing.login_count + 1,
+        },
+      }
+    }
+
+    const id = newId()
+    const syntheticEmail = `guest-${id}@guest.invalid`
+    const row: UserRow = {
+      id,
+      firebase_uid: token.uid,
+      email: syntheticEmail,
+      name: 'Guest',
+      profile_picture: null,
+      role: 'user',
+      status: 'active',
+      is_guest: 1,
+      created_at: now,
+      last_login: now,
+      login_count: 1,
+    }
+    await run(
+      db,
+      `INSERT INTO users (id, firebase_uid, email, name, profile_picture, role, status, is_guest,
+                          created_at, last_login, login_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      row.id,
+      row.firebase_uid,
+      row.email,
+      row.name,
+      row.profile_picture,
+      row.role,
+      row.status,
+      row.is_guest,
+      row.created_at,
+      row.last_login,
+      row.login_count,
+    )
+    return { user: row }
+  }
+
   const shouldBeAdmin = adminEmails.some((e) => e.toLowerCase() === token.email)
   const existing = await findByFirebaseUid(db, token.uid)
 
   if (existing) {
-    const role: Role = existing.role === 'admin' || shouldBeAdmin ? 'admin' : 'user'
+    const role: Role =
+      (existing.is_guest === 1 ? false : existing.role === 'admin') || shouldBeAdmin ? 'admin' : 'user'
     await run(
       db,
       `UPDATE users
-          SET email = ?, name = ?, profile_picture = ?, role = ?,
+          SET email = ?, name = ?, profile_picture = ?, role = ?, is_guest = 0,
               last_login = ?, login_count = login_count + 1
         WHERE id = ?`,
       token.email,
-      token.name ?? existing.name,
-      token.picture ?? existing.profile_picture,
+      token.name ?? (existing.is_guest === 1 ? null : existing.name),
+      token.picture ?? (existing.is_guest === 1 ? null : existing.profile_picture),
       role,
       now,
       existing.id,
@@ -145,9 +210,10 @@ export async function upsertOnLogin(
       user: {
         ...existing,
         email: token.email,
-        name: token.name ?? existing.name,
-        profile_picture: token.picture ?? existing.profile_picture,
+        name: token.name ?? (existing.is_guest === 1 ? null : existing.name),
+        profile_picture: token.picture ?? (existing.is_guest === 1 ? null : existing.profile_picture),
         role,
+        is_guest: 0,
         last_login: now,
         login_count: existing.login_count + 1,
       },
@@ -169,7 +235,7 @@ export async function upsertOnLogin(
 
     await run(
       db,
-      `UPDATE users SET firebase_uid = ?, name = ?, profile_picture = ?,
+      `UPDATE users SET firebase_uid = ?, name = ?, profile_picture = ?, is_guest = 0,
               last_login = ?, login_count = login_count + 1
         WHERE id = ?`,
       token.uid,
@@ -184,6 +250,7 @@ export async function upsertOnLogin(
         firebase_uid: token.uid,
         name: token.name ?? clash.name,
         profile_picture: token.picture ?? clash.profile_picture,
+        is_guest: 0,
         last_login: now,
         login_count: clash.login_count + 1,
       },
@@ -199,15 +266,16 @@ export async function upsertOnLogin(
     profile_picture: token.picture ?? null,
     role: shouldBeAdmin ? 'admin' : 'user',
     status: 'active',
+    is_guest: 0,
     created_at: now,
     last_login: now,
     login_count: 1,
   }
   await run(
     db,
-    `INSERT INTO users (id, firebase_uid, email, name, profile_picture, role, status,
+    `INSERT INTO users (id, firebase_uid, email, name, profile_picture, role, status, is_guest,
                         created_at, last_login, login_count)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     row.id,
     row.firebase_uid,
     row.email,
@@ -215,6 +283,7 @@ export async function upsertOnLogin(
     row.profile_picture,
     row.role,
     row.status,
+    row.is_guest,
     row.created_at,
     row.last_login,
     row.login_count,
@@ -245,6 +314,7 @@ export interface UserListQuery {
   search?: string
   role?: Role
   status?: Status
+  guest?: 'guest' | 'registered' | 'all'
   sort: UserSort
   direction: 'asc' | 'desc'
   limit: number
@@ -297,6 +367,11 @@ export async function list(db: D1Database, q: UserListQuery): Promise<UserListPa
     where.push('u.status = ?')
     params.push(q.status)
   }
+  if (q.guest === 'guest') {
+    where.push('u.is_guest = 1')
+  } else if (q.guest === 'registered') {
+    where.push('u.is_guest = 0')
+  }
   const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
 
   const rows = await all<UserListRow>(
@@ -320,6 +395,8 @@ export async function list(db: D1Database, q: UserListQuery): Promise<UserListPa
 
 export interface PlatformStats {
   totalUsers: number
+  guestUsers: number
+  registeredUsers: number
   activeUsers: number
   suspendedUsers: number
   adminUsers: number
@@ -345,6 +422,8 @@ export async function platformStats(db: D1Database, dayStartMs: number, days: nu
 
   const [
     totalUsers,
+    guestUsers,
+    registeredUsers,
     activeUsers,
     suspendedUsers,
     adminUsers,
@@ -355,6 +434,8 @@ export async function platformStats(db: D1Database, dayStartMs: number, days: nu
     totalFiles,
   ] = await Promise.all([
     scalar(db, `SELECT COUNT(*) AS n FROM users`),
+    scalar(db, `SELECT COUNT(*) AS n FROM users WHERE is_guest = 1`),
+    scalar(db, `SELECT COUNT(*) AS n FROM users WHERE is_guest = 0`),
     scalar(db, `SELECT COUNT(*) AS n FROM users WHERE status = 'active'`),
     scalar(db, `SELECT COUNT(*) AS n FROM users WHERE status = 'suspended'`),
     scalar(db, `SELECT COUNT(*) AS n FROM users WHERE role = 'admin'`),
@@ -385,6 +466,8 @@ export async function platformStats(db: D1Database, dayStartMs: number, days: nu
 
   return {
     totalUsers,
+    guestUsers,
+    registeredUsers,
     activeUsers,
     suspendedUsers,
     adminUsers,

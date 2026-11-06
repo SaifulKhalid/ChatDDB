@@ -12,11 +12,11 @@
 
 import { useEffect, useId, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { LogOut, Shield, ShieldCheck, User as UserIcon } from 'lucide-react'
+import { LogIn, LogOut, Shield, ShieldCheck, User as UserIcon } from 'lucide-react'
 import { useAuth } from '../lib/auth'
 
 export function UserMenu({ onOpenAdmin }: { onOpenAdmin?: () => void }) {
-  const { profile, quota, imageGeneration, signOut, busy } = useAuth()
+  const { profile, quota, imageGeneration, signOut, linkGoogleAccount, isGuest, busy } = useAuth()
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const menuId = useId()
@@ -44,7 +44,7 @@ export function UserMenu({ onOpenAdmin }: { onOpenAdmin?: () => void }) {
   if (!profile) return null
 
   const isAdmin = profile.role === 'admin'
-  const label = profile.name ?? profile.email
+  const label = isGuest ? 'Guest' : (profile.name ?? profile.email)
   const showChatQuota = quota !== null && quota.chatRemainingToday !== null
   const showImageQuota = quota !== null && imageGeneration && quota.imageRemainingToday !== null
 
@@ -58,7 +58,7 @@ export function UserMenu({ onOpenAdmin }: { onOpenAdmin?: () => void }) {
         className="flex items-center gap-2 rounded-full p-0.5 pr-1 text-ink-2 hover:bg-surface-3 hover:text-ink"
         title={label}
       >
-        <Avatar picture={profile.picture} label={label} />
+        <Avatar picture={isGuest ? null : profile.picture} label={label} />
         <span className="sr-only">Account menu</span>
       </button>
 
@@ -69,10 +69,12 @@ export function UserMenu({ onOpenAdmin }: { onOpenAdmin?: () => void }) {
           className="absolute right-0 z-30 mt-2 w-64 overflow-hidden rounded-xl border border-line bg-surface shadow-lg"
         >
           <div className="flex items-center gap-3 border-b border-line px-3 py-3">
-            <Avatar picture={profile.picture} label={label} size={36} />
+            <Avatar picture={isGuest ? null : profile.picture} label={label} size={36} />
             <div className="min-w-0">
               <p className="truncate text-sm font-medium text-ink">{label}</p>
-              <p className="truncate text-xs text-ink-2">{profile.email}</p>
+              <p className="truncate text-xs text-ink-2">
+                {isGuest ? 'Guest account' : profile.email}
+              </p>
             </div>
           </div>
 
@@ -112,6 +114,19 @@ export function UserMenu({ onOpenAdmin }: { onOpenAdmin?: () => void }) {
               icon={<Shield size={15} aria-hidden="true" />}
             >
               Admin panel
+            </MenuItem>
+          )}
+
+          {isGuest && (
+            <MenuItem
+              onClick={() => {
+                setOpen(false)
+                void linkGoogleAccount()
+              }}
+              disabled={busy}
+              icon={<LogIn size={15} className="text-accent" aria-hidden="true" />}
+            >
+              <span className="font-medium text-accent">Sign in with Google</span>
             </MenuItem>
           )}
 

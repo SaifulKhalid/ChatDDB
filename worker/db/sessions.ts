@@ -369,6 +369,7 @@ export async function importSessions(
 export interface AdminSessionRow extends SessionRow {
   email: string | null
   name: string | null
+  is_guest?: number | null
 }
 
 /**
@@ -399,7 +400,7 @@ export async function adminSearch(
 
   const rows = await all<AdminSessionRow>(
     db,
-    `SELECT s.*, u.email, u.name
+    `SELECT s.*, u.email, u.name, u.is_guest
        FROM chat_sessions s
        LEFT JOIN users u ON u.id = s.user_id
        ${clause}

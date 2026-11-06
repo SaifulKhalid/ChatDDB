@@ -53,6 +53,9 @@ export const ACTIVITY_ACTIONS = [
    * an account nobody expected, that is the row to look at first.
    */
   'identity_reconciled',
+  'guest_created',
+  'guest_login',
+  'guest_merged',
 ] as const
 
 export type ActivityAction = (typeof ACTIVITY_ACTIONS)[number]
@@ -144,7 +147,7 @@ export interface ActivityQuery {
 }
 
 export interface ActivityPage {
-  rows: (ActivityRow & { email: string | null; name: string | null })[]
+  rows: (ActivityRow & { email: string | null; name: string | null; is_guest?: number | null })[]
   total: number
 }
 
@@ -181,9 +184,9 @@ export async function query(db: D1Database, q: ActivityQuery): Promise<ActivityP
 
   const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
 
-  const rows = await all<ActivityRow & { email: string | null; name: string | null }>(
+  const rows = await all<ActivityRow & { email: string | null; name: string | null; is_guest: number | null }>(
     db,
-    `SELECT a.*, u.email, u.name
+    `SELECT a.*, u.email, u.name, u.is_guest
        FROM activity_logs a
        LEFT JOIN users u ON u.id = a.user_id
        ${clause}

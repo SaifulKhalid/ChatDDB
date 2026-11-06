@@ -33,7 +33,8 @@ import {
   type AuthedContext,
   type RequestContext,
 } from './auth/middleware.ts'
-import type { WorkerEnv } from './env.ts'
+import { resolvePolicy, type WorkerEnv } from './env.ts'
+import { cleanupExpiredGuests } from './cron/cleanup.ts'
 import * as auth from './routes/auth.ts'
 import * as chat from './routes/chat.ts'
 import * as services from './routes/services.ts'
@@ -78,6 +79,7 @@ const ROUTES: Route[] = [
 
   // ---- Signed in ----------------------------------------------------------
   { method: 'POST', pattern: '/api/auth/logout', guard: 'user', handler: auth.postLogout },
+  { method: 'POST', pattern: '/api/auth/merge-guest', guard: 'user', handler: auth.postMergeGuest },
   { method: 'GET', pattern: '/api/me', guard: 'user', handler: auth.getMe },
   { method: 'POST', pattern: '/api/chat', guard: 'user', handler: chat.postChat },
   { method: 'POST', pattern: '/api/images', guard: 'user', handler: images.postImage },
@@ -152,6 +154,15 @@ export default {
     } catch (err) {
       return errorResponse(err, request, env)
     }
+  },
+
+  async scheduled(_controller: ScheduledController, env: WorkerEnv, exec: ExecutionContext): Promise<void> {
+    if (!env.DB) {
+      console.warn('[chatddb] scheduled cron skipped: DB binding missing')
+      return
+    }
+    const policy = resolvePolicy(env)
+    exec.waitUntil(cleanupExpiredGuests(env.DB, env.FILES, policy.guestRetentionDays))
   },
 } satisfies ExportedHandler<WorkerEnv>
 
