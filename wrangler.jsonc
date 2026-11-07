@@ -39,7 +39,7 @@
     // Firebase project id. A public identifier, not a secret: ID tokens are
     // verified against Google's public JWKS, so there is no service-account key.
     // Set this to your own project's id (see DOCS.md, "Firebase setup").
-    "FIREBASE_PROJECT_ID": "lddb-712e2",
+    "FIREBASE_PROJECT_ID": "labddb-pro",
     // Comma-separated emails promoted to `admin` on their next sign-in.
     "ADMIN_EMAILS": "htmlwithkhalid@gmail.com",
 
